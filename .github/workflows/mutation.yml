@@ -46,7 +46,7 @@ defaults:
 
 jobs:
   mutation:
-    runs-on: ubicloud-standard-30
+    runs-on: ubuntu-latest
 
     steps:
       - name: Checkout repository

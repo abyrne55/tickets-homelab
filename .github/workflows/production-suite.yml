@@ -31,7 +31,7 @@ defaults:
 
 jobs:
   production-suite:
-    runs-on: ubicloud-standard-8
+    runs-on: ubuntu-latest
     # The suite runs a curated slice of the integration suite plus a bundle
     # build and boot. A wedged leg can hold a runner for hours with no
     # failure text (issue #2225), so the job gives up loudly instead.

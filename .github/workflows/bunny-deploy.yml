@@ -24,7 +24,7 @@ permissions:
 
 jobs:
   deploy:
-    runs-on: ubicloud-standard-4
+    runs-on: ubuntu-latest
     # Step conditions cannot read the secrets context, so the key's presence
     # is derived here once. The key itself stays in secrets and step inputs.
     env:
