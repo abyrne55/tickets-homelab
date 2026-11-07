@@ -1,0 +1,312 @@
+import { DatabaseBusyError } from "#db/client.ts";
+import {
+  classifyDatabaseError,
+  databaseErrorFingerprint,
+  isDatabaseError,
+} from "#db/errors.ts";
+import {
+  MigrationInProgressError,
+  MissingSettingsTableError,
+} from "#db/migrations/errors.ts";
+import { enableQueryLog } from "#db/query-log.ts";
+import { settings } from "#db/settings.ts";
+import { assertSettingsReadsDeclared } from "#db/settings-audit.ts";
+import { once } from "#fp";
+import { withMessageGroups } from "#i18n";
+import { SETUP_MESSAGE_GROUPS } from "#locales/groups.ts";
+import {
+  applySecurityHeaders,
+  contentTypeRejectionResponse,
+  isValidContentType,
+} from "#routes/middleware.ts";
+import { requestScopedHandler } from "#routes/request-scopes.ts";
+import {
+  databaseBusyResponse,
+  migrationInProgressResponse,
+  redirectResponse,
+  siteNotActivatedResponse,
+  temporaryErrorResponse,
+  withCookie,
+} from "#routes/response.ts";
+import { getPrefix, settingsForPath } from "#routes/settings-bundles.ts";
+import { parseCookies, parseRequest } from "#routes/url.ts";
+import {
+  loadEffectiveDomain,
+  seedEffectiveDomainHost,
+} from "#shared/config.ts";
+import {
+  clearFlashCookie,
+  clearSessionCookie,
+  parseFlashValue,
+} from "#shared/cookies.ts";
+import { hasFlash, setFlashContext } from "#shared/flash-context.ts";
+import { FormParams } from "#shared/form-data.ts";
+import { takeForm } from "#shared/form-stash.ts";
+import {
+  clearSavedFormData,
+  setSavedFormData,
+} from "#shared/forms/saved-data.ts";
+import {
+  createRequestTimer,
+  ErrorCode,
+  formatRequestError,
+  logError,
+  logRequest,
+} from "#shared/logger.ts";
+import { reportMaintenanceFailure } from "#shared/maintenance/report.ts";
+import { redactPath } from "#shared/redact-path.ts";
+import { detectIframeMode } from "#shared/request-context.ts";
+import { SessionKeyError } from "#shared/session-private-key.ts";
+import { getRethrowErrors } from "#shared/test-overrides.ts";
+import { defineAppRoute, routeMainApp, servesBodyRequests } from "./routes.ts";
+import {
+  bufferRequestIfNeeded,
+  ensureCustomCssResponse,
+  isSetupPath,
+  runOrganicMaintenanceWhenDue,
+  shouldLogQueries,
+  shouldPrefetchSettings,
+  trackingRedirectLocation,
+} from "./rules.ts";
+
+const loadSetupRoutes = once(async () =>
+  (await import("#routes/setup.ts")).createSetupRouter(
+    settings.setup.isComplete,
+  ),
+);
+
+/** The static asset and health routes, loaded only when a request reaches
+ * them. Keeping them out of the eager import graph avoids pulling the
+ * sitemap's DB graph into every module that imports `#routes`. */
+const loadStaticRoutes = once(
+  async () => (await import("#routes/static.ts")).routeStatic,
+);
+
+const handleRequestInternal = defineAppRoute(
+  async ({ request, path, method }) => {
+    if (isSetupPath(path)) {
+      const setupResponse = await withMessageGroups(
+        SETUP_MESSAGE_GROUPS,
+        async () => {
+          const routeSetup = await loadSetupRoutes();
+          return await routeSetup(request, path, method);
+        },
+      );
+      if (setupResponse) return setupResponse;
+    }
+
+    if (!(await settings.setup.isComplete())) {
+      return isSetupPath(path)
+        ? redirectResponse("/setup")
+        : await siteNotActivatedResponse();
+    }
+
+    return routeMainApp({ method, path, request });
+  },
+);
+
+const initializeDatabaseForPath = async (
+  path: string,
+): Promise<Response | null> => {
+  try {
+    const { initDb } = await import("#db/migrations.ts");
+    await initDb({ allowMissingSettings: isSetupPath(path) });
+    return null;
+  } catch (error) {
+    if (error instanceof MissingSettingsTableError) {
+      return await siteNotActivatedResponse();
+    }
+    if (error instanceof MigrationInProgressError) {
+      return await migrationInProgressResponse();
+    }
+    throw error;
+  }
+};
+
+const logAndReturn = (
+  response: Response,
+  method: string,
+  path: string,
+  getElapsed: () => number,
+): Response => {
+  logRequest({
+    durationMs: getElapsed(),
+    method,
+    path,
+    status: response.status,
+  });
+  return response;
+};
+
+const applyFlashFromCookie = (request: Request, url: URL): string | null => {
+  const flashId = url.searchParams.get("flash");
+  const flashRaw = flashId
+    ? parseCookies(request).get(`flash_${flashId}`)
+    : null;
+  const flash = flashRaw ? parseFlashValue(flashRaw) : null;
+  if (flash) setFlashContext(flash);
+
+  if (flash?.formToken) {
+    const stashed = takeForm(flash.formToken);
+    if (stashed) setSavedFormData(new FormParams(stashed));
+  }
+  return flash ? flashId : null;
+};
+
+const prepareRequestEnvironment = async (
+  url: URL,
+  path: string,
+  method: string,
+): Promise<void> => {
+  if (shouldLogQueries(method, getPrefix(path))) enableQueryLog();
+
+  await settings.loadKeys(settingsForPath(path));
+
+  loadEffectiveDomain(url);
+};
+
+const runOrganicMaintenanceAfterResponse = (
+  method: string,
+  path: string,
+  response: Response,
+): Promise<void> =>
+  runOrganicMaintenanceWhenDue(method, path, response.status, async () => {
+    try {
+      const [{ MAINTENANCE_TASKS }, { maintenance }] = await Promise.all([
+        import("#shared/maintenance/registry.ts"),
+        import("#shared/maintenance/runner.ts"),
+      ]);
+      await maintenance.runOrganic(MAINTENANCE_TASKS);
+    } catch (error) {
+      reportMaintenanceFailure("organic maintenance failed", error);
+    }
+  });
+
+const routeAndFinalize = async (
+  request: Request,
+  url: URL,
+  path: string,
+  method: string,
+): Promise<Response> => {
+  const consumedFlashId = applyFlashFromCookie(request, url);
+  const response = await handleRequestInternal(request, path, method);
+
+  if (consumedFlashId && hasFlash()) {
+    withCookie(response, clearFlashCookie(consumedFlashId));
+  }
+  return applySecurityHeaders(response, path);
+};
+
+const handleRoutingError = async (
+  error: unknown,
+  method: string,
+  path: string,
+): Promise<Response> => {
+  if (error instanceof DatabaseBusyError) {
+    logError({
+      code: ErrorCode.DB_BUSY,
+      detail: formatRequestError(method, path, error),
+      error,
+    });
+    return await databaseBusyResponse(method);
+  }
+
+  const kind = classifyDatabaseError(error);
+  const code = isDatabaseError(error)
+    ? ErrorCode.DB_CONNECTION
+    : ErrorCode.CDN_REQUEST;
+  logError({
+    code,
+    detail: formatRequestError(method, path, error),
+    error,
+    // A transport failure's message names the connection's IP, port, and
+    // database host, so the report must group by kind and route instead.
+    fingerprint: databaseErrorFingerprint(kind, code, method, redactPath(path)),
+  });
+  if (
+    getRethrowErrors() &&
+    !(error instanceof SessionKeyError) &&
+    !Deno.env.get("TEST_EXPECT_ERROR")
+  ) {
+    throw error;
+  }
+  if (error instanceof SessionKeyError) {
+    return redirectResponse("/admin", clearSessionCookie());
+  }
+  return await temporaryErrorResponse(method);
+};
+
+/** Run the application request pipeline. */
+const processRequest = async (request: Request): Promise<Response> => {
+  const { url, path, method } = parseRequest(request);
+  const getElapsed = createRequestTimer();
+  detectIframeMode(url);
+  clearSavedFormData();
+
+  const finish = (response: Response): Response =>
+    logAndReturn(
+      ensureCustomCssResponse(path, response),
+      method,
+      path,
+      getElapsed,
+    );
+
+  let response!: Response;
+  try {
+    // Seed the request's own host before anything reads a domain. The static
+    // path applies security headers, so isSecureMode must answer from this
+    // request's host, never another request's.
+    seedEffectiveDomainHost(url);
+
+    // A body-bearing request to a path no route serves is a bot probe. 404 it
+    // before the body read: the read waits out the connection and reports a
+    // CDN error for a scanner.
+    if (method !== "GET" && method !== "HEAD" && !servesBodyRequests(path)) {
+      return finish(new Response(null, { status: 404 }));
+    }
+
+    const bufferedRequest = await bufferRequestIfNeeded(request);
+
+    const staticResponse = await (await loadStaticRoutes())(
+      bufferedRequest,
+      path,
+      method,
+    );
+    if (staticResponse) {
+      return finish(await applySecurityHeaders(staticResponse, path));
+    }
+
+    const cleanLocation = trackingRedirectLocation(url, method);
+    if (cleanLocation) {
+      return finish(
+        new Response(null, {
+          headers: { location: cleanLocation },
+          status: 301,
+        }),
+      );
+    }
+
+    if (shouldPrefetchSettings(path)) settings.prefetchVersion();
+
+    const unavailable = await initializeDatabaseForPath(path);
+    if (unavailable) return finish(unavailable);
+
+    await prepareRequestEnvironment(url, path, method);
+
+    if (!isValidContentType(bufferedRequest, path)) {
+      return finish(contentTypeRejectionResponse());
+    }
+
+    response = finish(
+      await routeAndFinalize(bufferedRequest, url, path, method),
+    );
+    assertSettingsReadsDeclared(`${method} ${path}`);
+  } catch (error) {
+    response = finish(await handleRoutingError(error, method, path));
+  }
+  await runOrganicMaintenanceAfterResponse(method, path, response);
+  return response;
+};
+
+/** Handle one request inside every request-scoped store. */
+export const handleRequest = requestScopedHandler(processRequest);

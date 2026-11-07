@@ -1,0 +1,355 @@
+/**
+ * Shared setup/teardown for the test runners.
+ *
+ * Both the full runner (`run-tests.ts`) and the focused runner
+ * (`run-test-files.ts`) need the same environment before any test can import
+ * the app: the static client assets must be present (the app reads them at
+ * module load, see src/features/assets.ts) and stripe-mock must be running
+ * with STRIPE_MOCK_HOST/PORT exported. This module owns that lifecycle so a
+ * fresh checkout can run either runner without manual preparation. The assets
+ * are only rebuilt when their sources changed, so a repeat run pays nothing
+ * for them.
+ */
+
+import { TEST_NAME_FILTER_ENV } from "#test-utils/test-name-filter.ts";
+import { TEST_STATE_DIR_ENV } from "#test-utils/test-state-env.ts";
+import {
+  failAfterCleanups,
+  releaseWhenStarted,
+  withCleanup,
+} from "./cleanup.ts";
+import { runCompactDenoTest } from "./compact-test-reporter.ts";
+import {
+  COVERAGE_OUTPUT_DIR,
+  removeOldCoverageOutput,
+} from "./coverage-output.ts";
+import { junitPathInArgs, junitReportForRun } from "./junit-report-path.ts";
+import { extractNameFilter, rejectReporterWithFilter } from "./name-filter.ts";
+import { rethrowUnlessNotFound } from "./not-found.ts";
+import { projectRoot } from "./project-root.ts";
+import { prepareStaticAssets } from "./static-assets/prepare.ts";
+import type { StaticAssetBuild } from "./static-assets/session.ts";
+import { startStripeMock, stripeMockEnv } from "./stripe-mock.ts";
+import {
+  estimateTapEventCount,
+  hasReporterArg,
+  skipsDeclaredTests,
+} from "./tap-estimate.ts";
+import { JUNIT_PATH } from "./test-durations.ts";
+import { withEnvironment } from "./test-environment.ts";
+
+const verboseHarness = Deno.env.get("TICKETS_TEST_HARNESS_VERBOSE") === "1";
+
+const harnessLog = (...args: unknown[]): void => {
+  if (verboseHarness) console.log(...args);
+};
+
+export interface TestHarnessResources {
+  staticAssets: StaticAssetBuild;
+}
+
+/** Build the deno test CLI args from the standard flags plus caller extras */
+const buildDenoTestArgs = (
+  extraArgs: string[],
+  useCoverage: boolean,
+  reporter?: "tap",
+  junitPath?: string,
+): string[] => {
+  const args = [
+    "test",
+    "--no-check",
+    "--allow-net",
+    "--allow-env",
+    "--allow-read",
+    "--allow-write",
+    "--allow-run",
+    "--allow-sys",
+    "--allow-ffi",
+    "--parallel",
+    // Install shared test state in every isolate before test-module imports:
+    // the fast typed-array equality tester and the full locale catalog used
+    // by direct template tests that do not enter through a production route
+    // loader.
+    "--preload",
+    "./test/test-utils/preload.ts",
+    // Expose `globalThis.gc` so the test DB layer can reclaim libsql's
+    // file-descriptor leak (a fresh client per test + every interactive
+    // transaction leaks an fd that close() never releases — only GC does). Under
+    // high --parallel worker counts these outrun GC and exhaust the process fd
+    // limit ("Too many open files"), which surfaces as flaky, moving failures.
+    // See maybeReclaimLeakedFds in test/test-utils/db.ts.
+    "--v8-flags=--expose-gc",
+  ];
+  if (reporter) args.push("--reporter", reporter);
+  if (useCoverage) args.push(`--coverage=${COVERAGE_OUTPUT_DIR}`);
+  if (junitPath) args.push("--junit-path", junitPath);
+  args.push(...extraArgs);
+  return args;
+};
+
+/** The environment a test child runs in: this process's environment, the
+ * stripe mock endpoints, and the `--filter` value the child prunes by. */
+const testChildEnv = (nameFilter?: string): Record<string, string> => ({
+  ...Deno.env.toObject(),
+  ...stripeMockEnv(),
+  ...(nameFilter === undefined ? {} : { [TEST_NAME_FILTER_ENV]: nameFilter }),
+});
+
+/** What both run shapes need: the caller's test arguments (already stripped
+ * of `--filter`), the stripped `--filter` value, whether the run feeds the
+ * coverage gate, and an optional JUnit report path. */
+type TestRunRequest = {
+  extraArgs: string[];
+  nameFilter?: string | undefined;
+  useCoverage: boolean;
+  junitPath?: string | undefined;
+};
+
+/** The focused run: a compact TAP child whose summary reads a JUnit report
+ * and names the cause of a silent exit. The temporary report directory is
+ * removed after the run; a report the caller forwarded keeps their
+ * directory. */
+const runFocusedTest = async (
+  { extraArgs, nameFilter, useCoverage, junitPath }: TestRunRequest,
+  estimateFrom?: string[],
+): Promise<number> => {
+  const forwardedJunitPath = junitPathInArgs(extraArgs);
+  const report = await junitReportForRun(forwardedJunitPath ?? junitPath);
+  const runJunitPath = forwardedJunitPath ?? report.path;
+  // A run that selects a subset or stops at the first failure will not
+  // report every declaration, so the count would name tests the run never
+  // meant to report.
+  const estimatedTotal =
+    nameFilter !== undefined || skipsDeclaredTests(extraArgs)
+      ? undefined
+      : await estimateTapEventCount(projectRoot, estimateFrom ?? extraArgs);
+  try {
+    return await runCompactDenoTest(
+      buildDenoTestArgs(
+        extraArgs,
+        useCoverage,
+        "tap",
+        forwardedJunitPath === undefined ? runJunitPath : undefined,
+      ),
+      {
+        cwd: projectRoot,
+        env: testChildEnv(nameFilter),
+        ...(estimatedTotal === undefined ? {} : { estimatedTotal }),
+        junitPath: runJunitPath,
+        ...(nameFilter === undefined ? {} : { nameFilter }),
+      },
+    );
+  } finally {
+    if (report.dir !== undefined) {
+      await Deno.remove(report.dir, { recursive: true }).catch(
+        rethrowUnlessNotFound,
+      );
+    }
+  }
+};
+
+/** The pass-through run: a caller that chose its own reporter keeps deno's
+ * own output and exit code. The child still prunes by the filter; a run that
+ * matched nothing keeps deno's own silent zero-test exit, since this shape
+ * has no parsed TAP to check. */
+const runPlainTest = async ({
+  extraArgs,
+  nameFilter,
+  useCoverage,
+  junitPath,
+}: TestRunRequest): Promise<number> => {
+  console.log("Running tests...");
+  const testCmd = new Deno.Command(Deno.execPath(), {
+    args: buildDenoTestArgs(extraArgs, useCoverage, undefined, junitPath),
+    cwd: projectRoot,
+    env: testChildEnv(nameFilter),
+    stderr: "inherit",
+    stdin: "inherit",
+    stdout: "inherit",
+  });
+  const result = await testCmd.output();
+  return result.code;
+};
+
+/**
+ * Run `deno test` with the standard permission flags. `extraArgs` are appended
+ * verbatim — the full runner passes `["test/"]`, the focused runner passes the
+ * requested files (and any flags such as `--filter`). A `--filter` argument is
+ * stripped from the child's command line and set as `TICKETS_TEST_FILTER`
+ * instead, so the bdd wrappers in the child can prune by leaf name (deno's own
+ * `--filter` matches top-level names only). `junitPath`, when set, makes
+ * `deno test` write a JUnit XML file the caller can parse for per-test
+ * timings. Returns the exit code.
+ */
+export const runTests = async (
+  extraArgs: string[],
+  useCoverage: boolean,
+  junitPath?: string,
+  estimateFrom?: string[],
+): Promise<number> => {
+  if (useCoverage) await removeOldCoverageOutput();
+  const { args, nameFilter } = extractNameFilter(extraArgs);
+  rejectReporterWithFilter(args, nameFilter);
+  if (!hasReporterArg(args)) {
+    return await runFocusedTest(
+      { extraArgs: args, junitPath, nameFilter, useCoverage },
+      estimateFrom,
+    );
+  }
+  return await runPlainTest({
+    extraArgs: args,
+    junitPath,
+    nameFilter,
+    useCoverage,
+  });
+};
+
+/**
+ * Build the run-wide test state (golden DB + captured setup ceremony) that
+ * every test isolate seeds itself from instead of rebuilding — see
+ * test/test-utils/test-state.ts. Returns a cleanup function. When the env var
+ * is already set (a nested harness, e.g. a mutation run's child), the existing
+ * state is reused and left in place. The import is dynamic so the harness only
+ * loads the app graph when it actually builds state.
+ */
+const setupTestState = async (): Promise<() => Promise<void>> => {
+  if (Deno.env.get(TEST_STATE_DIR_ENV)) return async () => {};
+  const { writeTestState } = await import("#test-utils/test-state.ts");
+
+  const dir = await Deno.makeTempDir({ prefix: "tickets-test-state-" });
+  try {
+    await writeTestState(dir);
+  } catch (error) {
+    return failAfterCleanups(error, [
+      () => Deno.remove(dir, { recursive: true }).catch(rethrowUnlessNotFound),
+    ]);
+  }
+  Deno.env.set(TEST_STATE_DIR_ENV, dir);
+  harnessLog("test state prebuilt in", dir);
+  return async () => {
+    Deno.env.delete(TEST_STATE_DIR_ENV);
+    // Only an already-gone dir is expected; anything else (e.g. permissions)
+    // must surface rather than silently leave run state on disk.
+    await Deno.remove(dir, { recursive: true }).catch(rethrowUnlessNotFound);
+  };
+};
+
+/**
+ * Run `task` with the full test environment in place: up-to-date static
+ * assets, a running stripe-mock with STRIPE_MOCK_HOST/PORT exported, and the
+ * run-wide prebuilt test state exported as TICKETS_TEST_STATE_DIR. Afterwards
+ * the mock is stopped and the prebuilt state removed, even if `task` throws.
+ * The built assets are left in place: they are gitignored build output, and
+ * keeping them is what lets the next run skip the build (see
+ * static-assets/cache.ts).
+ *
+ * stripe-mock spends most of a second loading its API spec before it accepts a
+ * connection, and it needs nothing else the harness makes. So it is started
+ * first and only waited for at the end: that wait runs while the assets and the
+ * run-wide test state are prepared, which is otherwise dead time on every run.
+ * Nothing in either of those steps talks to Stripe, and the Stripe client reads
+ * STRIPE_MOCK_HOST/PORT afresh every time it is built, so setting them once the
+ * mock is up is still in time for the first test.
+ */
+export const withTestHarness = async <T>(
+  task: (resources: TestHarnessResources) => Promise<T>,
+): Promise<T> => {
+  const startingStripeMock = startStripeMock();
+  const stopStripeMock = releaseWhenStarted(startingStripeMock, (mock) => {
+    harnessLog("Stopping stripe-mock...");
+    return mock.stop();
+  });
+
+  let staticAssets: StaticAssetBuild | null = null;
+  let cleanupTestState: (() => Promise<void>) | null = null;
+
+  return withCleanup(async () => {
+    const assets = await prepareStaticAssets({ quiet: true });
+    staticAssets = assets;
+    cleanupTestState = await setupTestState();
+    const mockEnv = stripeMockEnv((await startingStripeMock).port);
+    harnessLog("stripe-mock running on port", mockEnv.STRIPE_MOCK_PORT);
+    return withEnvironment(
+      {
+        STRIPE_MOCK_HOST: mockEnv.STRIPE_MOCK_HOST,
+        STRIPE_MOCK_PORT: mockEnv.STRIPE_MOCK_PORT,
+      },
+      () => task({ staticAssets: assets }),
+    );
+  }, [
+    stopStripeMock,
+    async () => {
+      if (cleanupTestState) await cleanupTestState();
+    },
+    () => staticAssets?.dispose(),
+  ]);
+};
+
+/**
+ * Run the whole `test/` suite inside the harness, emitting per-test timings to
+ * the shared JUnit path. Any stale JUnit file is removed first so a killed prior
+ * run can't surface its timings; `deno test --junit-path` rewrites it on a
+ * completed run.
+ *
+ * Test files are grouped into shared isolates (see scripts/test-groups.ts) so
+ * the app module graph is evaluated once per group instead of once per file.
+ * Set TICKETS_TEST_UNGROUPED=1 to run every file in its own isolate — useful
+ * to rule grouping out when chasing a state leak between test files.
+ */
+export const runSuiteWithHarness = async (
+  useCoverage: boolean,
+  nameFilter?: string,
+): Promise<number> => {
+  // Only a missing file is expected here; a real removal failure (e.g.
+  // permissions) must surface rather than leave a stale JUnit file behind.
+  await Deno.remove(JUNIT_PATH).catch(rethrowUnlessNotFound);
+  // The coverage gate's workers run concurrently, and each one's memory grows
+  // with the files its group holds. Without an explicit count, cap the
+  // workers so the gate's total memory stays inside the runner's budget; the
+  // group count rises with the file count, so every isolate stays small.
+  if (useCoverage) {
+    const { coverageDenoJobs } = await import("./workers.ts");
+    const jobs = coverageDenoJobs(
+      Deno.env.get("DENO_JOBS"),
+      navigator.hardwareConcurrency,
+    );
+    if (jobs !== undefined) Deno.env.set("DENO_JOBS", String(jobs));
+  }
+  return withTestHarness(async () => {
+    // The filter travels in the arguments and `runTests` — the single place
+    // that strips it and sets the child's env — picks it up there.
+    const filterArgs = nameFilter === undefined ? [] : ["--filter", nameFilter];
+    let testCode: number;
+    if (Deno.env.get("TICKETS_TEST_UNGROUPED") === "1") {
+      testCode = await runTests(
+        ["test/", ...filterArgs],
+        useCoverage,
+        JUNIT_PATH,
+      );
+    } else {
+      const { writeTestGroups } = await import("./test-groups.ts");
+      const groups = await writeTestGroups(projectRoot);
+      try {
+        testCode = await runTests(
+          [...groups.runArgs, ...filterArgs],
+          useCoverage,
+          JUNIT_PATH,
+          groups.testFiles,
+        );
+      } finally {
+        await groups.cleanup();
+      }
+    }
+    if (testCode !== 0) return testCode;
+    // A name filter selects direct Deno tests; the acceptance stories are
+    // Cucumber features with no test name to match, so a filtered run skips
+    // them instead of running the whole suite behind a one-test request.
+    if (nameFilter !== undefined) return 0;
+
+    // Acceptance stories run in this harness process after direct Deno tests.
+    // Their behavior is required, but their execution never fills a gap in the
+    // direct suite's separately-enforced 100% coverage.
+    const { runSpecs } = await import("./specs/run.ts");
+    return (await runSpecs()).success ? 0 : 1;
+  });
+};

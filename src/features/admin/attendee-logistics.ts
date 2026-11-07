@@ -1,0 +1,216 @@
+/**
+ * Logistics wiring for the unified attendee form.
+ *
+ * Kept separate from the core attendee form model so the (common) non-logistics
+ * flow is untouched. Provides the field-name scheme, parsing of the submitted
+ * start/end agent + time choices into a per-listing plan, and the data the
+ * template needs for the selectors. The selectors render pre-filled from
+ * saved assignments.
+ */
+
+import {
+  getLogisticsAssignments,
+  type LogisticsAssignment,
+} from "#db/logistics.ts";
+import { logisticsAgents } from "#db/logistics-agents.ts";
+import { settings } from "#db/settings.ts";
+import { requiredMapValue, uniqueBy } from "#fp";
+import {
+  type AttendeeFormLine,
+  isBookedLine,
+  isNoQuantityLine,
+} from "#routes/admin/attendee-form-model.ts";
+import type { FormParams } from "#shared/form-data.ts";
+import { parsePositiveInt as parsePositiveIntId } from "#shared/validation/number.ts";
+import type { Attendee, LogisticsAgent } from "#types";
+
+/** Checkbox field: when "1", each logistics listing carries its own agents. */
+export const SPLIT_AGENTS_FIELD = "split_logistics_agents";
+
+/** The Logistics tab's form id — its save flash targets (and scrolls to) it. */
+export const ATTENDEE_LOGISTICS_FORM_ID = "attendee-logistics-form";
+
+/** Latitude/longitude input names (also read by the map + lookup scripts). */
+export const LAT_FIELD = "lat";
+export const LNG_FIELD = "lng";
+
+/** What the Logistics tab form edits. */
+export type LogisticsFormValues = {
+  address: string;
+  lat: string;
+  lng: string;
+};
+
+/** The Logistics tab form's per-field errors (null = fine). */
+export type LogisticsFormErrors = {
+  addressError: string | null;
+  locationError: string | null;
+};
+
+/** One other attendee's overlapping booking line, ready to render. */
+export type OtherAttendeeLine = {
+  attendeeId: number;
+  name: string;
+  listingName: string;
+  quantity: number;
+  startAt: string;
+  endAt: string;
+  startTime: string;
+  endTime: string;
+};
+
+/** Everything the Logistics tab panel renders. */
+export type AttendeeLogisticsTabData = {
+  attendee: Attendee;
+  values: LogisticsFormValues;
+  addressError: string | null;
+  locationError: string | null;
+  /** Start/end selectors data, or undefined when logistics does not apply. */
+  logistics: AttendeeLogisticsData | undefined;
+  /** Other attendees booked on overlapping dates (empty ⇒ section hidden). */
+  others: OtherAttendeeLine[];
+};
+
+/** Suffix for the per-listing (split) field, or "" for the single shared field. */
+const suffix = (listingId?: number): string =>
+  listingId === undefined ? "" : `_${listingId}`;
+
+/** The form field for one logistics control, named per control and listing. */
+const logisticsField =
+  (name: string) =>
+  (listingId?: number): string =>
+    `${name}${suffix(listingId)}`;
+
+/** Start-agent select field name. With a listing id it is the split
+ * (per-listing) field. Without one, the single field applies to every
+ * listing. */
+export const startAgentField = logisticsField("logistics_start");
+
+/** End-agent select field name (see {@link startAgentField}). */
+export const endAgentField = logisticsField("logistics_end");
+
+/** Start-time field name. */
+export const startTimeField = logisticsField("logistics_start_time");
+
+/** End-time field name. */
+export const endTimeField = logisticsField("logistics_end_time");
+
+/** A logistics listing the attendee books, with its current assignment. */
+export type LogisticsLine = {
+  listingId: number;
+  name: string;
+  assignment: LogisticsAssignment;
+};
+
+/** Everything the template needs to render the logistics selectors. */
+export type AttendeeLogisticsData = {
+  /** Selectable agents. */
+  agents: LogisticsAgent[];
+  /** Whether each logistics listing has its own agents. */
+  split: boolean;
+  /** Single-mode assignment, applied to every logistics listing. */
+  single: LogisticsAssignment;
+  /** One row per delivered booked listing (split mode). */
+  lines: LogisticsLine[];
+};
+
+/** The logistics listings an attendee actually books (booked lines only). A
+ * no-quantity line is never a delivery drop-off or collection, so it is
+ * excluded even when it has an existing booking row. The atomic edit clears
+ * its agents, times, and done flags. The form and the save therefore never
+ * touch an assignment on that line. */
+const deliveredBookedLines = (lines: AttendeeFormLine[]): AttendeeFormLine[] =>
+  uniqueBy((line: AttendeeFormLine) => line.listingId)(
+    lines.filter(
+      (line) =>
+        !isNoQuantityLine(line) &&
+        (isBookedLine(line) || Boolean(line.existingBooking)) &&
+        Boolean(line.listing?.uses_logistics),
+    ),
+  );
+
+/** The submitted logistics plan: split flag plus a per-listing assignment for
+ * every logistics booked line. Agent ids not in `agentIds` (or blank) become
+ * null. In single mode all delivered lines share the one submitted pair. */
+export const parseLogisticsPlan = (
+  form: FormParams,
+  lines: AttendeeFormLine[],
+  agentIds: Set<number>,
+): { split: boolean; perListing: Map<number, LogisticsAssignment> } => {
+  const split = form.getFlag(SPLIT_AGENTS_FIELD);
+  const valid = (raw: string): number | null => {
+    const n = parsePositiveIntId(raw);
+    return n !== null && agentIds.has(n) ? n : null;
+  };
+  const perListing = new Map<number, LogisticsAssignment>();
+  for (const line of deliveredBookedLines(lines)) {
+    const id = line.listingId;
+    const key = split ? id : undefined;
+    perListing.set(id, {
+      endAgentId: valid(form.getString(endAgentField(key))),
+      endTime: form.getString(endTimeField(key)),
+      startAgentId: valid(form.getString(startAgentField(key))),
+      startTime: form.getString(startTimeField(key)),
+    });
+  }
+  return { perListing, split };
+};
+
+const EMPTY_ASSIGNMENT: LogisticsAssignment = {
+  endAgentId: null,
+  endTime: "",
+  startAgentId: null,
+  startTime: "",
+};
+
+/** The selectors re-rendered with a submitted plan's choices in place of the
+ * saved ones. A failed save must show exactly what the operator entered, not
+ * what is stored. Pure: returns a new data object. */
+export const withSubmittedPlan = (
+  data: AttendeeLogisticsData,
+  plan: { split: boolean; perListing: Map<number, LogisticsAssignment> },
+): AttendeeLogisticsData => {
+  const lines = data.lines.map((line) => ({
+    ...line,
+    // The plan is parsed over the same delivered lines these selectors
+    // render, so every rendered line has a submitted assignment.
+    assignment: requiredMapValue(
+      plan.perListing,
+      line.listingId,
+      `Listing ${line.listingId} assignment missing`,
+    ),
+  }));
+  return { ...data, lines, single: lines[0]!.assignment, split: plan.split };
+};
+
+/**
+ * Build the logistics render data, or undefined when logistics is disabled, no
+ * agents exist, or the attendee books no logistics listing. For an edit the
+ * single-mode pair is seeded from the first logistics booked line's saved
+ * assignment (they all share one pair when not split).
+ */
+export const buildAttendeeLogisticsData = async (
+  lines: AttendeeFormLine[],
+  attendee: Attendee | null,
+): Promise<AttendeeLogisticsData | undefined> => {
+  if (!settings.features.logistics) return;
+  const delivered = deliveredBookedLines(lines);
+  if (delivered.length === 0) return;
+  const agents = await logisticsAgents.getAll();
+  if (agents.length === 0) return;
+
+  const existing = attendee
+    ? await getLogisticsAssignments(attendee.id)
+    : new Map<number, LogisticsAssignment>();
+  const logisticsLines: LogisticsLine[] = delivered.map((line) => ({
+    assignment: existing.get(line.listingId) ?? EMPTY_ASSIGNMENT,
+    listingId: line.listingId,
+    name: line.listing!.name,
+  }));
+  return {
+    agents,
+    lines: logisticsLines,
+    single: logisticsLines[0]!.assignment,
+    split: attendee?.split_logistics_agents ?? false,
+  };
+};

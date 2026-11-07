@@ -1,0 +1,341 @@
+import { bookingError } from "#booking/form.ts";
+import { belowMinError } from "#booking/min-refusal.ts";
+import { t } from "#i18n";
+import { defineAdminRoutes } from "#routes/admin/route-tables.ts";
+import type { TypedRouteHandler } from "#routes/router.ts";
+
+/**
+ * Admin route for generating pre-filled booking QR codes for an listing.
+ *
+ * GET renders the form, POST validates input, signs a URL, and re-renders
+ * the page with the generated QR beneath the form.
+ *
+ * GET /admin/listing/:id/qr.json returns a fresh token as JSON so the page
+ * can refresh the QR client-side (every minute) without a full reload.
+ */
+
+import { getActiveHolidays } from "#db/holidays.ts";
+import { getListingWithCount } from "#db/listings/records.ts";
+import { withEntityLoader } from "#routes/admin/entity-handlers.ts";
+import { formPolicyFor, pageGuardFor } from "#routes/auth.ts";
+import { keepParentDailyDatesChildrenCanServe } from "#routes/public/booking-dates.ts";
+import { standalonePageServes } from "#routes/public/page-listings.ts";
+import {
+  htmlResponse,
+  jsonResponse,
+  notFoundResponse,
+} from "#routes/response.ts";
+import { adminDestinationAt } from "#shared/admin-surface.ts";
+import {
+  createAuthedFormRoute,
+  type FormValidator,
+} from "#shared/app-forms.ts";
+import { getEffectiveDomain } from "#shared/config.ts";
+import { getBookableStartDates } from "#shared/dates.ts";
+import { FormParams } from "#shared/form-data.ts";
+import { generateQrSvg, listingSupportsDirectCheckout } from "#shared/qr.ts";
+import { buildQrBookPayload, signQrBookToken } from "#shared/qr-token.ts";
+import { validatePrice } from "#shared/validation/money.ts";
+import { parsePositiveInt } from "#shared/validation/number.ts";
+import {
+  type AdminListingQrResult,
+  type AdminListingQrValues,
+  adminListingQrPage,
+} from "#templates/admin/listing-qr.tsx";
+import { validateName } from "#templates/fields/validators.ts";
+import type { AdminSession, ListingWithCount } from "#types";
+import { loadListingOr } from "./load-listing.ts";
+
+export const EMPTY_QR_VALUES: AdminListingQrValues = {
+  customer_name: "",
+  date: "",
+  quantity: "1",
+  value: "",
+};
+
+/** Load bookable dates for daily listings (empty for standard listings).
+ * Customisable listings use single-day availability — the visitor chooses the
+ * day count on the booking form — so every individually-bookable start is offered.
+ *
+ * When the listing is a parent, keep only dates at least one required child can
+ * serve. A daily listing with no children is returned unchanged. */
+export const loadBookableDates = async (
+  listing: ListingWithCount,
+): Promise<string[]> => {
+  if (listing.listing_type !== "daily") return [];
+  const holidays = await getActiveHolidays();
+  return keepParentDailyDatesChildrenCanServe(
+    listing,
+    getBookableStartDates(listing, holidays),
+    holidays,
+  );
+};
+
+const withListing = withEntityLoader(getListingWithCount);
+
+/** Run `fn` only when `listing` has a standalone booking entry point. A child
+ * without its own page cannot use a standalone booking QR. An inactive
+ * listing's page is switched off, so the QR encodes a 404. */
+const unlessChild = async (
+  listing: ListingWithCount,
+  fn: () => Promise<Response>,
+): Promise<Response> =>
+  (await standalonePageServes(listing)) ? fn() : notFoundResponse();
+
+/** A listing with its child-constrained bookable date set. The QR validator
+ * needs this context, so a submitted date is checked against the same dates
+ * the form offers. */
+type QrContext = { listing: ListingWithCount; bookableDates: string[] };
+
+/** Load a listing and its child-constrained bookable dates, or null when the
+ * listing is missing. */
+const loadQrContext = (id: number): Promise<QrContext | null> =>
+  loadListingOr(id, async (listing) => ({
+    bookableDates: await loadBookableDates(listing),
+    listing,
+  }));
+
+/** The QR form's per-listing context: the child-constrained bookable dates it
+ * offers and whether the listing can take a direct checkout. Shared by the
+ * standalone POST render here and the entity page's QR tab loader. */
+export const loadQrFormContext = async (
+  listing: ListingWithCount,
+): Promise<{ bookableDates: string[]; canDirectCheckout: boolean }> => {
+  const [bookableDates, canDirectCheckout] = await Promise.all([
+    loadBookableDates(listing),
+    listingSupportsDirectCheckout(listing),
+  ]);
+  return { bookableDates, canDirectCheckout };
+};
+
+/** Render the QR admin page. 404 when the listing is missing */
+const renderPage = (
+  listingId: number,
+  session: AdminSession,
+  values: AdminListingQrValues,
+  extras: { error?: string; result?: AdminListingQrResult } = {},
+): Promise<Response> =>
+  withListing(listingId)((listing) =>
+    unlessChild(listing, async () => {
+      const { bookableDates, canDirectCheckout } =
+        await loadQrFormContext(listing);
+      return htmlResponse(
+        adminListingQrPage({
+          bookableDates,
+          canDirectCheckout,
+          listing,
+          session,
+          values,
+          ...extras,
+        }),
+      );
+    }),
+  );
+
+const extractRawValues = (form: FormParams): AdminListingQrValues => ({
+  customer_name: form.getString("customer_name").trim(),
+  date: form.getString("date").trim(),
+  quantity: form.getString("quantity").trim() || "1",
+  value: form.getString("value").trim(),
+});
+
+const getPriceBounds = (
+  listing: ListingWithCount,
+): { minPrice: number; maxPrice: number } => ({
+  maxPrice: listing.can_pay_more ? listing.max_price : Number.MAX_SAFE_INTEGER,
+  minPrice: listing.can_pay_more ? listing.unit_price : 0,
+});
+
+/**
+ * Build a form validator for the QR form. It uses listing config for range
+ * checks. `bookableDates` is the child-constrained date set the form offers:
+ * a daily listing's submitted date must be one of them. An admin cannot sign
+ * a QR for a date a required child cannot serve by posting a raw date past
+ * the dropdown. The scanned booking form rejects such a date.
+ */
+/** The error for a daily listing's submitted date, or null when it is allowed.
+ * A valid date is required, and it is one of the child-constrained
+ * `bookableDates` the form offers. This is a no-op for a non-daily listing
+ * (which has no date control). */
+const qrDateError = (
+  listing: ListingWithCount,
+  date: string,
+  bookableDates: readonly string[],
+): string | null => {
+  if (listing.listing_type !== "daily") return null;
+  if (!date) return "Date is required for daily listings";
+  return bookableDates.includes(date) ? null : "Please select a valid date";
+};
+
+/** The error for the submitted price, or null: only checked when a value is
+ * supplied, against the listing's min/max bounds. */
+const qrPriceError = (
+  listing: ListingWithCount,
+  value: string,
+): string | null => {
+  if (!value) return null;
+  const { minPrice, maxPrice } = getPriceBounds(listing);
+  const priceResult = validatePrice(value, minPrice, maxPrice);
+  return priceResult.ok ? null : priceResult.error;
+};
+
+const createQrFormValidator = (
+  listing: ListingWithCount,
+  bookableDates: readonly string[],
+): FormValidator<AdminListingQrValues> => ({
+  validate: (form) => {
+    const values = extractRawValues(form);
+
+    const quantity = parsePositiveInt(values.quantity);
+    if (quantity === null) {
+      return { error: t("listing_qr.quantity_at_least_one"), valid: false };
+    }
+    // The token pre-selects the buyer's quantity control, which offers none
+    // or the minimum upward. A below-minimum prefill lands on 0.
+    const belowMinimum = belowMinError(
+      quantity,
+      listing.min_quantity,
+      bookingError.belowMinimumQuantity(listing.min_quantity),
+    );
+    if (belowMinimum) return { error: belowMinimum, valid: false };
+    if (quantity > listing.max_quantity) {
+      return {
+        error: bookingError.aboveMaximumQuantity(listing.max_quantity),
+        valid: false,
+      };
+    }
+
+    // The signed name pre-fills a booking or rides direct-checkout metadata.
+    // It answers to the same contact-name rule the booking form runs. An
+    // unchecked name only fails later, at the buyer's form or at Square.
+    const nameError = validateName(values.customer_name);
+    if (nameError) return { error: nameError, valid: false };
+
+    const error =
+      qrPriceError(listing, values.value) ??
+      qrDateError(listing, values.date, bookableDates);
+    return error ? { error, valid: false } : { valid: true, values };
+  },
+});
+
+type ParsedValues = {
+  name?: string | undefined;
+  value?: number | undefined;
+  quantity: number;
+  date?: string | undefined;
+};
+
+/** Parse validated string values into the typed shape needed for token signing */
+const parsedFromValues = (
+  values: AdminListingQrValues,
+  listing: ListingWithCount,
+): ParsedValues => {
+  const quantity = parsePositiveInt(values.quantity)!;
+  let valueMinor: number | undefined;
+  if (values.value) {
+    const { minPrice, maxPrice } = getPriceBounds(listing);
+    const result = validatePrice(values.value, minPrice, maxPrice);
+    if (result.ok) valueMinor = result.price;
+  }
+  return {
+    date: values.date || undefined,
+    name: values.customer_name || undefined,
+    quantity,
+    value: valueMinor,
+  };
+};
+
+/** Build the absolute URL the QR encodes */
+const buildQrUrl = (slug: string, token: string): string => {
+  const domain = getEffectiveDomain();
+  return `https://${domain}/ticket/${slug}/qr-book?t=${encodeURIComponent(
+    token,
+  )}`;
+};
+
+/** Sign a fresh token for the given listing and render its QR SVG */
+const signAndRenderQr = async (
+  listing: ListingWithCount,
+  parsed: ParsedValues,
+): Promise<AdminListingQrResult> => {
+  const payload = buildQrBookPayload({
+    quantity: parsed.quantity,
+    ...(parsed.name !== undefined ? { name: parsed.name } : {}),
+    ...(parsed.value !== undefined ? { value: parsed.value } : {}),
+    ...(parsed.date !== undefined ? { date: parsed.date } : {}),
+  });
+  const token = await signQrBookToken(listing.slug, payload);
+  const url = buildQrUrl(listing.slug, token);
+  const svg = await generateQrSvg(url);
+  return { svg, url };
+};
+
+/** Process a validated QR form submission and render the result panel */
+const generateAndRender = (
+  id: number,
+  session: AdminSession,
+  listing: ListingWithCount,
+  values: AdminListingQrValues,
+): Promise<Response> =>
+  unlessChild(listing, async () => {
+    const result = await signAndRenderQr(
+      listing,
+      parsedFromValues(values, listing),
+    );
+    return renderPage(id, session, values, { result });
+  });
+
+/** POST /admin/listing/:id/qr */
+const handlePost = createAuthedFormRoute<
+  AdminListingQrValues,
+  { id: number },
+  QrContext
+>({
+  auth: formPolicyFor(adminDestinationAt("/admin/listing/:id/qr")),
+  form: ({ bookableDates, listing }) =>
+    createQrFormValidator(listing, bookableDates),
+  loadContext: ({ id }) => loadQrContext(id),
+  onInvalid: ({ error, form, params, session }) =>
+    renderPage(params.id, session, extractRawValues(form), { error }),
+  onValid: ({ context: { listing }, params, session, values }) =>
+    generateAndRender(params.id, session, listing, values),
+});
+
+/**
+ * GET /admin/listing/:id/qr.json
+ *
+ * Used by the admin page's client-side auto-refresh. It reads the current
+ * form values and calls this endpoint. It swaps the rendered QR every minute
+ * so stale links become obvious to any admin watching the screen.
+ */
+const handleJsonGet: TypedRouteHandler<"GET /admin/listing/:id/qr.json"> = (
+  request,
+  { id },
+) =>
+  pageGuardFor(adminDestinationAt("/admin/listing/:id/qr.json"))(request, () =>
+    withListing(id)((listing) =>
+      unlessChild(listing, async () => {
+        const form = new FormParams(new URL(request.url).searchParams);
+        const bookableDates = await loadBookableDates(listing);
+        const result = createQrFormValidator(listing, bookableDates).validate(
+          form,
+        );
+        if (!result.valid) {
+          return jsonResponse({ error: result.error, ok: false }, 400);
+        }
+        const qrResult = await signAndRenderQr(
+          listing,
+          parsedFromValues(result.values, listing),
+        );
+        return jsonResponse({ ok: true, ...qrResult });
+      }),
+    ),
+  );
+
+/** Exported admin routes for the QR generator. The GET form is the listing
+ * entity page's QR tab now. The POST (result render) and the qr.json
+ * refresh stay here. */
+export const adminHandlers = defineAdminRoutes({
+  "GET /admin/listing/:id/qr.json": handleJsonGet,
+  "POST /admin/listing/:id/qr": handlePost,
+});

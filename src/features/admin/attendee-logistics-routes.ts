@@ -1,0 +1,153 @@
+/**
+ * The address and pinned lat/lng go into the encrypted PII blob (everything
+ * else in the blob is preserved). The start/end times and agents go onto the
+ * booking rows. A validation failure re-renders the submitted form in place
+ * at 400, like the Edit tab. A success PRG-redirects back to this tab.
+ */
+
+import { logActivity } from "#db/activity-log.ts";
+import { updateAttendeePII } from "#db/attendees/update.ts";
+import { setLogisticsAssignments } from "#db/logistics.ts";
+import { t } from "#i18n";
+import {
+  ATTENDEE_LOGISTICS_FORM_ID,
+  buildAttendeeLogisticsData,
+  LAT_FIELD,
+  LNG_FIELD,
+  type LogisticsFormErrors,
+  type LogisticsFormValues,
+  parseLogisticsPlan,
+  withSubmittedPlan,
+} from "#routes/admin/attendee-logistics.ts";
+import {
+  buildLogisticsTabData,
+  storedFormLines,
+} from "#routes/admin/attendee-logistics-tab.ts";
+import { attendeePage } from "#routes/admin/attendee-page.ts";
+import {
+  type LoadedAttendee,
+  loadAttendeeForEdit,
+} from "#routes/admin/attendee-page-data.ts";
+import { attendeeFormPost } from "#routes/admin/attendees-route-helpers.ts";
+import type { AuthSession } from "#routes/auth.ts";
+import { notFoundResponse, redirect } from "#routes/response.ts";
+import type { TypedRouteHandler } from "#routes/router.ts";
+import {
+  LOGISTICS_DEMO_FIELDS,
+  loadAfterDemoOverrides,
+} from "#shared/demo/overrides.ts";
+import type { FormParams } from "#shared/form-data.ts";
+import { parseCoordinatePair } from "#shared/validation/coordinates.ts";
+import { AttendeeLogisticsPanel } from "#templates/admin/attendee-logistics-tab.tsx";
+import { validateAddress } from "#templates/fields/validators.ts";
+
+/** Re-render the submitted form in place at 400 (validation failure). The
+ * start/end selectors show the SUBMITTED choices, not the saved ones, so
+ * fixing the address or pin never silently reverts the operator's times. */
+const renderSubmittedLogistics = (
+  session: AuthSession,
+  attendeeId: number,
+  form: FormParams,
+  values: LogisticsFormValues,
+  errors: LogisticsFormErrors,
+): Promise<Response> =>
+  attendeePage.renderPage(session, attendeeId, "logistics", {
+    panel: async (entity) => {
+      const data = await buildLogisticsTabData(entity, values, errors);
+      const logistics =
+        data.logistics &&
+        withSubmittedPlan(
+          data.logistics,
+          parseLogisticsPlan(
+            form,
+            await storedFormLines(entity),
+            new Set(data.logistics.agents.map((agent) => agent.id)),
+          ),
+        );
+      return AttendeeLogisticsPanel({ data: { ...data, logistics } });
+    },
+    status: 400,
+  });
+
+/** Persist the submitted start/end selectors, mirroring exactly what the
+ * panel rendered. When the selectors were not shown (logistics off, no
+ * agents, nothing delivered), nothing is parsed, so stored assignments
+ * survive. */
+const saveLogisticsSelectors = async (
+  entity: LoadedAttendee,
+  form: FormParams,
+): Promise<void> => {
+  const lines = await storedFormLines(entity);
+  const logistics = await buildAttendeeLogisticsData(lines, entity.attendee);
+  if (!logistics) return;
+  const plan = parseLogisticsPlan(
+    form,
+    lines,
+    new Set(logistics.agents.map((agent) => agent.id)),
+  );
+  await setLogisticsAssignments(
+    entity.attendee.id,
+    plan.split,
+    plan.perListing,
+  );
+};
+
+/** Inner submit logic: validate → save blob + selectors → PRG. */
+const handleLogisticsSubmit = async (
+  attendeeId: number,
+  session: AuthSession,
+  form: FormParams,
+): Promise<Response> => {
+  // On demo instances the address is masked and the pin cleared before
+  // anything is parsed or stored, like the attendee form's own submitters.
+  const entity = await loadAfterDemoOverrides(form, LOGISTICS_DEMO_FIELDS, () =>
+    loadAttendeeForEdit(attendeeId),
+  );
+  if (!entity) return notFoundResponse();
+
+  const values: LogisticsFormValues = {
+    address: form.getString("address"),
+    lat: form.getString(LAT_FIELD),
+    lng: form.getString(LNG_FIELD),
+  };
+  const addressError = validateAddress(values.address);
+  const coords = parseCoordinatePair(values.lat, values.lng);
+  if (addressError || !coords.ok) {
+    return renderSubmittedLogistics(session, attendeeId, form, values, {
+      addressError,
+      locationError: coords.ok ? null : t("attendee_logistics.location_error"),
+    });
+  }
+
+  const { attendee } = entity;
+  await updateAttendeePII(attendeeId, {
+    address: values.address,
+    email: attendee.email,
+    lat: coords.pin.lat,
+    lng: coords.pin.lng,
+    name: attendee.name,
+    payment_id: attendee.payment_id,
+    phone: attendee.phone,
+    special_instructions: attendee.special_instructions,
+    ticket_token: attendee.ticket_token,
+  });
+  await saveLogisticsSelectors(entity, form);
+  await logActivity(
+    `Attendee '${attendee.name}' logistics updated`,
+    attendee.listing_id,
+    attendeeId,
+  );
+  return redirect(
+    attendeePage.path(attendeeId, "logistics"),
+    t("attendee_logistics.saved", { value: attendee.name }),
+    true,
+    { formId: ATTENDEE_LOGISTICS_FORM_ID },
+  );
+};
+
+/** Handle POST /admin/attendees/:attendeeId/logistics. */
+export const handleAttendeeLogisticsPost: TypedRouteHandler<"POST /admin/attendees/:attendeeId/logistics"> =
+  attendeeFormPost(
+    "/admin/attendees/:attendeeId/logistics",
+    handleLogisticsSubmit,
+  );

@@ -1,0 +1,347 @@
+/**
+ * Admin image library templates.
+ */
+
+import { t } from "#i18n";
+import { Raw } from "#jsx/jsx-runtime.ts";
+import { isReadOnly } from "#shared/env.ts";
+import { CsrfForm } from "#shared/forms/csrf-form.tsx";
+import type { Field } from "#shared/forms/field.ts";
+import { Flash } from "#shared/forms/flash.tsx";
+import { renderFields } from "#shared/forms/rendering.tsx";
+import { getImageProxyUrl } from "#shared/image-proxy-url.ts";
+import { IMAGE_UPLOAD_ACCEPT } from "#shared/images/formats.ts";
+import { isStorageEnabled } from "#shared/storage.ts";
+import type { TableColumn } from "#shared/tables/column.ts";
+import { defineTable } from "#shared/tables/definition.ts";
+import {
+  errorAdminPage,
+  flashFormPage,
+  successListPage,
+} from "#templates/admin/admin-page.tsx";
+import { entityDeletePage } from "#templates/admin/confirm-page.tsx";
+import {
+  ActionButton,
+  guideFooterFor,
+  type IconName,
+  SaveChangesButton,
+} from "#templates/components/actions.tsx";
+import {
+  type LinkedItemGroup,
+  LinkedItemsCheckboxes,
+} from "#templates/components/linked-items.tsx";
+import { SaveForm } from "#templates/components/save-form.tsx";
+import { renderTable } from "#templates/components/table.tsx";
+import { translatedTableColumn } from "#templates/components/translated-table-column.ts";
+import {
+  type AdminSession,
+  type Image,
+  type ImageUseItemType,
+  ImageUseItemTypeSchema,
+} from "#types";
+
+export type ImageItemOption = {
+  type: ImageUseItemType;
+  id: number;
+  label: string;
+  /** Deactivated items render muted at the end of their row. */
+  active: boolean;
+};
+
+export type ItemImagePanelProps = {
+  action: string;
+  uploadAction: string;
+  linkedImages: Image[];
+  allImages: Image[];
+  error?: string | undefined;
+};
+
+const imageFields = (): Field[] => [
+  {
+    label: t("images.field.name"),
+    name: "name",
+    required: true,
+    type: "text",
+  },
+  {
+    label: t("images.field.alt_text"),
+    name: "alt_text",
+    type: "text",
+  },
+];
+
+// No `required`: file inputs never render the attribute (renderFieldInput
+// omits it) and the upload POST checks the file's presence itself.
+const imageUploadField = (): Field => ({
+  accept: IMAGE_UPLOAD_ACCEPT,
+  label: t("images.field.file"),
+  name: "image",
+  type: "file",
+});
+
+const imageValue = (image?: Image): Record<string, string | number | null> => ({
+  alt_text: image?.alt_text ?? "",
+  name: image?.name ?? "",
+});
+
+/** The first nine thumbnails of an admin page load with the page. From the
+ *  tenth thumbnail, the browser waits until the reader scrolls near it. */
+const LAZY_THUMBNAIL_FROM = 9;
+
+/** One image thumbnail. `position` is its zero-based place among the page's
+ *  thumbnails, so the count carries across the collections one page renders. */
+const thumbnail = (image: Image, position: number): JSX.Element => (
+  <img
+    alt={image.alt_text || image.name}
+    class="image-library-thumb"
+    loading={position >= LAZY_THUMBNAIL_FROM ? "lazy" : undefined}
+    src={getImageProxyUrl(image.filename_thumb)}
+  />
+);
+
+/** Exhaustive per-type group headings — a new image target type is a compile
+ * error here rather than a silent fallthrough. */
+const imageItemTypeLabels = (): Record<ImageUseItemType, string> => ({
+  group: t("terms.groups"),
+  listing: t("terms.listings"),
+  news: t("nav.site.news"),
+  page: t("nav.site.pages"),
+});
+
+/** One LinkedItemGroup per linkable type, in the schema's type order. */
+const imageLinkedItemGroups = (
+  options: readonly ImageItemOption[],
+  selected: ReadonlySet<string>,
+): LinkedItemGroup[] => {
+  const labels = imageItemTypeLabels();
+  return ImageUseItemTypeSchema.options.map((type) => ({
+    label: labels[type],
+    options: options
+      .filter((option) => option.type === type)
+      .map((option) => {
+        const value = `${option.type}:${option.id}`;
+        return {
+          active: option.active,
+          checked: selected.has(value),
+          label: option.label,
+          value,
+        };
+      }),
+  }));
+};
+
+const imageColumns: readonly TableColumn<Image>[] = [
+  translatedTableColumn(
+    "thumbnail",
+    "images.column.thumbnail",
+    (image, _context, position) => thumbnail(image, position),
+  ),
+  translatedTableColumn("name", "common.name", (image) =>
+    isReadOnly() ? (
+      image.name
+    ) : (
+      <a href={`/admin/images/${image.id}/edit`}>{image.name}</a>
+    ),
+  ),
+  translatedTableColumn(
+    "alt_text",
+    "images.field.alt_text",
+    (image) => image.alt_text,
+  ),
+];
+
+const imageTable = defineTable(imageColumns);
+
+/** Show the "no images" note when the list is empty, otherwise render it. */
+const imagesOrEmpty = (
+  images: readonly Image[],
+  renderList: () => JSX.Element,
+): JSX.Element =>
+  images.length === 0 ? <p>{t("images.empty")}</p> : renderList();
+
+const storageDisabledNotice = (): JSX.Element => (
+  <p class="notice">{t("images.storage_off")}</p>
+);
+
+const imageUploadForm = (
+  action: string,
+  icon: IconName,
+  label: string,
+): JSX.Element => (
+  <SaveForm
+    action={action}
+    enctype="multipart/form-data"
+    submitIcon={icon}
+    submitLabel={label}
+  >
+    <Raw
+      html={renderFields([...imageFields(), imageUploadField()], imageValue())}
+    />
+  </SaveForm>
+);
+
+export const adminImagesPage = successListPage<Image>(
+  "terms.images",
+  "/admin/images",
+  (images, session) => ({
+    columns: imageColumns,
+    empty: <p>{t("images.empty")}</p>,
+    // The images page is editor-reachable, but the guide is staff-only, so
+    // the footer gates the link by role — editors otherwise get a 403.
+    guideFooter: guideFooterFor(
+      "/admin/guide#images",
+      "images.guide_link",
+      session.adminLevel,
+    ),
+    items: images,
+    ...(isStorageEnabled() ? {} : { unavailable: storageDisabledNotice() }),
+  }),
+);
+
+export const adminImageNewPage = flashFormPage(
+  "images.new.heading",
+  "/admin/images",
+  () =>
+    isStorageEnabled()
+      ? imageUploadForm("/admin/images", "save", t("images.new.submit"))
+      : storageDisabledNotice(),
+);
+
+export const adminImageEditPage = ({
+  image,
+  options,
+  selected,
+  session,
+  error,
+}: {
+  image: Image;
+  options: readonly ImageItemOption[];
+  selected: ReadonlySet<string>;
+  session: AdminSession;
+  error?: string | undefined;
+}): string =>
+  errorAdminPage(
+    t("images.edit.heading", { name: image.name }),
+    "/admin/images",
+  )(
+    session,
+    error,
+  )(
+    <>
+      <div class="image-library-preview">{thumbnail(image, 0)}</div>
+      <CsrfForm action={`/admin/images/${image.id}/edit`}>
+        <Raw html={renderFields(imageFields(), imageValue(image))} />
+        {options.length === 0 ? (
+          <p>{t("images.linked_items.empty")}</p>
+        ) : (
+          <LinkedItemsCheckboxes
+            groups={imageLinkedItemGroups(options, selected)}
+            name="image_items"
+          />
+        )}
+        {SaveChangesButton()}
+      </CsrfForm>
+      {!isReadOnly() && (
+        <div class="prose">
+          <h2>{t("entity.danger_zone")}</h2>
+          <p>
+            <ActionButton
+              href={`/admin/images/${image.id}/delete`}
+              icon="trash-2"
+              variant="secondary"
+            >
+              {t("images.delete.link")}
+            </ActionButton>
+          </p>
+        </div>
+      )}
+    </>,
+  );
+export const adminImageDeletePage = entityDeletePage((image: Image) => ({
+  action: `/admin/images/${image.id}/delete`,
+  active: { section: "/admin/images" },
+  buttonText: t("images.delete.submit"),
+  danger: true,
+  label: t("images.delete.confirm_label"),
+  name: image.name,
+  title: t("images.delete.heading", { name: image.name }),
+}));
+
+const itemImageCheckboxes = (
+  images: readonly Image[],
+  selectedIds: ReadonlySet<number>,
+  startPosition: number,
+): JSX.Element => (
+  <fieldset class="checkboxes image-picker-checkboxes">
+    {images.map((image, index) => (
+      <label>
+        <input
+          checked={selectedIds.has(image.id)}
+          name="image_ids"
+          type="checkbox"
+          value={String(image.id)}
+        />
+        {thumbnail(image, startPosition + index)}
+        <span>{image.name}</span>
+      </label>
+    ))}
+  </fieldset>
+);
+
+/** The set of image ids in a list — used to test membership when merging linked
+ *  and unlinked images. */
+const imageIdSet = (images: readonly Image[]): Set<number> =>
+  new Set(images.map((image) => image.id));
+
+const itemImageOptions = (
+  allImages: readonly Image[],
+  linkedImages: readonly Image[],
+): Image[] => {
+  const linkedIds = imageIdSet(linkedImages);
+  return [
+    ...linkedImages,
+    ...allImages.filter((image) => !linkedIds.has(image.id)),
+  ];
+};
+
+export const ItemImagesPanel = ({
+  action,
+  uploadAction,
+  linkedImages,
+  allImages,
+  error,
+}: ItemImagePanelProps): JSX.Element => {
+  if (!isStorageEnabled()) {
+    return (
+      <>
+        <Flash error={error} />
+        {storageDisabledNotice()}
+      </>
+    );
+  }
+  const selectedIds = imageIdSet(linkedImages);
+  return (
+    <>
+      <Flash error={error} />
+      <h2>{t("images.item.current")}</h2>
+      {linkedImages.length === 0 ? (
+        <p>{t("images.item.none")}</p>
+      ) : (
+        renderTable(imageTable, linkedImages)
+      )}
+      <h2>{t("images.item.select_existing")}</h2>
+      <CsrfForm action={action}>
+        {imagesOrEmpty(allImages, () =>
+          itemImageCheckboxes(
+            itemImageOptions(allImages, linkedImages),
+            selectedIds,
+            linkedImages.length,
+          ),
+        )}
+        {SaveChangesButton()}
+      </CsrfForm>
+      <h2>{t("images.item.upload_new")}</h2>
+      {imageUploadForm(uploadAction, "plus", t("images.item.upload_submit"))}
+    </>
+  );
+};

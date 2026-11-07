@@ -1,0 +1,163 @@
+/**
+ * Direct render tests for a booking page selling PACKAGE SECTIONS beside
+ * standalone rows (the multi-item cart layout) — in-process, so the layout's
+ * coverage never depends on the server-test harness.
+ */
+
+import { assert, assertStringIncludes } from "@std/assert";
+import { beforeAll, describe, it as test } from "@std/testing/bdd";
+import { buildTicketListing } from "#booking/model.ts";
+import { ticketPage } from "#templates/public/reservations/ticket-page.tsx";
+import { setupAdminPageTest } from "#test-utils/admin-page-test.ts";
+import { expectIncludesAll } from "#test-utils/assertions.ts";
+import { testListingWithCount } from "#test-utils/factories.ts";
+import { pagePackage } from "#test-utils/package-cap-fixtures.ts";
+import type { ListingWithCount } from "#types";
+
+const ticketListing = (over: Partial<ListingWithCount>) =>
+  buildTicketListing(
+    testListingWithCount({ attendee_count: 0, max_attendees: 100, ...over }),
+    false,
+    undefined,
+  );
+
+const member = () => ticketListing({ id: 1, name: "Kit Tent", slug: "tent1" });
+const solo = () =>
+  ticketListing({ id: 2, max_quantity: 5, name: "Lantern", slug: "lant1" });
+
+/** A cart page: package 7 (member listing 1) beside standalone listing 2. */
+const mixedPage = (memberListing = member()) =>
+  ticketPage({
+    listings: [memberListing, solo()],
+    packages: [pagePackage(7, [1], { name: "Party Bundle" })],
+    slugs: ["pkg7s", "lant1"],
+  });
+
+describe("ticketPage — package sections beside standalone rows", () => {
+  beforeAll(setupAdminPageTest);
+
+  test("renders the bundle as a titled section and keeps the listing's own row", () => {
+    const html = mixedPage();
+    expectIncludesAll(html, [
+      'data-package-section="7"',
+      "Party Bundle",
+      'name="package_quantity_7"',
+      // The standalone listing keeps its own quantity selector; the member has
+      // none of its own (it books through the bundle's count).
+      'name="quantity_2"',
+    ]);
+    assert(!html.includes('name="quantity_1"'));
+  });
+
+  test("a sold-out bundle dims to a label while the rest of the page books", () => {
+    const html = mixedPage(
+      ticketListing({
+        attendee_count: 100,
+        id: 1,
+        name: "Kit Tent",
+        slug: "tent1",
+      }),
+    );
+    // The section stays (sold-out stub), its selector goes, the solo row lives.
+    expectIncludesAll(html, ['class="ticket-package sold-out"', "Sold Out"]);
+    assert(!html.includes('name="package_quantity_7"'));
+    assertStringIncludes(html, 'name="quantity_2"');
+    assert(!html.includes("Sorry, all listings are sold out."));
+  });
+
+  test("a fresh page selects the bundle minimum when it sits above one", () => {
+    // The select offers only the members' joint floor upward, so a fresh page
+    // must open with the floor chosen — a default of one would match no
+    // emitted option and the browser would fall back to zero.
+    const html = ticketPage({
+      listings: [
+        ticketListing({
+          id: 1,
+          max_quantity: 10,
+          min_quantity: 3,
+          name: "Kit Tent",
+          slug: "tent1",
+        }),
+        solo(),
+      ],
+      packages: [
+        pagePackage(7, [1], {
+          name: "Party Bundle",
+          quantities: new Map([[1, 1]]),
+        }),
+      ],
+      slugs: ["pkg7s", "lant1"],
+    });
+    expectIncludesAll(html, [
+      '<option value="3" selected>',
+      'name="package_quantity_7"',
+    ]);
+  });
+
+  test("a bundle whose floor exceeds its cap dims to a label while the rest books", () => {
+    // A raised member minimum can lift the floor past the cap while both stay
+    // positive: four units per bundle from ten spots cap the bundle at two,
+    // and a minimum of nine needs three. The cart still sells the solo row.
+    const html = ticketPage({
+      listings: [
+        ticketListing({
+          id: 1,
+          max_quantity: 10,
+          min_quantity: 9,
+          name: "Kit Tent",
+          slug: "tent1",
+        }),
+        solo(),
+      ],
+      packages: [
+        pagePackage(7, [1], {
+          name: "Party Bundle",
+          quantities: new Map([[1, 4]]),
+        }),
+      ],
+      slugs: ["pkg7s", "lant1"],
+    });
+    expectIncludesAll(html, ['class="ticket-package sold-out"', "Sold Out"]);
+    assert(!html.includes('name="package_quantity_7"'));
+    assertStringIncludes(html, 'name="quantity_2"');
+  });
+
+  test("a member also added by its own slug gets a standalone row beside its section", () => {
+    const html = ticketPage({
+      listings: [member(), solo()],
+      packages: [pagePackage(7, [1], { name: "Party Bundle" })],
+      slugs: ["pkg7s", "tent1", "lant1"],
+    });
+    // Both paths at once: the bundle's count selector AND the member's own row.
+    expectIncludesAll(html, ['name="package_quantity_7"', 'name="quantity_1"']);
+  });
+
+  test("a one-listing mixed page still NAMES the standalone row under the section", () => {
+    // The page's only listing books through the bundle AND its own row. The
+    // page is "single listing" for its header, but the standalone selector
+    // sits below a package section — it must render as a named row, never the
+    // bare single-listing controls (an unlabelled quantity box).
+    const html = ticketPage({
+      listings: [member()],
+      packages: [pagePackage(7, [1], { name: "Party Bundle" })],
+      slugs: ["pkg7s", "tent1"],
+    });
+    expectIncludesAll(html, [
+      'name="package_quantity_7"',
+      // The standalone row carries the listing's name label (the row renderer's
+      // ticket-row), beside — not merged into — the bundle's member row.
+      'name="quantity_1"',
+      '<div class="ticket-row">',
+    ]);
+  });
+
+  test("a single-package page keeps the classic layout (no section fieldset)", () => {
+    const html = ticketPage({
+      listings: [member()],
+      packages: [pagePackage(7, [1], { name: "Party Bundle" })],
+      slugs: ["pkg7s"],
+    });
+    assertStringIncludes(html, 'name="package_quantity_7"');
+    assert(!html.includes("data-package-section"));
+  });
+});

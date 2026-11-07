@@ -1,0 +1,467 @@
+import { expect } from "@std/expect";
+import { describe, it as test } from "@std/testing/bdd";
+import {
+  type EvaluationDeps,
+  evaluateMutantTests,
+  evaluateOriginalTests,
+  type FileMutationPlan,
+} from "#scripts/mutation/evaluate.ts";
+import type { Mutant } from "#scripts/mutation/generate.ts";
+import { TEST_STATE_DIR_ENV } from "#test-utils/test-state-env.ts";
+
+const mutant: Mutant = {
+  anchor: "flag",
+  column: 1,
+  end: 4,
+  line: 1,
+  newOperator: "false",
+  operator: "true",
+  start: 0,
+};
+
+const plan = (changes: Partial<FileMutationPlan> = {}): FileMutationPlan => ({
+  assets: null,
+  directTestFiles: ["test/shared/example.test.ts"],
+  file: "src/shared/example.ts",
+  mutants: [mutant],
+  original: "true",
+  rebuildTestState: true,
+  ...changes,
+});
+
+const setup = () => {
+  const cleaned: string[] = [];
+  const runs: Array<{ env: Record<string, string>; files: string[] }> = [];
+  const signals: AbortSignal[] = [];
+  const writes: string[] = [];
+  const deps: EvaluationDeps = {
+    createState: (_env) =>
+      Promise.resolve({
+        state: {
+          cleanup: () => {
+            cleaned.push("state");
+            return Promise.resolve();
+          },
+          env: { [TEST_STATE_DIR_ENV]: "/mutant-state" },
+        },
+        status: "ready",
+      }),
+    runTests: ({ env, testFiles }, signal) => {
+      runs.push({ env, files: testFiles });
+      signals.push(signal);
+      return Promise.resolve({ durationMs: 1, outcome: "passed" });
+    },
+    write: (_file, content) => {
+      writes.push(content);
+      return Promise.resolve();
+    },
+  };
+  return { cleaned, deps, runs, signals, writes };
+};
+
+const runConfig = {
+  batchJobs: 1,
+  env: { BASE: "yes", [TEST_STATE_DIR_ENV]: "/baseline-state" },
+  limitMs: 60_000,
+  testFiles: [],
+};
+
+const evaluateIntegration = (
+  state: ReturnType<typeof setup>,
+): ReturnType<typeof evaluateMutantTests> =>
+  evaluateMutantTests(
+    plan(),
+    mutant,
+    runConfig,
+    ["test/integration/example.test.ts"],
+    new AbortController().signal,
+    [],
+    state.deps,
+  );
+
+describe("mutant evaluation", () => {
+  test("shares one mutant state across the integration test stage", async () => {
+    const state = setup();
+    const result = await evaluateMutantTests(
+      plan(),
+      mutant,
+      runConfig,
+      ["test/integration/one.test.ts", "test/integration/two.test.ts"],
+      new AbortController().signal,
+      [],
+      state.deps,
+    );
+    expect(result.status).toBe("survived");
+    expect(state.runs).toEqual([
+      { env: { BASE: "yes" }, files: ["test/shared/example.test.ts"] },
+      {
+        env: { [TEST_STATE_DIR_ENV]: "/mutant-state" },
+        files: ["test/integration/one.test.ts", "test/integration/two.test.ts"],
+      },
+    ]);
+    expect(state.cleaned).toEqual(["state"]);
+    expect(state.signals[0]).toBe(state.signals[1]);
+    expect(state.writes).toEqual([" false ", "true"]);
+  });
+
+  test("confirms a failed mutant state build against unmutated code", async () => {
+    const state = setup();
+    let builds = 0;
+    state.deps.createState = async () => {
+      builds += 1;
+      return builds === 1
+        ? { message: "mutant compile failed", status: "failed" }
+        : {
+            state: {
+              cleanup: () => {
+                state.cleaned.push("baseline");
+                return Promise.resolve();
+              },
+              env: {},
+            },
+            status: "ready",
+          };
+    };
+    const result = await evaluateMutantTests(
+      plan(),
+      mutant,
+      runConfig,
+      ["test/integration/example.test.ts"],
+      new AbortController().signal,
+      [],
+      state.deps,
+    );
+    expect(result).toEqual({
+      detectedBy: "test-state",
+      status: "killed",
+      timings: [
+        { durationMs: 1, phase: "direct-tests" },
+        { durationMs: expect.any(Number), phase: "test-state" },
+      ],
+    });
+    expect(builds).toBe(2);
+    expect(state.cleaned).toEqual(["baseline"]);
+    expect(state.writes).toEqual([" false ", "true", "true"]);
+  });
+
+  test("fails the run when unmutated state creation also fails", async () => {
+    const state = setup();
+    state.deps.createState = () =>
+      Promise.resolve({ message: "database unavailable", status: "failed" });
+    await expect(
+      evaluateMutantTests(
+        plan(),
+        mutant,
+        runConfig,
+        ["test/integration/example.test.ts"],
+        new AbortController().signal,
+        [],
+        state.deps,
+      ),
+    ).rejects.toThrow("unmutated retry also failed");
+    expect(state.writes).toEqual([" false ", "true", "true"]);
+  });
+
+  test("fails the run when an unmutated browser rebuild also fails", async () => {
+    const state = setup();
+    const restored: string[] = [];
+    await expect(
+      evaluateMutantTests(
+        plan({
+          assets: {
+            rebuild: () => Promise.resolve(false),
+            restore: () => {
+              restored.push("assets");
+              return Promise.resolve();
+            },
+          },
+          rebuildTestState: false,
+        }),
+        mutant,
+        runConfig,
+        [],
+        new AbortController().signal,
+        [],
+        state.deps,
+      ),
+    ).rejects.toThrow("Browser bundle rebuild also failed for unmutated");
+    expect(state.writes).toEqual([" false ", "true", "true"]);
+    expect(restored).toEqual(["assets"]);
+  });
+
+  test("counts a browser failure as a kill after an unmutated rebuild passes", async () => {
+    const state = setup();
+    let builds = 0;
+    const result = await evaluateMutantTests(
+      plan({
+        assets: {
+          rebuild: () => Promise.resolve(++builds > 1),
+          restore: () => Promise.resolve(),
+        },
+        rebuildTestState: false,
+      }),
+      mutant,
+      runConfig,
+      [],
+      new AbortController().signal,
+      [],
+      state.deps,
+    );
+    expect(result.status).toBe("killed");
+    expect(builds).toBe(2);
+    expect(state.runs).toEqual([]);
+  });
+
+  test("stops when mutant state creation uses the whole deadline", async () => {
+    const state = setup();
+    state.deps.createState = () => Promise.resolve({ status: "cancelled" });
+    const result = await evaluateIntegration(state);
+    expect(result).toEqual({
+      detectedBy: null,
+      status: "cancelled",
+      timings: [
+        { durationMs: 1, phase: "direct-tests" },
+        { durationMs: expect.any(Number), phase: "test-state" },
+      ],
+    });
+    expect(state.runs).toHaveLength(1);
+  });
+
+  test("stops when the unmutated state retry uses the remaining deadline", async () => {
+    const state = setup();
+    let builds = 0;
+    state.deps.createState = () =>
+      Promise.resolve(
+        builds++ === 0
+          ? { message: "mutant failed", status: "failed" }
+          : { status: "cancelled" },
+      );
+    const result = await evaluateIntegration(state);
+    expect(result).toMatchObject({ detectedBy: null, status: "cancelled" });
+    expect(builds).toBe(2);
+  });
+
+  test("stops a failed browser build when its deadline has expired", async () => {
+    const state = setup();
+    const controller = new AbortController();
+    const result = await evaluateMutantTests(
+      plan({
+        assets: {
+          rebuild: () => {
+            controller.abort();
+            return Promise.resolve(false);
+          },
+          restore: () => Promise.resolve(),
+        },
+        rebuildTestState: false,
+      }),
+      mutant,
+      runConfig,
+      [],
+      controller.signal,
+      [],
+      state.deps,
+    );
+    expect(result).toMatchObject({ detectedBy: null, status: "cancelled" });
+  });
+
+  test("runs tests after a successful browser rebuild", async () => {
+    const state = setup();
+    let restored = 0;
+    const result = await evaluateMutantTests(
+      plan({
+        assets: {
+          rebuild: () => Promise.resolve(true),
+          restore: () => {
+            restored += 1;
+            return Promise.resolve();
+          },
+        },
+        rebuildTestState: false,
+      }),
+      mutant,
+      runConfig,
+      [],
+      new AbortController().signal,
+      [],
+      state.deps,
+    );
+    expect(result.status).toBe("survived");
+    expect(state.runs).toHaveLength(1);
+    expect(restored).toBe(1);
+  });
+
+  test("reports integration detection after a direct-test survivor", async () => {
+    const state = setup();
+    let runs = 0;
+    state.deps.runTests = () =>
+      Promise.resolve({
+        durationMs: 1,
+        outcome: runs++ === 0 ? "passed" : "failed",
+      });
+    const result = await evaluateMutantTests(
+      plan({ rebuildTestState: false }),
+      mutant,
+      runConfig,
+      ["test/integration/example.test.ts"],
+      new AbortController().signal,
+      [],
+      state.deps,
+    );
+    expect(result).toMatchObject({
+      detectedBy: "integration-tests",
+      status: "killed",
+    });
+  });
+
+  test("keeps a frozen test batch as a cause, not a verdict", async () => {
+    const state = setup();
+    const stages: string[][] = [];
+    state.deps.runTests = ({ testFiles }) => {
+      stages.push(testFiles);
+      return Promise.resolve({
+        durationMs: 90_000,
+        frozen: {
+          batch: ["test/shared/example.test.ts"],
+          durationMs: 90_000,
+          limitMs: 60_000,
+        },
+        outcome: "cancelled",
+      });
+    };
+
+    const result = await evaluateMutantTests(
+      plan({ rebuildTestState: false }),
+      mutant,
+      runConfig,
+      ["test/integration/example.test.ts"],
+      new AbortController().signal,
+      [],
+      state.deps,
+    );
+
+    expect(result).toEqual({
+      detectedBy: null,
+      frozen: {
+        batch: ["test/shared/example.test.ts"],
+        durationMs: 90_000,
+        limitMs: 60_000,
+      },
+      status: "cancelled",
+      timings: [{ durationMs: 90_000, phase: "direct-tests" }],
+    });
+    // A frozen direct stage gives no verdict, so integration tests never run.
+    expect(stages).toEqual([["test/shared/example.test.ts"]]);
+  });
+
+  test("keeps a frozen integration batch as a cause, not a verdict", async () => {
+    // The integration stage builds its result from the batch result, so a
+    // freeze there is easy to drop. A dropped cause lets the runner carry on
+    // and print a score for a run whose tests gave no verdict.
+    const state = setup();
+    let runs = 0;
+    state.deps.runTests = () =>
+      Promise.resolve(
+        runs++ === 0
+          ? { durationMs: 1, outcome: "passed" }
+          : {
+              durationMs: 90_000,
+              frozen: {
+                batch: ["test/integration/example.test.ts"],
+                durationMs: 90_000,
+                limitMs: 60_000,
+              },
+              outcome: "cancelled",
+            },
+      );
+
+    const result = await evaluateMutantTests(
+      plan({ rebuildTestState: false }),
+      mutant,
+      runConfig,
+      ["test/integration/example.test.ts"],
+      new AbortController().signal,
+      [],
+      state.deps,
+    );
+
+    expect(result).toEqual({
+      detectedBy: null,
+      frozen: {
+        batch: ["test/integration/example.test.ts"],
+        durationMs: 90_000,
+        limitMs: 60_000,
+      },
+      status: "cancelled",
+      timings: [
+        { durationMs: 1, phase: "direct-tests" },
+        { durationMs: 90_000, phase: "integration-tests" },
+      ],
+    });
+  });
+
+  test("classifies a test exception after cancellation as timed out", async () => {
+    const state = setup();
+    const controller = new AbortController();
+    state.deps.runTests = () => {
+      controller.abort();
+      return Promise.reject(new DOMException("Stopped", "AbortError"));
+    };
+
+    const result = await evaluateMutantTests(
+      plan({ rebuildTestState: false }),
+      mutant,
+      runConfig,
+      [],
+      controller.signal,
+      [{ durationMs: 3, phase: "lint" }],
+      state.deps,
+    );
+
+    expect(result).toEqual({
+      detectedBy: null,
+      status: "cancelled",
+      timings: [{ durationMs: 3, phase: "lint" }],
+    });
+    expect(state.writes).toEqual([" false ", "true"]);
+  });
+
+  test("runs the original's direct tests with the mutants' direct env", async () => {
+    const state = setup();
+
+    const result = await evaluateOriginalTests(
+      plan(),
+      runConfig,
+      new AbortController().signal,
+      state.deps,
+    );
+
+    expect(result).toEqual({
+      detectedBy: null,
+      status: "survived",
+      timings: [{ durationMs: 1, phase: "direct-tests" }],
+    });
+    // The baseline must not mutate the file, and the prebuilt state's
+    // directory marker goes the same way the mutants' direct stage sends it.
+    expect(state.runs).toEqual([
+      { env: { BASE: "yes" }, files: ["test/shared/example.test.ts"] },
+    ]);
+    expect(state.writes).toEqual([]);
+  });
+
+  test("reports the original's failing direct tests as a kill", async () => {
+    const state = setup();
+    state.deps.runTests = () =>
+      Promise.resolve({ durationMs: 2, outcome: "failed" });
+
+    const result = await evaluateOriginalTests(
+      plan({ rebuildTestState: false }),
+      runConfig,
+      new AbortController().signal,
+      state.deps,
+    );
+
+    expect(result.status).toBe("killed");
+    expect(result.detectedBy).toBe("direct-tests");
+  });
+});

@@ -1,0 +1,171 @@
+import {
+  crudRoutes,
+  defineAdminRoutes,
+  entityTabRoutes,
+} from "#routes/admin/route-tables.ts";
+import { adminDestinationAt, adminPattern } from "#shared/admin-surface.ts";
+
+/**
+ * Admin routes for managing attendee statuses (owner-only).
+ *
+ * Enforces the status invariants: at most one public-default and one
+ * paid-default, a paid-default is never a reservation, and reservation
+ * amounts are valid. The last status and either default cannot be deleted. A
+ * status attendees hold is retired, not deleted: the delete page moves every
+ * held attendee to a status the operator picks before the row goes.
+ */
+
+import {
+  type AttendeeStatus,
+  type AttendeeStatusWriteInput,
+  attendeeStatusDeleteMessage,
+  attendeeStatuses,
+  attendeeStatusOrder,
+  attendeeStatusSaveMessage,
+  attendeeStatusWrites,
+  getAttendeeStatus,
+  heldAttendeeCount,
+  statusDeleteProspects,
+} from "#db/attendee-statuses.ts";
+import { catalogNameLengthError } from "#db/name-registry.ts";
+import { flatCollectionSwap } from "#db/ordered-collection.ts";
+import { t } from "#i18n";
+import { createCrudHandlers } from "#routes/admin/crud-handlers.ts";
+import { formPolicyFor, pageGuardFor } from "#routes/auth.ts";
+import { htmlResponse, notFoundResponse } from "#routes/response.ts";
+import { createOrderedCollectionHandlers } from "#shared/app-forms.ts";
+import { getFlash } from "#shared/flash-context.ts";
+import type { FormParams } from "#shared/form-data.ts";
+import { validateReservationAmount } from "#shared/reservation-amount.ts";
+import type { NamedOperations } from "#shared/rest/resource.ts";
+import { errorResult, okResult, type Result } from "#shared/result.ts";
+import {
+  retireStatusDeletePage,
+  type StatusRetire,
+  statusPages,
+} from "#templates/admin/settings-statuses.tsx";
+import { attendeeStatusPage } from "./attendee-status-page.ts";
+
+const LIST_PATH = adminPattern("statuses");
+
+/** Parse and validate the status form. */
+const parseStatusForm = (
+  form: FormParams,
+): Result<AttendeeStatusWriteInput> => {
+  const isReservation = form.has("is_reservation");
+  const input = {
+    isPaidDefault: form.has("is_paid_default"),
+    isPublicDefault: form.has("is_public_default"),
+    isReservation,
+    name: form.getString("name"),
+    reservationAmount: isReservation
+      ? form.getString("reservation_amount")
+      : "0",
+  };
+  if (!input.name) return { error: "Please enter a name", ok: false };
+  const nameLengthError = catalogNameLengthError(input.name);
+  if (nameLengthError) return { error: nameLengthError, ok: false };
+  if (input.isReservation && input.isPaidDefault) {
+    return {
+      error: t("statuses.error_paid_default_reservation"),
+      ok: false,
+    };
+  }
+  const error = isReservation
+    ? validateReservationAmount(input.reservationAmount)
+    : null;
+  return error ? errorResult(error) : okResult(input);
+};
+
+const saveStatus = async (id: number | null, form: FormParams) => {
+  const parsed = parseStatusForm(form);
+  if (!parsed.ok) return parsed;
+  const saved = await attendeeStatusWrites.save(id, parsed.value);
+  if (!saved.ok) return errorResult(attendeeStatusSaveMessage(saved.error));
+  return { ok: true as const, row: saved.value };
+};
+
+const statusOperations: NamedOperations<AttendeeStatus> = {
+  create: (form) => saveStatus(null, form),
+  delete: async (id, form) => {
+    const result = await attendeeStatusWrites.delete(
+      id,
+      form?.getOptionalInt("reassign_status_id") ?? undefined,
+    );
+    return result.ok
+      ? { ok: true }
+      : { error: attendeeStatusDeleteMessage(result.error), ok: false };
+  },
+  loadOrNull: getAttendeeStatus,
+  update: async (id, form) =>
+    (await getAttendeeStatus(id)) === null
+      ? { notFound: true, ok: false }
+      : saveStatus(id, form),
+};
+
+const crud = createCrudHandlers({
+  activityName: "Attendee status",
+  getAll: attendeeStatuses.getAll,
+  getName: (status) => status.name,
+  identifierLabel: t("statuses.name_label"),
+  list: "statuses",
+  operations: statusOperations,
+  renderDelete: statusPages.deletePage,
+  renderEditError: attendeeStatusPage.renderEditError,
+  renderList: (statuses, session, success) =>
+    statusPages.listPage(statuses, session, getFlash().error, success),
+  renderNew: statusPages.newPage,
+  singular: "Status",
+});
+
+const statusOrder = createOrderedCollectionHandlers({
+  auth: formPolicyFor(
+    adminDestinationAt("/admin/settings/statuses/:id/move-up"),
+  ),
+  keys: async () =>
+    (await attendeeStatuses.getAll()).map((status) => status.id),
+  loadContext: ({ id }: { id: number }) => getAttendeeStatus(id),
+  movedMessage: "Status moved",
+  redirectPath: () => LIST_PATH,
+  swap: flatCollectionSwap(attendeeStatusOrder),
+  target: ({ context }) => context.id,
+});
+
+/** The delete page, with the reassign choice a status attendees hold needs:
+ * the count, the warning, and a required picker of the other statuses. The
+ * save refuses without it. The session guard (not the form policy) wraps it,
+ * because it is a GET page. */
+const statusDeleteGet = (request: Request, id: number): Promise<Response> =>
+  pageGuardFor(adminDestinationAt("/admin/settings/statuses/:id/delete"))(
+    request,
+    async (session) => {
+      const status = await getAttendeeStatus(id);
+      if (status === null) return notFoundResponse();
+      const prospects = await statusDeleteProspects(id);
+      const retire = prospects.blocker
+        ? { blocked: attendeeStatusDeleteMessage(prospects.blocker) }
+        : await reassignChoice(id, prospects.others);
+      return htmlResponse(
+        retireStatusDeletePage(status, retire, session, getFlash().error),
+      );
+    },
+  );
+
+/** The reassign choice a deletable status attendees hold needs, or null when
+ *  nothing holds and the delete can proceed as it stands. */
+const reassignChoice = async (
+  id: number,
+  others: readonly AttendeeStatus[],
+): Promise<StatusRetire | null> => {
+  const count = await heldAttendeeCount(id);
+  return count === 0 ? null : { count, others };
+};
+
+export const adminHandlers = defineAdminRoutes({
+  ...crudRoutes(adminPattern("statuses"), crud),
+  ...entityTabRoutes(adminPattern("status"), attendeeStatusPage),
+  "GET /admin/settings/statuses/:id/delete": (request, { id }) =>
+    statusDeleteGet(request, id),
+  "POST /admin/settings/statuses/:id/move-down": statusOrder.down,
+  "POST /admin/settings/statuses/:id/move-up": statusOrder.up,
+});

@@ -1,0 +1,88 @@
+import { join } from "node:path";
+import { assertArrayIncludes, assertStringIncludes } from "@std/assert";
+import { expect } from "@std/expect";
+import { describe, it as test } from "@std/testing/bdd";
+import { runInSnapshot } from "#scripts/mutation/isolation.ts";
+import {
+  captureConsole,
+  withTempDir,
+  writeFakeScript,
+} from "#test/scripts/mutation/isolation-helpers.ts";
+import { readOnlyRunRecord } from "./helpers.ts";
+
+const ENTRY = "keeper.ts";
+const KEPT = "scripts/kept.txt";
+
+/** Start a run whose child rewrites the kept file inside its own copy. */
+const runKeeper = async (
+  root: string,
+  body: string,
+  code = 0,
+): Promise<{ errors: string[]; logs: string[]; result: number }> => {
+  // Ending with an exit keeps the child from writing coverage for files that
+  // are deleted with the copy, which the coverage report cannot then read.
+  await writeFakeScript(root, ENTRY, `${body}Deno.exit(${code});\n`);
+  await Deno.writeTextFile(join(root, KEPT), "first\nsecond\n");
+  return await captureConsole(() =>
+    runInSnapshot(
+      { args: [], copyBack: [KEPT], entryScript: `scripts/${ENTRY}` },
+      root,
+    ),
+  );
+};
+
+const REWRITE_KEPT = `await Deno.writeTextFile("${KEPT}", "first\\n");\n`;
+
+describe("keeping a snapshot run's file edits", () => {
+  test("copies the run's version into the checkout and says so", async () => {
+    await withTempDir(async (root) => {
+      const run = await runKeeper(root, REWRITE_KEPT);
+
+      expect(run.result).toBe(0);
+      assertArrayIncludes(run.logs, [`Updated ${KEPT}`]);
+      expect(await Deno.readTextFile(join(root, KEPT))).toBe("first\n");
+    });
+  });
+
+  test("keeps the edit even when the run itself reports a failure", async () => {
+    await withTempDir(async (root) => {
+      const run = await runKeeper(root, REWRITE_KEPT, 3);
+
+      expect(run.result).toBe(3);
+      expect(await Deno.readTextFile(join(root, KEPT))).toBe("first\n");
+    });
+  });
+
+  test("fails without overwriting an edit made while the run was going", async () => {
+    await withTempDir(async (root) => {
+      const changeItMidRun = `
+await Deno.writeTextFile("${join(root, KEPT)}", "changed by hand\\n");
+${REWRITE_KEPT}`;
+
+      const run = await runKeeper(root, changeItMidRun);
+
+      expect(run.result).toBe(1);
+      assertStringIncludes(
+        run.errors.join("\n"),
+        `${KEPT} changed while the isolated run was going`,
+      );
+      expect(await Deno.readTextFile(join(root, KEPT))).toBe(
+        "changed by hand\n",
+      );
+      // The child exited cleanly, but the run did not do what it was for.
+      const record = await readOnlyRunRecord(root);
+      expect(record.status).toBe("failed");
+      expect(record.exitCode).toBe(1);
+    });
+  });
+
+  test("leaves the checkout alone when the run changed nothing", async () => {
+    await withTempDir(async (root) => {
+      const run = await runKeeper(root, "");
+
+      expect(run.result).toBe(0);
+      expect(run.logs.some((line) => line.startsWith("Updated "))).toBe(false);
+      expect(await Deno.readTextFile(join(root, KEPT))).toBe("first\nsecond\n");
+    });
+  });
+});

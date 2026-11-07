@@ -1,0 +1,381 @@
+import { expect } from "@std/expect";
+import { describe, it as test } from "@std/testing/bdd";
+import {
+  type CommentIssue,
+  type CommentLimits,
+  findCommentIssues,
+  findDeadLinks,
+  findGateCitations,
+  formatIssue,
+  namesMentioned,
+  readComments,
+} from "#scripts/check-comments/rules.ts";
+
+const LIMITS: CommentLimits = { maxColumns: 40, maxLines: 3 };
+
+const rules = (source: string, limits: CommentLimits = LIMITS): string[] =>
+  findCommentIssues(source, limits).map((issue) => issue.rule);
+
+/** The one issue `source` should raise, failing loudly when it raises none. */
+const onlyIssue = (
+  source: string,
+  limits: CommentLimits = LIMITS,
+): CommentIssue => {
+  const [issue] = findCommentIssues(source, limits);
+  if (!issue) throw new Error(`expected an issue for: ${source}`);
+  return issue;
+};
+
+describe("readComments", () => {
+  test("finds a line comment and a block comment", () => {
+    const found = readComments("// one\nconst a = 1;\n/* two */\n");
+    expect(found).toEqual([
+      { column: 0, end: 6, line: 1, start: 0, text: "// one" },
+      { column: 0, end: 29, line: 3, start: 20, text: "/* two */" },
+    ]);
+  });
+
+  test("reports the line a comment opens on, not the file start", () => {
+    const found = readComments("const a = 1;\n\n\n// here\n");
+    expect(found).toEqual([
+      { column: 0, end: 22, line: 4, start: 15, text: "// here" },
+    ]);
+  });
+
+  test("counts a newline the file opens with", () => {
+    // The scan starts at the very first character, so a file beginning with a
+    // blank line still puts its first comment on line 2.
+    expect(readComments("\n// here\n")).toEqual([
+      { column: 0, end: 8, line: 2, start: 1, text: "// here" },
+    ]);
+  });
+
+  test("ignores a comment marker inside a string", () => {
+    expect(readComments('const url = "https://example.com/a";\n')).toEqual([]);
+  });
+
+  test("ignores a comment marker inside a template literal", () => {
+    expect(readComments("const a = `/* not a comment */`;\n")).toEqual([]);
+  });
+
+  test("drops directives, which a tool reads rather than a person", () => {
+    const source = [
+      "/* jscpd:ignore-start */",
+      '/// <reference lib="dom" />',
+      "// biome-ignore lint: needed",
+      "// @ts-expect-error deliberate",
+      "// test-groups: run-alone",
+      "// kept",
+    ].join("\n");
+    expect(readComments(source)).toEqual([
+      { column: 0, end: 146, line: 6, start: 139, text: "// kept" },
+    ]);
+  });
+
+  test("keeps a comment that merely mentions a directive-like word", () => {
+    const found = readComments("// prefer a named type over a cast\n");
+    expect(found).toHaveLength(1);
+  });
+
+  // The directive family retired with deno lint, so its comments are prose.
+  test("keeps a deno-lint-ignore comment as prose", () => {
+    expect(readComments("// deno-lint-ignore no-explicit-any\n")).toEqual([
+      {
+        column: 0,
+        end: 35,
+        line: 1,
+        start: 0,
+        text: "// deno-lint-ignore no-explicit-any",
+      },
+    ]);
+  });
+});
+
+describe("comment-length rule", () => {
+  test("passes a comment exactly at the limit", () => {
+    expect(rules("/**\n * a\n */\n")).toEqual([]);
+  });
+
+  test("flags a comment one line over the limit", () => {
+    expect(rules("/**\n * a\n * b\n */\n")).toEqual(["comment-length"]);
+  });
+
+  test("counts the lines it found and the limit it broke", () => {
+    const issue = onlyIssue("/**\n * a\n * b\n */\n");
+    expect(issue.problem).toBe("comment runs 4 lines (limit 3)");
+    expect(issue.line).toBe(1);
+  });
+
+  test("counts consecutive line comments separately, not as one block", () => {
+    expect(rules("// a\n// b\n// c\n// d\n// e\n")).toEqual([]);
+  });
+
+  test("respects the configured limit rather than a fixed one", () => {
+    const source = "/**\n * a\n * b\n */\n";
+    expect(rules(source, { maxColumns: 40, maxLines: 4 })).toEqual([]);
+    expect(rules(source, { maxColumns: 40, maxLines: 2 })).toEqual([
+      "comment-length",
+    ]);
+  });
+});
+
+describe("comment-width rule", () => {
+  test("passes a comment exactly at the limit", () => {
+    expect(rules(`// ${"a".repeat(37)}\n`)).toEqual([]);
+  });
+
+  test("flags a comment one column over the limit", () => {
+    expect(rules(`// ${"a".repeat(38)}\n`)).toEqual(["comment-width"]);
+  });
+
+  test("counts what precedes a trailing comment on its own line", () => {
+    // A comment after code starts at that code's end, so its width is measured
+    // from there — not from the line's indent, which is 0 here.
+    const source = `const a = 1; // ${"z".repeat(27)}`;
+    expect(source).toHaveLength(43);
+    expect(rules(source)).toEqual(["comment-width"]);
+    expect(onlyIssue(source).problem).toBe(
+      "comment line is 43 columns (limit 40)",
+    );
+  });
+
+  test("counts the indent of the line the comment opens on", () => {
+    // 36 characters of comment sits under the 40-column limit on its own, and
+    // over it once the eight-space indent is counted.
+    const comment = `// ${"a".repeat(33)}`;
+    expect(comment).toHaveLength(36);
+    expect(rules(`${comment}\n`)).toEqual([]);
+    expect(rules(`        ${comment}\n`)).toEqual(["comment-width"]);
+  });
+
+  test("tells the reader to shorten the wording, not rewrap it", () => {
+    expect(onlyIssue(`// ${"a".repeat(38)}\n`).fix).toBe(
+      "Shorten the wording rather than rewrapping it.",
+    );
+  });
+
+  test("reports the widest line inside a block, not the first", () => {
+    const source = `/**\n * short\n * ${"b".repeat(45)}\n */\n`;
+    const issue = onlyIssue(source, { maxColumns: 40, maxLines: 10 });
+    expect(issue.rule).toBe("comment-width");
+    expect(issue.line).toBe(3);
+    expect(issue.problem).toBe("comment line is 48 columns (limit 40)");
+  });
+
+  test("does not add the opening indent to a continuation line", () => {
+    // The continuation line already carries its own leading spaces, so adding
+    // the opener's indent again would double-count it.
+    const source = `    /**\n     * ${"b".repeat(20)}\n     */\n`;
+    expect(findCommentIssues(source, { maxColumns: 40, maxLines: 10 })).toEqual(
+      [],
+    );
+  });
+});
+
+describe("findCommentIssues", () => {
+  test("reports both rules when one comment breaks both", () => {
+    const source = `/**\n * ${"a".repeat(60)}\n * b\n * c\n */\n`;
+    expect(rules(source).sort()).toEqual(["comment-length", "comment-width"]);
+  });
+
+  test("returns nothing for a file with no comments", () => {
+    expect(findCommentIssues("const a = 1;\n", LIMITS)).toEqual([]);
+  });
+
+  test("never flags a directive, however long or wide", () => {
+    const source = `// biome-ignore lint: ${"a".repeat(200)}\n`;
+    expect(findCommentIssues(source, LIMITS)).toEqual([]);
+  });
+
+  test("orders issues by where they appear in the file", () => {
+    const source = `// ${"a".repeat(50)}\nconst a = 1;\n// ${"b".repeat(50)}\n`;
+    expect(findCommentIssues(source, LIMITS).map((i) => i.line)).toEqual([
+      1, 3,
+    ]);
+  });
+});
+
+describe("namesMentioned", () => {
+  test("collects the names a file uses", () => {
+    const found = namesMentioned("export const helper = other;\n");
+    expect(found.has("helper")).toBe(true);
+    expect(found.has("other")).toBe(true);
+  });
+
+  test("never counts a name that appears only as a link target", () => {
+    // The whole mechanism rests on this: if a link vouched for its own target,
+    // no dead link could ever be spotted.
+    expect(namesMentioned("/** {@link gone} */\n").has("gone")).toBe(false);
+  });
+
+  test("still counts a name that is linked and also used", () => {
+    const source = "/** {@link helper} */\nexport const helper = 1;\n";
+    expect(namesMentioned(source).has("helper")).toBe(true);
+  });
+
+  test("keeps the names either side of a link", () => {
+    expect(namesMentioned("before{@link gone}after")).toEqual(
+      new Set(["before", "after"]),
+    );
+  });
+});
+
+describe("comment-dead-link rule", () => {
+  const known = new Set(["helper"]);
+  const links = (source: string): CommentIssue[] =>
+    findDeadLinks(source, known);
+
+  test("flags a link to a name nothing defines", () => {
+    const [issue] = links("/** See {@link gone}. */\n");
+    expect(issue?.rule).toBe("comment-dead-link");
+    expect(issue?.problem).toBe("{@link gone} names nothing in the tree");
+    expect(issue?.fix).toBe(
+      "Point it at the name the code uses now, or drop the link.",
+    );
+  });
+
+  test("passes a link to a known name", () => {
+    expect(links("/** See {@link helper}. */\n")).toEqual([]);
+  });
+
+  test("judges a member link on the name before the dot", () => {
+    expect(links("/** {@link helper.total} */\n")).toEqual([]);
+    expect(links("/** {@link gone.total} */\n")).toHaveLength(1);
+  });
+
+  test("reports the link's own line, not the comment's first", () => {
+    const [issue] = links("/**\n * a\n * b\n * {@link gone}\n */\n");
+    expect(issue?.line).toBe(4);
+  });
+
+  test("flags every dead link in one comment", () => {
+    const found = links("/** {@link gone} and {@link missing} */\n");
+    expect(found.map((issue) => issue.problem)).toEqual([
+      "{@link gone} names nothing in the tree",
+      "{@link missing} names nothing in the tree",
+    ]);
+  });
+
+  test("tolerates a newline between the tag and its target", () => {
+    expect(links("/**\n * {@link\n * gone}\n */\n")).toHaveLength(1);
+  });
+
+  test("ignores a comment with no links at all", () => {
+    expect(links("// just prose\n")).toEqual([]);
+  });
+});
+
+describe("comment-gate-citation rule", () => {
+  const citations = (file: string, source: string): CommentIssue[] =>
+    findGateCitations(file, source);
+
+  test("flags a comment that vouches for a check", () => {
+    const [issue] = citations(
+      "src/features/auth.ts",
+      "/** Factories (avoids jscpd duplication) */\n",
+    );
+    expect(issue?.rule).toBe("gate-citation");
+    expect(issue?.problem).toBe(
+      "comment cites the jscpd check as a reason for the code's shape",
+    );
+    expect(issue?.fix).toBe(
+      "Delete the comment. The checks run on every change, so no comment needs to vouch for the code.",
+    );
+  });
+
+  test("flags a credit word before or after the tool it credits", () => {
+    expect(
+      citations("src/shared/db.ts", "// so the linter passes\n"),
+    ).toHaveLength(1);
+    expect(
+      citations("src/shared/db.ts", "// keeps biome happy\n"),
+    ).toHaveLength(1);
+  });
+
+  test("passes comments that describe the code without naming a check", () => {
+    expect(
+      citations(
+        "src/shared/db.ts",
+        "// Eliminates duplication between adapters.\n",
+      ),
+    ).toEqual([]);
+    expect(
+      citations(
+        "src/shared/db.ts",
+        "// avoid V8 coverage gaps on `throw` inside catch blocks.\n",
+      ),
+    ).toEqual([]);
+  });
+
+  test("passes a comment that describes a tool's flags", () => {
+    expect(
+      citations("src/shared/db.ts", "// Biome flags are read from settings.\n"),
+    ).toEqual([]);
+  });
+
+  test("passes a comment that names a check as its topic", () => {
+    expect(
+      citations(
+        "src/shared/db.ts",
+        "// Deno lint rules: avoid nested calls in the parser.\n",
+      ),
+    ).toEqual([]);
+  });
+
+  test("passes a comment whose subject is the tool itself", () => {
+    expect(
+      citations(
+        "src/shared/db.ts",
+        "// Biome avoids duplicating the scanner.\n",
+      ),
+    ).toEqual([]);
+  });
+
+  test("finds a citation however the src path is spelled", () => {
+    expect(
+      citations("/repo/src/shared/db.ts", "// so the linter passes\n"),
+    ).toHaveLength(1);
+    expect(
+      citations("src/shared/db.ts", "// so the linter passes\n"),
+    ).toHaveLength(1);
+  });
+
+  test("passes the tooling trees, whose comments document the checks", () => {
+    expect(
+      citations(
+        "scripts/check-comments/rules.ts",
+        '// "avoids jscpd duplication" is the shape this rule flags.\n',
+      ),
+    ).toEqual([]);
+    expect(
+      citations(
+        "test/scripts/check-comments/rules.test.ts",
+        "// so precommit passes on a shallow clone\n",
+      ),
+    ).toEqual([]);
+  });
+
+  test("passes directives a tool reads", () => {
+    expect(
+      citations(
+        "src/shared/payments.ts",
+        '/* jscpd:ignore-start -- imports */\nimport { a } from "./a.ts";\n/* jscpd:ignore-end */\n',
+      ),
+    ).toEqual([]);
+    expect(
+      citations(
+        "src/shared/markdown.ts",
+        "// biome-ignore lint/suspicious/noControlCharactersInRegex: the whole point\n",
+      ),
+    ).toEqual([]);
+  });
+});
+
+describe("formatIssue", () => {
+  test("names the file, the line, the problem, and the fix", () => {
+    const issue = onlyIssue("/**\n * a\n * b\n */\n");
+    expect(formatIssue("src/a.ts", issue)).toBe(
+      "src/a.ts:1  comment runs 4 lines (limit 3)\n    Say only what the code cannot, or give the confusing part a name that carries the explanation.",
+    );
+  });
+});

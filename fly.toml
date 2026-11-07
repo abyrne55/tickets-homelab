@@ -1,0 +1,18 @@
+app = "chobble-tickets"
+primary_region = "lhr"
+
+# Prebuilt OCI image assembled by devenv (devenv.nix, outputs.tickets-image)
+# and published by .github/workflows/publish-image.yml on every merge to main.
+[build]
+  image = "ghcr.io/chobbledotcom/tickets:latest"
+
+[http_service]
+  internal_port = 3000
+  force_https = true
+  auto_stop_machines = true
+  auto_start_machines = true
+  min_machines_running = 0
+
+[mounts]
+  source = "tickets_data"
+  destination = "/data"

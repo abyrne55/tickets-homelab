@@ -1,0 +1,62 @@
+/**
+ * Embed host validation and parsing utilities
+ */
+
+import { map } from "#fp";
+import { commaParts } from "#shared/split.ts";
+
+/** Matches a valid hostname like "example.com" or "sub.example.com" */
+export const DOMAIN_PATTERN =
+  /^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)+$/;
+
+/**
+ * Matches a hostname with optional wildcard prefix ("*.example.com").
+ * Rejects ports, paths, protocols, spaces, bare "*", "**.", "*example.com".
+ */
+const HOST_PATTERN = new RegExp(
+  `^(?:\\*\\.)?${DOMAIN_PATTERN.source.slice(1)}`,
+);
+
+/**
+ * Validate a single host pattern
+ * Returns null if valid, or an error message if invalid
+ */
+export const validateHostPattern = (host: string): string | null => {
+  if (host === "") return "Empty host pattern";
+  if (host === "*") {
+    return "Bare wildcard '*' is not allowed — use '*.example.com'";
+  }
+  if (!HOST_PATTERN.test(host)) {
+    return `Invalid host pattern: '${host}' — must be a hostname like 'example.com' or '*.example.com'`;
+  }
+  return null;
+};
+
+/**
+ * Parse a comma-separated list of hosts into trimmed, lowercased entries.
+ * Filters out empty strings from trailing commas etc.
+ */
+export const parseEmbedHosts = (input: string): string[] =>
+  map((host: string) => host.toLowerCase())(commaParts(input));
+
+/**
+ * Validate a comma-separated list of host patterns.
+ * Returns null if all valid, or the first error message.
+ */
+export const validateEmbedHosts = (input: string): string | null => {
+  const hosts = parseEmbedHosts(input);
+  for (const host of hosts) {
+    const error = validateHostPattern(host);
+    if (error) return error;
+  }
+  return null;
+};
+
+/**
+ * Build a frame-ancestors CSP value from allowed embed hosts.
+ * Returns null if the list is empty (allow embedding from anywhere).
+ */
+export const buildFrameAncestors = (hosts: string[]): string | null => {
+  if (hosts.length === 0) return null;
+  return `frame-ancestors 'self' ${hosts.join(" ")}`;
+};

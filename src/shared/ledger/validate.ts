@@ -1,0 +1,96 @@
+// effects: pure
+/**
+ * Pure validation of a transfer before it is posted.
+ *
+ * Deliberately not a valibot schema (see AGENTS.md "Deliberate non-use is fine
+ * when the platform is better"). The callers' contract is the typed
+ * {@link LedgerError} code union — exhaustive, comparable, and rendered into
+ * conflict/store errors by code. Hand-built checks express that contract
+ * directly. A valibot pipe instead collects anonymous issues that then need
+ * mapping back onto these exact codes.
+ */
+
+import { compact } from "#fp";
+import { type Result, requireSuccess } from "#shared/result.ts";
+import { isInstant } from "#shared/validation/timestamp.ts";
+import { ACCOUNT_KEY_SEPARATOR, sameAccount } from "./account.ts";
+import type { AccountRef, LedgerError, TransferInput } from "./types.ts";
+
+const isEmptyAccount = (a: AccountRef): boolean => !a.type || !a.id;
+
+const hasReservedChar = (a: AccountRef): boolean =>
+  a.type.includes(ACCOUNT_KEY_SEPARATOR) ||
+  a.id.includes(ACCOUNT_KEY_SEPARATOR);
+
+/** A reversal link, when present, must be a real transfer row id — a positive
+ *  safe integer. This check rejects a fractional or unsafe value as
+ *  `invalid_reverses_id`. Without it, such a value occupies a different slot
+ *  in the unique `reverses_id` index than the original id, and defeats the
+ *  one-void-per-original guard. */
+const hasInvalidReversesId = (t: TransferInput): boolean =>
+  t.reversesId !== undefined &&
+  (!Number.isSafeInteger(t.reversesId) || t.reversesId <= 0);
+
+type TransferCheck = (transfer: TransferInput) => LedgerError | null;
+
+/** A rule that fails the transfer when either account side trips it. */
+const eitherAccountFails =
+  (
+    code: LedgerError["code"],
+    fails: (a: AccountRef) => boolean,
+  ): TransferCheck =>
+  ({ destination, source }) =>
+    fails(source) || fails(destination) ? { code } : null;
+
+/** Every transfer rule in the order its error is reported. Each rule owns one
+ * error code, so adding a rule cannot change the validation control flow. */
+const transferChecks: readonly TransferCheck[] = [
+  (t) => (t.amount <= 0 ? { code: "non_positive_amount" } : null),
+  (t) => (Number.isInteger(t.amount) ? null : { code: "non_integer_amount" }),
+  (t) =>
+    Number.isInteger(t.amount) && !Number.isSafeInteger(t.amount)
+      ? { code: "unsafe_amount" }
+      : null,
+  (t) => (isInstant(t.occurredAt) ? null : { code: "invalid_occurred_at" }),
+  (t) => (hasInvalidReversesId(t) ? { code: "invalid_reverses_id" } : null),
+  (t) =>
+    sameAccount(t.source, t.destination) ? { code: "self_transfer" } : null,
+  eitherAccountFails("empty_account", isEmptyAccount),
+  eitherAccountFails("reserved_char_in_account", hasReservedChar),
+  (t) => (t.reference ? null : { code: "empty_reference" }),
+  (t) => (t.eventGroup ? null : { code: "empty_event_group" }),
+];
+
+/**
+ * Returns every reason it was rejected, so a caller sees all the problems at
+ * once rather than only the first.
+ *
+ * Each amount must be a SAFE integer, so no single amount loses pennies as a JS
+ * number. Nothing bounds their sum, which {@link allBalances} accumulates as a
+ * plain number. An account part must not carry the reserved key separator.
+ *
+ * Currency is not a ledger concern: a site has one, fixed at setup, so every
+ * transfer shares it.
+ */
+export const validateTransfer = (
+  t: TransferInput,
+): Result<TransferInput, LedgerError[]> => {
+  const errors = compact(transferChecks.map((check) => check(t)));
+  return errors.length > 0
+    ? { error: errors, ok: false }
+    : { ok: true, value: t };
+};
+
+/**
+ * Validate a transfer and throw when it is rejected, naming every error code.
+ * This is the shared boundary guard for write paths that have no structured
+ * error channel (the store's pre-post checks, a manual entry's amount/time
+ * update). `context` prefixes the message so the failing operation is
+ * identifiable.
+ */
+export const assertValidTransfer = (
+  t: TransferInput,
+  context: string,
+): void => {
+  requireSuccess(validateTransfer(t), context);
+};

@@ -1,0 +1,776 @@
+# tickets
+
+A minimal ticket reservation system using Bunny Edge Scripting and libsql.
+
+## Where to find guidance
+
+All repository guidance is in this file or in documents that it links to. Read
+this file and follow its links. Do not search the wider machine for
+instructions, plans, or approval records. If required guidance is absent, ask
+the user for its location.
+
+## Getting Started
+
+Development machines run NixOS. The developer environment is devenv
+(`devenv.nix`), and it provides the pinned Deno and the other tools. Install
+devenv once (`nix profile add nixpkgs#devenv`), then enter the shell:
+
+```bash
+devenv shell
+```
+
+For one command, run it through the shell. Put `--` before a command that
+carries its own flags:
+
+```bash
+devenv shell deno task precommit
+devenv shell -- deno task test --filter "formats date"
+```
+
+To start the shell on every entry to this directory, add the hook to your shell
+(`eval "$(devenv hook bash)"`, or the zsh and fish equivalents), then run
+`devenv allow` once. Do not add a direnv `.envrc`.
+
+All `deno ...` commands in this file assume you are already inside
+`devenv shell`. Non-interactive agents must prefix them with `devenv shell`.
+
+## Runtime Environment
+
+- **Production**: Bunny Edge Scripting (Deno-based runtime on Bunny CDN)
+- **Development and testing**: Deno
+- **Build**: `esbuild` with `platform: "browser"` bundles to a single
+  edge-compatible file
+
+Code must work in both environments.
+
+## Deno Version
+
+This repo pins Deno 2.5.6, the lowest Bunny Edge Scripting runtime version this
+project runs on. `enterShell` in `devenv.nix` refuses to enter when the pinned
+nixpkgs provides anything else:
+
+```bash
+devenv shell -- deno --version
+```
+
+`nixpkgs` and `nixpkgs-deno` are pinned to commits in `devenv.yaml`. Edit the
+SHA there, then run `devenv update`. CI uses the same environment through
+`.github/actions/setup-devenv`. CI jobs that never launch a browser evaluate it
+with `devenv --profile ci shell`.
+
+## stripe-mock
+
+The test harness needs the `stripe-mock` binary at `.bin/stripe-mock`. The
+standard runners (`deno task test`, `deno task test:files`, and `--harness`
+mutation runs) start one on a free local port, so parallel suites do not fight
+over port 12111. The harness downloads a prebuilt release from GitHub. Where
+that download is blocked, build it from source with Go:
+
+```bash
+GOBIN="$PWD/.bin" go install github.com/stripe/stripe-mock@v0.188.0
+```
+
+Pin the version the harness expects (`STRIPE_MOCK_VERSION` in
+`scripts/stripe-mock/install.ts`). Once `.bin/stripe-mock` exists, the harness
+uses it as-is.
+
+## Dependency Install Policy
+
+CI and the container image install dependencies with one command,
+`scripts/ci/deno-install.sh`. The command runs `deno install --frozen` with an
+explicit npm lifecycle-script allowlist.
+
+- `--frozen` rejects a dependency change that did not update `deno.lock`. The
+  install fails instead of resolving a new tree.
+- The allowlist names the npm packages that need lifecycle scripts. It must
+  match the packages `deno.lock` records with `"scripts": true`. When you add
+  an npm dependency with a lifecycle script, name the package in the allowlist
+  in the same change.
+- Keep intentional local dependency updates separate. Run `deno install`
+  without `--frozen` locally to refresh `deno.lock`, and commit the updated
+  lock. CI then installs the committed tree with `--frozen`.
+
+The setup action pins the devenv CLI to a revision of the devenv source, not
+to `nixpkgs#devenv`, so the Nix registry does not move it. To update the CLI,
+choose a newer devenv revision, confirm it reports a version the project
+accepts, and replace the revision in `.github/actions/setup-devenv/action.yml`.
+
+## Preferences
+
+These preferences are defaults, not laws. When the letter of a rule and its
+purpose pull apart, serve the purpose. Say which rule you bent and why.
+
+- **Plan behavior before code**: Follow [PR_WORKFLOW.md](docs/pr-workflow.md) for
+  every non-trivial change. Fill in the behavior contract, challenge it, and get
+  human approval before implementation.
+- **Infrastructure problems are not yours to fix**: If you think you hit an
+  infrastructure problem, stop. Do not fix it. Do not work around it: no probe
+  scripts, no harness changes, no retry loops. Leave your work as it is and
+  wait for a human decision. The infrastructure is:
+  - the local test runner and harness, the coverage tooling, and the pre-commit
+    hook
+  - the save-check follow-ups, devenv, nix, and deno
+  - the CI runners, the network, and the machine
+
+  Report the exact command, the exact error, and why you think it is
+  infrastructure. When `agent-report-infra` is on PATH, run
+  `agent-report-infra "<summary>"` and put the details on stdin. A failure in
+  your own change is still yours to fix.
+
+  Two other rules stop at an infrastructure failure. "A red check is not
+  automatically yours" says to trace a failure and re-run it. When you suspect
+  infrastructure, do not re-run: report it and wait. "Never lose work — commit
+  WIP even if broken" says to commit and push before you pause. When you
+  suspect infrastructure, do not commit or push only to leave the branch
+  clean: keep the work in progress as it is. Do not clean up or discard work
+  either. A failure that the task's own change causes stays yours under both
+  rules.
+- **Once it is built, the code is the authority**: A behavior contract governs
+  work that does not exist yet. When a slice lands, its code and tests are the
+  truth. Check every finding or amendment against the real `src/` and `test/`
+  before you touch the plan. When the built behavior is wrong, fix the code and
+  pin it with a regression test. Amend the contract only when the contract is
+  what is wrong, and change the document and the code in the same commit.
+- **Write technical text in Simplified Technical English**: Documentation,
+  commit messages, pull request descriptions, and developer-facing error
+  messages follow
+  [Simplified Technical English](#simplified-technical-english--how-we-write-documentation).
+  Copy inside the app follows
+  [Simple Language](#simple-language--how-we-talk-to-users).
+- **Use FP methods**: Prefer curried functional utilities from `#fp` over
+  imperative loops (see [FP Imports](#fp-imports)).
+- **Plain language for functional code**: Keep the functional style, but name
+  helpers and write comments in simple domain words, not CS jargon. A helper
+  must explain itself like "Keeps only children that can still be booked for
+  this ticket."
+- **Keep methods flat**: A row of three or more adjacent closing brackets shows
+  three or more levels of nesting in one place. Refactor it, and move each level
+  into a named helper. When the same three methods nest the same way at two or
+  more sites, write one helper for the chain, in the style of
+  [Curried helpers](docs/designing-systems.md#curried-helpers).
+  `deno task check:call-chains` fails every chain of three methods that repeats
+  at two or more sites in `src/`.
+- **Name a thing the way the site names it**: A story, test, or comment calls a
+  thing what its label, message, or column heading calls it. Copy the word a
+  person reads in `src/locales/en/*.json`, never the identifier beside it in
+  `src/`. Keep one word for one thing inside a single document. A `@story:`,
+  `@rule:`, or `@case:` id is a durable identifier and never moves.
+- **Comments describe current code**: Delete comments that compare current code
+  with an old implementation. Git history keeps the old code.
+- **Comments are short**: A comment only adds what the reader cannot see — a
+  why, a constraint, a surprise. Never re-narrate the lines below in prose, and
+  never restate a name. If a comment grows, fix the tangle it explains. The same
+  bar applies to commit messages and PR prose.
+- **Zero code duplication**: See [Code Duplication](#code-duplication).
+- **100% test coverage**: Coverage must be complete and deterministic. A branch
+  that only a spawned subprocess reaches gets a direct in-process unit test.
+- **Never add a coverage exclusion**: The list in
+  `scripts/check-coverage-exclusions/exclusions.ts` only ever shrinks, and
+  the ratchet (`deno task check:coverage-exclusions`) fails on an entry a
+  branch adds. Answer a coverage gap by restructuring the code. See
+  docs/designing-systems.md#readable-by-the-coverage-merge.
+- **Hardest first, no need to ask**: When the only open question is the order to
+  build several things in, build the more difficult one first.
+- **Always the complete version**: Choose the complete, correct version, even
+  when it touches more files than the estimate named.
+- **Feature-complete by default**: Build the whole feature. Stop short only when
+  finishing it adds more branches or more special cases than the honest shape
+  needs.
+- **Unify systems — the answer is yes**: When two systems do almost the same
+  job, find the single abstraction that does both.
+- **Copy the shared shape, not the nearest one**: When a helper already does
+  the job, use it and delete the local copy in the same change. A record form
+  POST uses `createIdEntityHandler` with `formGuard`. A lookup the boundary
+  cannot prove uses `requiredMapValue`. A whole-number form field parses with
+  `parseSignedInt` and names its rule with `validateWholeNumber`. A page opens
+  through `renderAdminPage` or `renderAdminPageSpec` at its own call site, not
+  through a local wrapper. `src/features/admin/built-site-form.ts`,
+  `src/features/admin/images.ts` and `src/ui/templates/fields/modifier.ts` are
+  the shapes to copy.
+- **No alias exports**: Never export a name that only renames an imported
+  method. Expose the underlying helper and let callers use it. A thin wrapper
+  that adds a default, a transformation, or a guard is fine.
+- **No internal compatibility layers**: When you replace an internal API,
+  migrate every caller in the same change and delete the old surface. Keep
+  adapters only at true external boundaries.
+- **Imports name a module one way**: Add an import alias only when it removes 50
+  or more wrapped import lines. Below that bar, keep the module under
+  `#shared/`.
+- **Remove dead code — always the answer**: When code has no production caller,
+  delete it. Never keep it "for symmetry" or "for future use", and never paper
+  over it with a test-only import or a usage-check exemption. An export that
+  only tests use is dead.
+- **Never loosen a check to close a finding**: Fix the code, or argue on the
+  thread that the finding is wrong. A deliberate change to a check is an owner
+  decision, never a side effect of review pressure.
+- **Keep code and test files under ~400 lines**: The aim is 400 lines. The
+  enforced limit is 500. Biome holds a hard 1,000-line ceiling. When your own
+  change adds hundreds of lines, put them in a new file from the start. When a
+  small edit pushes a file slightly over the aim, open an issue that owns the
+  split, or update the one that exists, and leave the file alone.
+  `deno task check:file-lengths` enforces the limit against the accepted list at
+  `scripts/check-file-lengths/over-limit.json`, which only shrinks. When you
+  split, give the new files shorter names that do not repeat the folder's name,
+  and separate pure data-in/data-out logic from the IO shell.
+- **Stay on your task**: Fix only what the task names. Open an issue with the
+  evidence when you notice an unrelated bug, a coverage gap, or a flaky test.
+  Add to the issue that exists when there is one. Carry on with the task. Never
+  fix it in the task's pull request.
+- **Scratch work lives in `.scratch/`**: Put every probe, experiment, throwaway
+  test, and note in `.scratch/` in your checkout. The boss empties it at the
+  start of each job. You can create and delete anything in it without asking.
+  Run a scratch test with `deno task test:files .scratch/<name>.test.ts`.
+  Nothing in `.scratch/` is ever committed. When the task needs an investigation
+  with commits, use a reused scratch branch. Never probe on the pull request
+  branch or in `scripts/`.
+- **No review-bot commands**: Never post `@coderabbitai review` or
+  `@codex review` on a pull request. Every push starts a CodeRabbit review. The
+  maintainer requests any other review.
+- **No shell or runtime bypasses**: A herd worker has no eval tool, and the
+  runtime denies the bypass commands: `deno eval`, a throwaway `deno run -A`
+  script, `bash -c`, `sh -c`, `node -e`, `python -c`, `kill`, and `pkill`. Do
+  not try them. Never reach the same result another way. Use the repo's deno
+  tasks, `git`, `gh`, and plain shell tools. When those are not enough, ask the
+  boss.
+- **A written-down diagnosis is a hypothesis, not a finding**: Re-derive every
+  written diagnosis from the current source before you fix anything.
+- **A finished job closes its issue**: Close an issue in the same change that
+  finishes it. Never leave one open and marked "done". When you find an issue
+  the code already answers, close it with a comment that names the answer.
+- **Stage what you changed, never `git add -A`**: Name the files you meant to
+  touch, and read `git status --short` before you commit.
+- **Judge nothing from a stale base ref**: Run `git fetch origin main` before
+  you read an `origin/main...HEAD` diff or run the mutation gate.
+- **A red check is not automatically yours**: Trace a CI failure far enough to
+  name the cause before you set it aside. Say so once, with evidence, then
+  re-run. Never ignore a failure.
+- **Every bug fix ships with a regression test**: Write the failing test first,
+  confirm it fails for the right reason, then fix and watch it go green. The
+  test must reproduce the real bug.
+- **A branch fixes the defects it introduces**: A review finding about code the
+  branch adds is that branch's work. Fix it and pin it there. An issue is for a
+  defect that is already on main.
+- **Attribute money to its true item at write time**: A money movement lands
+  against its true money item on the day it happens. Treat "we can fix the
+  records up later" as a design smell.
+- **Trust application invariants**: Do not design normal paths around database
+  states the application says are impossible. If an impossible state is
+  observed, raise it and repair the data explicitly.
+- **Do not defend against the impossible**: No fallbacks or catches for failures
+  that need the whole app to be down. Let them throw. Reserve resilience for
+  failures that occur in normal operation.
+- **A loud database failure is enough**: Database writes fail very infrequently.
+  Let the error reach the log in full, and let the admin investigate. Do not
+  build rescue, repair, or compensation paths around a failed write.
+- **Trust request key setup**: Startup validates `DB_ENCRYPTION_KEY`. On every
+  route other than setup, the setup step has already created the owner and the
+  public key. Do not check either key in request code, and do not test states
+  that only corrupt setup can make.
+- **New tables and new columns are a last resort**: Make the fact fit the schema
+  you have. A review that asks for one must name the fact and say why no current
+  column can hold it.
+- **New environment keys and secrets are a last resort**: Each new key must be
+  set by hand on every site in the Bunny dashboard. Prefer a value you can
+  derive, or a setting the site already stores.
+- **One path for one-or-many**: Do not write a "single" path beside a "multiple"
+  one. Model the operation over a collection once, and call it with an array of
+  one. A thin singular wrapper that delegates is fine.
+- **Schema over organic structure**: Model content as data (a typed list of
+  sections, entries, or fields) and render it with one shared function — even
+  for help pages, navigation, and form layouts.
+- **Shared interfaces over branch-per-case**: Model cases as a typed union plus
+  an exhaustive `Record` keyed by it, or as per-entry rules folded over
+  uniformly. A forgotten case must be a compile error, not a silent default.
+- **Malleable software**: Where it is safe, expose stored records directly and
+  give the operator a page to view and edit them. Repairing data must be a
+  first-class operator action.
+- **Never render a dead or forbidden link**: Gate a link on the same condition
+  its target enforces. Show plain text or an indicator when the condition fails.
+  Render a page as each role when you test link visibility.
+- **Operator decides genuine conflicts**: When an action hits a conflict the
+  system cannot resolve, surface it and make the operator choose through a
+  required field. Never auto-pick, and never move money on a guess.
+- **Select only needed columns**: Never `SELECT *` (see
+  [Database Queries](#database-queries)).
+- **SQL table aliases**: Alias tables with the full singular word
+  (`FROM
+  listings AS listing`). When one query reads the same table more than
+  once, give each occurrence a descriptive alias.
+- **Name positional results at the boundary**: Destructure ordered arrays into
+  domain names at the call that creates them. Validate an unguaranteed count
+  before you name the values.
+- **Use types where they remove noise**: Replace repeated inline shapes with a
+  named type when that clarifies a boundary. Do not add a second vocabulary for
+  one concept.
+- **Never lose work — commit WIP even if broken**: Commit and push work in
+  progress before you pause, hand off, or end a turn with a dirty tree. Mark a
+  known-broken checkpoint in the commit message.
+- **Answer every PR review thread you address**: Reply on each thread with the
+  fix and its regression test, or with why it is not actionable. When a valid
+  suggestion is out of scope, open an issue with enough context, then reply with
+  the link.
+- **"Actually broken" outranks "nice in a perfect world"**: A finding earns a
+  fix when it names a concrete failure with real inputs and state. Decline
+  perfect-world work with a short reason, or make it an issue. When consecutive
+  review rounds name no new concrete failure, declare the review converged and
+  hand the decision to a human.
+- **Finish by rewriting the PR name and description**: Make the finished PR name
+  and describe what was actually built, in plain words.
+- **Final check**: Several agents share one machine. Do not run the full
+  precommit or the full coverage run locally. Run the tests for the files you
+  changed with `deno task test:files`, then run these gates:
+  - `deno task lint:ci`
+  - `deno task cpd`
+  - `deno task check:file-lengths`
+  - `deno task check:call-chains`
+  - `deno task check:imports`
+  - `deno task check:comment-ste`
+  - `deno task typecheck`
+  - `deno task check:ste` whenever the change touches Markdown
+
+  When `job-submit` is on PATH, run the tests and any full precommit through
+  it: `job-submit --max <seconds|Nm> -- deno task test:files <file>`. A single
+  test file starts at once. The result arrives as a message.
+  `deno task test:files` does not typecheck, so `deno task typecheck` is in the
+  list. Hosted CI runs the full precommit and decides. The pre-commit hook
+  still runs the full precommit. When the tests and the gates above pass,
+  commit with `--no-verify`, and put
+  `light gates passed; full precommit left to hosted CI` in the message. A
+  later pull request makes the hook light.
+
+## Stacked Pull Requests
+
+Manage stacked pull requests with the official `gh stack` extension. The bottom
+branch targets `main`, and every higher branch targets the branch directly below
+it.
+
+- Keep a stack at three to seven pull requests. Split a larger job into several
+  stacks.
+- Every layer must be independently green, reviewable, and useful on its own.
+  Delete the implementation a layer replaces in that same layer.
+- Review and merge from the bottom up. After a lower layer changes or merges,
+  run `gh stack rebase` or `gh stack sync`.
+- While a layer sits above another open layer, run targeted mutation tests for
+  its source. Run the branch-level `precommit:mutation` gate after the lower
+  layers merge and the layer reaches the bottom position.
+
+## Offensive Programming — Never Suppress Errors
+
+Fail loudly and immediately. Never suppress, default away, or paper over an
+error.
+
+- **Let errors propagate.** Do not wrap code in `try`/`catch` for extra safety.
+- **A missing expected field from structured external data is a hard no to
+  default away.** Validate external data at the boundary with a valibot schema,
+  or check and throw the way `parseMessageId` does in
+  `src/shared/sms/gateway.ts`.
+- **Do not use `??` / `||` / `?.` to make a missing value someone else's
+  problem.** These operators are for genuinely optional values only. An
+  unchecked `!` or `as` cast claims a shape that nothing checked. Parse, do not
+  pretend.
+- **No empty `catch`, no catch-and-continue.** Catch only at the narrowest point
+  that has a real recovery path, and re-raise otherwise. A `catch {}` is
+  acceptable only when the fallback is the documented behavior, stated in a
+  comment.
+- **A function that looks something up must throw when it cannot.** Never return
+  `null`, `""`, `0`, or `[]` as a "not found" stand-in. When "not found" is a
+  genuine documented outcome, name it with the `*OrNull` suffix and a `| null`
+  return type, and comment why the absence is expected.
+- **Validate once at the boundary, then trust it.** Check the facts a record
+  must satisfy where the record enters: a load, a parse, or a join. Give a
+  renderer complete rows, not a map and a key. A lookup with a hand-written
+  message in render code shows a missing boundary. Pair the data there, or give
+  the shape the guarantee.
+
+## Simple Language — How We Talk To Users
+
+Everything the system says to a person — error messages, hints, buttons,
+warnings, empty states — must read at roughly **Simple Wikipedia** level. Say
+everything the reader needs, in the shortest plain words.
+
+All user-facing text lives in the message catalog at `src/locales/en/*.json`,
+reached through `t("key")`. Changing what a user reads is a catalog edit, not a
+template edit. Technical text follows
+[Simplified Technical English](#simplified-technical-english--how-we-write-documentation)
+instead.
+
+- **One idea per sentence.** Split a sentence that joins two complete ideas.
+- **Everyday words.** Prefer the word a ten-year-old uses.
+- **Front-load the action.** "Type the listing name to confirm."
+- **Active voice, addressed to "you".** "You must accept the terms to continue."
+- **No implementation jargon.** Name a thing by what it does ("a one-way code"),
+  not by how it is built.
+- **A term the user configured is their own word.** If the person reading set
+  the term up themselves (a "webhook", a "listing"), use that word. A vaguer
+  paraphrase of their own setting reads worse than the word they chose.
+- **Concise, not lossy.** Cut filler, never facts.
+- **Errors** state the problem and the fix, as a full sentence. A
+  confirm-by-typing error is always
+  `"<Thing> name does not match. Please type the exact name to confirm."`
+- **Warnings** before a destructive action open with `Warning:`.
+- **Success messages** are short, past-tense confirmations.
+- **Sentence case, not Title Case.** Align older keys when you touch them.
+- **End full sentences with a full stop.** Never a label, button, or header.
+
+`deno task check:copy` enforces the mechanical rules. The judgement is yours on
+every copy change.
+
+## Simplified Technical English — How We Write Documentation
+
+Technical text follows ASD-STE100 Simplified Technical English. It covers
+repository Markdown, procedures, release notes, reports, pull request titles and
+descriptions, commit messages, `throw new Error(...)` messages, log lines,
+`scripts/` and `cli/` output, and code comments. Copy inside the app follows
+[Simple Language](#simple-language--how-we-talk-to-users) instead.
+
+- Classify the passage first. Procedural text uses the imperative, one
+  instruction per sentence, 20 words maximum per sentence. Descriptive text uses
+  simple tenses, 25 words maximum per sentence.
+- Use only these verb forms: infinitive, imperative, simple present, simple
+  past, simple future, and the past participle as an adjective. No present
+  perfect. No "-ing" verb forms.
+- Write in the active voice.
+- Use only `can`, `will`, and `must` as modals. Write "must" when the thing is
+  required. Delete the word when the thing is optional.
+- Keep the grammar complete. No contractions. No semicolons: write two
+  sentences.
+- Keep the word "that". Put the condition before the command: "If the test
+  fails, read the log."
+- Use a vertical list for more than two items or steps.
+- One word carries one meaning through a whole document.
+- Limit a noun chain to three words. Break a longer chain with prepositions.
+- Delete a word that carries no fact (`simply`, `seamlessly`, `leverage`, "in
+  order to").
+- Use British spelling. Code, identifiers, file names, and quoted error messages
+  keep their own spelling.
+- Write the command or condition of a warning first, and the risk second.
+- Code blocks, identifiers, CLI commands, file paths, and quoted error messages
+  stay exactly as they are.
+
+`deno task check:ste` enforces the mechanical patterns against per-document
+baselines that only fall. Pass `--update` after a fix. The judgement is still
+yours on every change.
+
+## Designing New Systems
+
+Before you design a new feature, read
+[Designing new systems](docs/designing-systems.md) and the exemplar it names,
+then copy the exemplar's shape. The qualities it demands: schema-tized, checked
+forwards and backwards, pure and functional, modularised, well-named, built on
+valibot and the standard libraries, curried, built for cold starts, efficient
+SQL, decrypted-late PII.
+
+## FP Imports
+
+```typescript
+import { filter, map, pipe } from "#fp";
+```
+
+The example above names three of the helpers. The full list is the export list
+in [src/fp.ts](src/fp.ts) — `flatMap`, `compact`, `reduce`, `unique`, and the
+rest. Read each definition before you use it or hand-roll a collection step.
+
+For an operation that `#fp` does not cover, use `@std/collections` directly,
+and wrap it in a curried `#fp` adapter once more than one caller needs it.
+`@std/collections` has no `groupBy` export. Use native `Object.groupBy` /
+`Map.groupBy`, or `#fp`'s `groupToMap`. Use `for...of` instead of `forEach`,
+and `reduce` with a mutable accumulator instead of an array spread. Currying in
+domain files uses `#shared/fp-bind.ts`'s `bindFirst` over a flat named function
+- see
+[Readable by the coverage merge](docs/designing-systems.md#readable-by-the-coverage-merge)
+for why.
+
+## Code Duplication
+
+`deno task cpd` runs jscpd, and every scan fails on a clone that its committed
+baseline does not carry. The strict scans ignore names, literals, and
+annotations, so a renamed copy is a clone. The baselines only shrink. A flagged
+pair is one merge:
+
+- Write the helper, or give the shared tail its parameter. Two functions that
+  differ only in a value, a path, a field name, a message, or a callback are one
+  function without its parameter yet.
+- Never restructure code so the matcher stops matching while the two parallel
+  implementations stay standing.
+- After a dedup, search for the other places that now fold into the new helper.
+- The one honest exception is a shared signature with nothing behind it: no
+  shared call at all. Give that signature a named type instead.
+- The renamed scan holds accepted matches in `.jscpd.renamed-baseline.json`. Add
+  a pair only after you try the curry, with `deno task cpd:renamed --update`.
+- The strict scans hold the clones that existed when they started to count
+  renamed copies, in `.jscpd.baseline.json`, `.jscpd.test-baseline.json`,
+  `.jscpd.helpers-baseline.json`, and `.jscpd.support-baseline.json`. After a
+  merge, remove the fixed clones with
+  `deno run -A scripts/cpd.ts --config <config> --baseline <baseline> --update`.
+  Never add a clone to these baselines.
+- After each scan, `deno task cpd` names the worst duplication: the code in the
+  most places, then the code with the most tokens. Merge that one first.
+- Import and re-export statements are a sanctioned repeat. The
+  `ignorePattern` list in each config skips them, so do not add ignore markers
+  around imports.
+- A declared list of strings is the other sanctioned repeat. The strict scans
+  ignore literals, so two long word lists match. Wrap the whole declaration in
+  `/* jscpd:ignore-start -- a list of strings, not code */` and
+  `/* jscpd:ignore-end */`. Wrap only a declaration that holds nothing but
+  strings. Never wrap code, SQL text, or a list inside a call.
+
+`docs/test-duplication.md` measures the remaining steps. Read its counts as work
+to do.
+
+## Database Queries
+
+- Prefer explicit, narrow column lists. Never `SELECT *`.
+- A whole-table read is only for an admin collection page, and even then only
+  the columns the page displays. Everything else is bounded by id, by key, or
+  with a `WHERE`/`LIMIT`.
+- Full-row reads are the exceptions: an entity cache that also backs
+  single-record reads (`getAllListings`), full-table backup and restore, and
+  `table.read.one` / `read.many` in `table-reader.ts`. Outside these, a caller
+  that needs many columns lists them explicitly.
+
+### Transactions and Batches
+
+Use the helpers in `src/shared/db/client.ts` rather than `getDb().batch` or
+`getDb().transaction` directly, so query logging and cache invalidation stay
+automatic.
+
+- **Batch** — multiple statements, no logic between them, and no result feeds a
+  later statement. Use `executeBatch`, `executeBatchWithResults`, `queryBatch`,
+  or `queryBatchPrimary`. One statement is not a batch: use `queryOnePrimary` or
+  `queryAllPrimary`.
+- **Interactive transaction** — a later statement depends on an earlier result,
+  or a guard must abort and undo everything. `withTransaction` hands the
+  callback a `TxScope`. Keep the work inside it tight.
+
+## Scripts
+
+- `agent-diagnose` — read-only diagnostics for processes and check states (see
+  [Precommit status records](docs/precommit-status.md))
+- `deno task start` — run the server
+- `deno task dev` — run the server with `--watch`. Static assets build once at
+  the start. The dev database is the gitignored `local.db` beside its `.db-key`.
+  `:memory:` is not a valid dev URL
+- `deno task serve` — the bare server command that `start` and `dev` call
+- `deno task test` — run the full suite. Pass `--filter "<test name>"` to run
+  the tests the name matches (see the filter rules below)
+- `deno task test:coverage` — run the full suite with coverage
+- `deno task test:files <file>...` — run only the given files with the full
+  runner's setup. Arguments go through to `deno test`, so Feature files work.
+  The runner takes `--filter` for itself and prunes by test name
+- `deno task cov:files <file>... [--only <part>]` — same setup as `test:files`,
+  then print the lines and branches this run left uncovered
+- `deno task specs` — run every Cucumber Feature. Reports land under `reports/`
+- `deno task specs:check` — parse and validate every Feature
+- `deno task specs:files <feature>... [--tags <expression>]` — run selected
+  Features
+- `deno task lint` — format and lint code with Biome
+  (`check --write
+  --unsafe`). Format through this task. Fixable findings —
+  including unsafe-fix ones like unused imports — self-heal here instead of
+  failing. Warn and info findings are left to the strict `lint:ci` gate
+- `deno task lint:ci` — the strict read-only lint that precommit runs
+- `deno task build:edge` — build for Bunny Edge deployment
+- `deno task check:file-lengths` — the 500-line limit over every source tree,
+  against the accepted list that only shrinks. Pass `--update` after a split.
+  The update refuses a rise. The 400-line aim is policy, not a gate: a file
+  slightly over it owes a splitting issue
+- `deno task check:call-chains` — fail every chain of three or more methods
+  that repeats at two or more sites in `src/`. A finding asks for one helper in
+  place of the chain. Nothing is accepted
+- `deno task check:test-quality` — the weak-assertion gate: fails when a
+  test file the change touches carries a weak assertion, added or
+  pre-existing, against the merge base on `origin/main`
+- `deno task check:presence-assertions` — the `toBeDefined()` block: holds
+  every test file to its recorded count in
+  `scripts/check-presence-assertions/registry.json`, and the count only
+  falls. Assert the value, shape, or invariant instead. Pass `--update`
+  after a fix. The update refuses a rise
+- `deno task check:ste` — mechanical STE rules over the Markdown, against
+  baselines that only fall. Pass `--update` after a fix
+- `deno task check:merged-tree <pr-number | branch> [base]` — trial-merge the
+  head into the base in a throwaway worktree. It runs typecheck and the test
+  suite on the merged tree, then removes the worktree. The boss runs it
+  before a pull request is ready. The head CI and this check must both pass
+- `deno task check:required-checks` — fail when the merge queue's required
+  status checks in repository Settings no longer match the manifest at
+  `scripts/required-checks/checks.json`. The manifest is the reviewable
+  record of the gate (issue #2671).
+- `deno task contract:diff [base]` — print the semantic drift of this
+  branch's declared contracts (machine moves, money flags, and declared
+  moves tables) against `base`,
+  the commit this branch and `origin/main` share by default. The task fetches
+  the history it needs. An explicit `base` is read as the checkout holds it.
+  Run `git fetch origin main` first for a current explicit base. Drift is a
+  report, not a gate: paste it in the pull request
+  description when the branch touches a machine spec
+- `deno task check:tla` — check maintained TLA registration, model/helper roles,
+  control declarations, and source-context boundaries without an ignore list
+- `deno task verify:models` — check each registered model's initial safety and
+  unrestricted inductive step, then require a counterexample and trace for each
+  declared negative control. Devenv supplies pinned Apalache and Java. CI and
+  precommit use the same task. See the
+  [model verification guide](docs/model-verification.md) before you add or review
+  a model. It defines the evidence boundaries and author procedure
+- `deno task check:effects` — hold the pure core to the effect table: a
+  module with the `// effects: pure` line must hold no import path, static
+  or dynamic, to a module that opens the database, the network, or the
+  wall clock. The finding names the import chain, and the fix is to split
+  the IO shell out or remove the line
+- `deno task suite:production` — run the production-shape checks as one
+  scheduled suite, separate from `deno task test`: the edge-bundle boot
+  smoke, the backup and restore drills, the concurrent-reservation race,
+  webhook replay and idempotency, and a `deno audit --level=critical`
+  security report (issue #2300).
+- `deno task grade:code [<file-or-dir> ...] [--csv <path>] [--no-jev]` — score
+  source files against these rules. Targets can include TLA files under
+  `verification/`, that directory, or mixed source paths. With no target, it
+  grades `src/` only. `--no-jev` runs mechanical checks without a JEV request.
+  Grades and JEV are advisory, not proof or a gate
+- `deno task precommit` — all checks (typecheck, lint, tests)
+- `deno task precommit:mutation` — the branch mutation gate: every `src/` file
+  this branch changed, 100% kill rate (see
+  [Mutation Testing](#mutation-testing))
+- `deno task mutation <source-glob> <test-glob>` — mutation-test a module on
+  demand (see [Mutation Testing](#mutation-testing))
+
+## Running Individual Test Files
+
+Do not use `deno task test --filter` to debug one test. It loads the entire
+suite. Use `deno task test:files` instead. It runs only the files you pass,
+builds the static assets when they changed, and starts stripe-mock:
+
+```bash
+deno task test:files test/shared/dates.test.ts
+deno task test:files test/shared/dates.test.ts --filter "formats date"
+deno task test:files specs/payments/capacity-after-payment.feature
+```
+
+A `--filter` value matches test names, not only file names. The rules:
+
+- A plain substring matches every test whose name carries it. A nested `it`
+  name matches, so `--filter "formats date"` runs that one test.
+- `/pattern/` matches as a regular expression, for example
+  `--filter "/formats date (and|or) time/"`.
+- A name that matches a `describe` runs that whole group, hooks included.
+- When nothing matches, the run exits non-zero with
+  `No test matched --filter <value>.` A zero-test run is never a pass.
+- A filtered run selects direct Deno tests. It does not run the Cucumber
+  Features.
+
+Both runners skip the asset build when nothing it reads has changed.
+
+For a pure unit test that imports neither the app nor Stripe, run `deno test`
+directly on the file. Always keep `--preload ./test/test-utils/preload.ts`.
+Without it, every `t()` call throws. For a test that needs stripe-mock, start
+the mock first and set the port:
+
+```bash
+deno test --no-check --allow-all --preload ./test/test-utils/preload.ts test/shared/dates.test.ts
+STRIPE_MOCK_HOST=localhost STRIPE_MOCK_PORT=12111 deno test --no-check --allow-all --preload ./test/test-utils/preload.ts test/scripts/stripe-mock/ports.test.ts
+```
+
+## Environment Variables
+
+Environment variables are configured as **Bunny native secrets** in the Bunny
+Edge Scripting dashboard. They are read at runtime via `process.env`. Three are
+required for every site: `DB_URL` (database URL), `DB_TOKEN` (database auth
+token), and `DB_ENCRYPTION_KEY` (32-byte base64 key). A new variable is a last
+resort, because each one must be set by hand on every site (see
+[Preferences](#preferences)).
+
+Every optional variable is documented in
+[Environment variables](docs/env-vars.md).
+
+## Test Framework
+
+Use helpers from `#test-utils` instead of defining local ones. Assert several
+fragments of one text with one `expectIncludesAll(text, [...])` call, not with a
+run of `assertStringIncludes` calls.
+
+### Cucumber Acceptance Specifications
+
+Cucumber owns user journeys and observable business rules. Direct Deno tests own
+pure logic, technical contracts, and everything a story cannot prove. A Cucumber
+journey never supplies the only coverage of a production line or branch. See
+[E2E_TESTS.md](docs/e2e-tests.md) for the full rules.
+
+A test that moves into a story is a replacement. Build the old test's claim list
+from `git diff "$base" HEAD -- "$file"` and `git show "$base:$file"`, never from
+the new file. Every claim lands in the story, in a direct test you keep, or in a
+drop you state out loud.
+
+## Test Quality Standards
+
+- Prefer assertions that fail under realistic mutants: exact values, object
+  shape, persisted rows. Avoid `toBeTruthy()`, compound booleans, and
+  presence-only checks. Run `deno task test:quality-audit` when you bulk-add
+  tests.
+- The weak-assertion gate (`deno task check:test-quality`) fails when a test
+  file the change touches carries a weak assertion, added or pre-existing.
+  Fix every finding in a file you touch. A finding in a file you do not touch
+  stays informational.
+- `toBeDefined()` is blocked outright: `deno task check:presence-assertions`
+  holds every test file to its recorded count in
+  `scripts/check-presence-assertions/registry.json`, and the count only
+  falls. Assert the value, shape, or invariant instead. `toBeUndefined()`
+  stays allowed where the code documents an absent value.
+- For critical flows, cover negative paths, idempotency, concurrency, and
+  metamorphic cases: webhook replay does not double-credit, capacity cannot go
+  below zero, role downgrades remove access, PII stays encrypted or absent from
+  responses.
+- A test that reserves a real resource — a port, a lock file, a fixed path —
+  shares it with every parallel suite. Make the test tell a stolen resource from
+  its own (`retryWhilePortTaken`), or remove the sharing.
+
+### Mutation Testing
+
+`deno task mutation` mutates operators in the source and checks whether the
+tests fail. A mutant the tests still pass on is a real gap. How the runner works
+is in [Mutation testing](docs/mutation-testing.md).
+
+```bash
+deno task mutation src/shared/dates.ts test/shared/dates.test.ts
+deno task mutation 'src/shared/forms/definition.ts' 'test/shared/forms/definition/*.test.ts' --exhaustive
+```
+
+The tool is targeted: run it on the module you harden. Time-box it. A manual run
+must finish in about ten minutes. When a run needs longer, stop it, and rely on
+the direct tests around the method you changed. A small edit owes those tests,
+not a mutation run, and a review that asks for more gets that answer.
+
+Survivors on a file you touch are yours to fix, even on lines you did not
+change. Write the assertion that kills the mutant, or record it in
+`scripts/mutation/equivalent-mutants/` with a proof that no input can
+distinguish it.
+
+`deno task precommit:mutation` is the branch gate. Run it before you merge a
+branch that changes `src/` files.
+
+The runner stops a test batch that outlives the baseline by two orders of
+magnitude. The limit is 100 times the measured baseline, with a floor of 60
+seconds. The limit never drops below the baseline. Otherwise half the run
+deadline caps it. A batch past the limit is a frozen loop, not a verdict: the
+run stops, names the mutant and the limit, and scores nothing. No mutant is
+judged by a clock. A clock can only stop a run that a loop freeze already broke.
+
+### Fast Tests
+
+The suite prints each test slower than 500ms after every run. Treat entries as
+regressions to fix.
+
+- The full runner shares isolates between test files. Never register a global
+  BDD hook at module level, and never rely on a virgin isolate: reset the state
+  you change, and pin what you assert on. A file that needs its own isolate
+  carries `// test-groups: run-alone`. `deno task test:files` never groups.
+  `TICKETS_TEST_UNGROUPED=1 deno task test` runs every file in its own isolate
+  to rule grouping out.
+- Never run repo tooling as a subprocess inside a test.
+- Never sleep for real. Wrap retry paths in `withVirtualBackoff` from
+  `#test-utils`.
+- Render once, assert many: use `cachedAdminPage(path)` for a page in its
+  default fixture state.
+- Seed volume with a batch, not a loop (`seedFillerAttendees`).
+- Shard inherently heavy suites across workers
+  (`test/integration/db/migration-restore/`).
+- Keep heavy SDKs out of module load. Import them dynamically on first use
+  (`stripe.ts`, `sentry.ts`).

@@ -1,0 +1,44 @@
+/**
+ * A labelled masked textarea for a sensitive credential (cert/key/PEM).
+ *
+ * Used by the Apple Wallet and Google Wallet settings forms to render their
+ * `-----BEGIN ...-----` blocks. When the field is already configured, the
+ * textarea body shows the mask sentinel placeholder rather than the stored
+ * (encrypted) value. Otherwise empty.
+ */
+
+import { MASK_SENTINEL } from "#db/settings/mask.ts";
+import { t } from "#i18n";
+import { MAX_TEXTAREA_LENGTH } from "#shared/limits.ts";
+
+export type MaskedTextareaProps = {
+  /** i18n key for the field label. */
+  labelKey: string;
+  /** Form field name submitted with the textarea. */
+  name: string;
+  /** Placeholder shown when the field is unconfigured. */
+  placeholder: string;
+  /** Whether the field is already configured (renders the mask sentinel). */
+  configured: boolean;
+  maxlength?: number | undefined;
+};
+
+export const MaskedTextarea = ({
+  labelKey,
+  name,
+  placeholder,
+  configured,
+  maxlength = MAX_TEXTAREA_LENGTH,
+}: MaskedTextareaProps): JSX.Element => (
+  <label>
+    {t(labelKey)}
+    <textarea
+      maxlength={maxlength}
+      name={name}
+      placeholder={placeholder}
+      rows={4}
+    >
+      {configured ? MASK_SENTINEL : ""}
+    </textarea>
+  </label>
+);

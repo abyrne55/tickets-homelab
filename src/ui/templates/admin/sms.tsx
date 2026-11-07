@@ -1,0 +1,135 @@
+/**
+ * Admin SMS page — queue summary plus, when an attendee is targeted, a compose
+ * form and the conversation history.
+ */
+
+import { t } from "#i18n";
+import { Raw } from "#jsx/jsx-runtime.ts";
+import { formatDatetimeShort } from "#shared/dates.ts";
+import { SMS_MESSAGE_MAX_LENGTH } from "#shared/sms/message-limit.ts";
+import type { TableColumn } from "#shared/tables/column.ts";
+import { defineTable } from "#shared/tables/definition.ts";
+import { renderAdminPageSpec } from "#templates/admin/admin-page-spec.tsx";
+import { GuideFooter } from "#templates/components/actions.tsx";
+import { SectionFieldset } from "#templates/components/aggregate-sections.tsx";
+import { SaveForm } from "#templates/components/save-form.tsx";
+import { renderTable } from "#templates/components/table.tsx";
+import { translatedTableColumn } from "#templates/components/translated-table-column.ts";
+import type { AdminSession, Attendee, ListingWithCount } from "#types";
+
+/** A text-message activity-log entry, shown as conversation history. */
+export type SmsHistoryItem = {
+  created: string;
+  message: string;
+};
+
+type SmsPageOptions = {
+  configured: boolean;
+  queueCount: number;
+  flash: { success?: string | undefined; error?: string | undefined };
+  target?: { attendee: Attendee; listing: ListingWithCount };
+  history: SmsHistoryItem[];
+};
+
+const historyColumns: readonly TableColumn<SmsHistoryItem>[] = [
+  translatedTableColumn("when", "sms.contact.col_when", (item) =>
+    formatDatetimeShort(item.created),
+  ),
+  translatedTableColumn(
+    "message",
+    "sms.contact.col_message",
+    (item) => item.message,
+  ),
+];
+
+const smsHistoryTable = defineTable(historyColumns);
+
+const historyTable = (history: SmsHistoryItem[]): string =>
+  history.length === 0
+    ? `<p>${t("sms.contact.no_messages")}</p>`
+    : String(renderTable(smsHistoryTable, history));
+
+const ComposeForm = ({
+  attendee,
+  listing,
+  configured,
+  history,
+}: {
+  attendee: Attendee;
+  listing: ListingWithCount;
+  configured: boolean;
+  history: SmsHistoryItem[];
+}): string =>
+  String(
+    <>
+      <p>
+        <a href={`/admin/attendees/${attendee.id}`}>{t("sms.contact.back")}</a>
+      </p>
+
+      <div class="prose">
+        <h2>{t("sms.contact.heading", { name: attendee.name })}</h2>
+        <p>
+          <strong>{t("sms.contact.phone_label")}</strong>{" "}
+          {attendee.phone || t("sms.contact.no_phone")}
+        </p>
+      </div>
+
+      {!configured && <Raw html={t("sms.contact.not_configured")} />}
+
+      {attendee.phone && configured && (
+        <SaveForm
+          action="/admin/sms"
+          submitIcon="check"
+          submitLabel={t("sms.contact.send")}
+        >
+          <input name="listing" type="hidden" value={String(listing.id)} />
+          <input name="attendee" type="hidden" value={String(attendee.id)} />
+          <SectionFieldset
+            className="listing-section"
+            legend={t("sms.contact.compose_heading")}
+          >
+            <label for="sms-message">{t("sms.contact.message_label")}</label>
+            <textarea
+              id="sms-message"
+              maxlength={SMS_MESSAGE_MAX_LENGTH}
+              name="message"
+              required
+              rows="4"
+            />
+          </SectionFieldset>
+        </SaveForm>
+      )}
+
+      <h3>{t("sms.contact.history_heading")}</h3>
+      <Raw html={historyTable(history)} />
+    </>,
+  );
+
+export const smsPage = (session: AdminSession, opts: SmsPageOptions): string =>
+  renderAdminPageSpec({
+    active: "/admin/",
+    body: (
+      <>
+        <div class="prose">
+          <p>{t("sms.queue.awaiting", { count: opts.queueCount })}</p>
+        </div>
+
+        {opts.target && (
+          <Raw
+            html={ComposeForm({
+              attendee: opts.target.attendee,
+              configured: opts.configured,
+              history: opts.history,
+              listing: opts.target.listing,
+            })}
+          />
+        )}
+        <GuideFooter href="/admin/guide#sms">{t("sms.guide_link")}</GuideFooter>
+      </>
+    ),
+    flash: { error: opts.flash.error, success: opts.flash.success },
+    session,
+    title: opts.target
+      ? t("sms.contact.title", { name: opts.target.attendee.name })
+      : t("sms.page.title"),
+  });

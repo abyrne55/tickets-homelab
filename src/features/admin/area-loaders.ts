@@ -1,0 +1,348 @@
+import { ADMIN_API_MESSAGE_GROUPS } from "#locales/groups.ts";
+import { GUIDE_MESSAGE_GROUPS } from "#locales/manifest.ts";
+import type { MessageGroup } from "#locales/message-groups.generated.ts";
+import type { AdminAreaId } from "#shared/admin-surface/ids.ts";
+import { bindFirst } from "#shared/fp-bind.ts";
+
+type HandlerMap = Record<string, (...args: never[]) => unknown>;
+
+/** One admin area's lazy routes and message ownership. */
+export type AdminAreaLoader = {
+  load: () => Promise<HandlerMap>;
+  messageGroupsFor: (segment: string) => readonly MessageGroup[];
+};
+
+const sameMessageGroups =
+  (messageGroups: readonly MessageGroup[]) =>
+  (_segment: string): readonly MessageGroup[] =>
+    messageGroups;
+
+/** The groups `groups` declares for `segment`, failing loudly on a segment
+ * nobody declared. */
+const messageGroupsOf = (
+  groups: Readonly<Record<string, readonly MessageGroup[]>>,
+  segment: string,
+): readonly MessageGroup[] => {
+  if (!Object.hasOwn(groups, segment)) {
+    throw new Error(
+      `No message groups declared for admin segment "${segment}"`,
+    );
+  }
+  return groups[segment]!;
+};
+
+const messageGroupsBySegment = bindFirst(messageGroupsOf);
+
+/** Declare an area without importing its routes until that area is requested. */
+const area = <M extends { adminHandlers: HandlerMap }>(
+  load: () => Promise<M>,
+  messageGroups: readonly MessageGroup[] = [],
+): AdminAreaLoader => ({
+  load: async () => (await load()).adminHandlers,
+  messageGroupsFor: sameMessageGroups(messageGroups),
+});
+
+const guideMessageGroups = messageGroupsBySegment({
+  formatting: ["guide-formatting"],
+  // "settings" is here because the email-templates section renders the
+  // variable reference the settings form also shows.
+  guide: [
+    "attendees",
+    "builder",
+    "listings-table",
+    "settings",
+    ...GUIDE_MESSAGE_GROUPS,
+  ],
+});
+
+// Import specifiers stay literal so esbuild can bundle every target.
+export const ADMIN_AREA_LOADERS: Record<AdminAreaId, AdminAreaLoader> = {
+  apiKeys: area(
+    () => import("#routes/admin/api-keys.ts"),
+    [...ADMIN_API_MESSAGE_GROUPS, "users"],
+  ),
+  attendeeNotes: area(
+    () => import("#routes/admin/attendee-notes.ts"),
+    [
+      "address-lookup",
+      "attendees",
+      "entity-pages",
+      "ledger",
+      "logistics",
+      "notes",
+      "validation",
+    ],
+  ),
+  attendeeRefunds: area(
+    () => import("#routes/admin/attendee-refunds.ts"),
+    ["attendees", "entity-pages", "ledger", "payment", "validation"],
+  ),
+  attendees: area(
+    () => import("#routes/admin/attendees.ts"),
+    [
+      "address-lookup",
+      "attendees",
+      "capacity",
+      "csv",
+      "date-picker",
+      "detail-rows",
+      "entity-pages",
+      "invoices",
+      "ledger",
+      "listing-qr",
+      "listings-table",
+      "logistics",
+      "modifiers",
+      "notes",
+      "payment",
+      "questions",
+      "statuses",
+      "validation",
+    ],
+  ),
+  attributes: area(
+    () => import("#routes/admin/attributes.ts"),
+    ["attributes", "entity-pages", "validation"],
+  ),
+  auth: area(
+    () => import("#routes/admin/auth.ts"),
+    ["login", "users", "validation"],
+  ),
+  backup: area(
+    () => import("#routes/admin/backup.ts"),
+    ["backup", "validation"],
+  ),
+  builder: area(
+    () => import("#routes/admin/builder.ts"),
+    ["builder", "built-sites", "validation"],
+  ),
+  builtSites: area(
+    () => import("#routes/admin/built-sites.ts"),
+    ["builder", "built-sites", "entity-pages", "validation"],
+  ),
+  bulkActions: area(
+    () => import("#routes/admin/bulk-actions.ts"),
+    ["bulk-actions", "groups", "listings-table", "validation"],
+  ),
+  bulkEmail: area(
+    () => import("#routes/admin/bulk-email.ts"),
+    ["attendees", "bulk-email", "validation"],
+  ),
+  calendar: area(
+    () => import("#routes/admin/calendar.ts"),
+    [
+      "attendees",
+      "availability",
+      "calendar",
+      "capacity",
+      "csv",
+      "date-picker",
+      "detail-rows",
+    ],
+  ),
+  catalogTransfer: area(
+    () => import("#routes/admin/catalog-transfer/routes.ts"),
+    // An import runs the same listing and group validators the admin forms do,
+    // so it needs their refusal messages too.
+    ["catalog-transfer", "groups", "listings-table", "validation"],
+  ),
+  contactHistory: area(
+    () => import("#routes/admin/contact-history.ts"),
+    ["attendees", "detail-rows", "entity-pages", "privacy"],
+  ),
+  dashboard: area(
+    () => import("#routes/admin/dashboard.ts"),
+    [
+      "attendees",
+      "attributes",
+      "availability",
+      "capacity",
+      "dashboard",
+      "holidays",
+      "login",
+      "listings-table",
+      "servicing",
+    ],
+  ),
+  debug: area(() => import("#routes/admin/debug.ts"), ["debug", "settings"]),
+  deliveries: area(
+    () => import("#routes/admin/deliveries.ts"),
+    ["attendees", "capacity", "date-picker", "deliveries", "logistics"],
+  ),
+  groups: area(
+    () => import("#routes/admin/groups.ts"),
+    [
+      "attendees",
+      "capacity",
+      "detail-rows",
+      "entity-pages",
+      "groups",
+      "images",
+      "listings-table",
+      "modifiers",
+      "notes",
+      "questions",
+      "validation",
+    ],
+  ),
+  guide: {
+    load: async () => (await import("#routes/admin/guide.ts")).adminHandlers,
+    messageGroupsFor: guideMessageGroups,
+  },
+  holidays: area(
+    () => import("#routes/admin/holidays.ts"),
+    ["entity-pages", "holidays", "validation"],
+  ),
+  images: area(
+    () => import("#routes/admin/images.ts"),
+    ["entity-pages", "images", "validation"],
+  ),
+  invoices: area(
+    () => import("#routes/admin/invoices.ts"),
+    ["invoices", "validation"],
+  ),
+  ledger: area(
+    () => import("#routes/admin/ledger.ts"),
+    [
+      "attendees",
+      "date-picker",
+      "entity-pages",
+      "ledger",
+      "listings-table",
+      "modifiers",
+      "servicing",
+      "validation",
+    ],
+  ),
+  listingQr: area(
+    () => import("#routes/admin/listing-qr.ts"),
+    ["listing-qr", "listings-table", "tickets"],
+  ),
+  listings: area(
+    () => import("#routes/admin/listings.ts"),
+    [
+      "attendees",
+      "attributes",
+      "availability",
+      "built-sites",
+      "capacity",
+      "csv",
+      "date-picker",
+      "deliveries",
+      "detail-rows",
+      "entity-pages",
+      "groups",
+      "images",
+      "listing-defaults",
+      "listing-qr",
+      "listings-table",
+      "logistics",
+      "modifiers",
+      "notes",
+      "questions",
+      "servicing",
+      "validation",
+    ],
+  ),
+  markdownPreview: area(() => import("#routes/admin/markdown-preview.ts")),
+  migrate: area(() => import("#routes/admin/migrate.ts"), ["migrate"]),
+  modifiers: area(
+    () => import("#routes/admin/modifiers.ts"),
+    [
+      "date-picker",
+      "entity-pages",
+      "groups",
+      "ledger",
+      "listings-table",
+      "modifiers",
+      "validation",
+    ],
+  ),
+  news: area(
+    () => import("#routes/admin/news.ts"),
+    ["entity-pages", "images", "news", "validation"],
+  ),
+  privacy: area(
+    () => import("#routes/admin/privacy.ts"),
+    ["attendees", "privacy"],
+  ),
+  questions: area(
+    () => import("#routes/admin/questions.ts"),
+    ["entity-pages", "modifiers", "notes", "questions", "validation"],
+  ),
+  // The scanner serves three segments: the doors list, the listing page's
+  // scanner, and the group page's. The group scanner page also reads the
+  // group-field copy, while the doors list and the listing scanner never need
+  // it.
+  scanner: {
+    load: async () => (await import("#routes/admin/scanner.ts")).adminHandlers,
+    messageGroupsFor: messageGroupsBySegment({
+      groups: ["check-in", "groups"],
+      listing: ["attendees", "check-in", "listing-qr"],
+      scanner: ["check-in"],
+    }),
+  },
+  schemaAtlas: area(
+    () => import("#routes/admin/schema-atlas.ts"),
+    ["schema-atlas", "settings"],
+  ),
+  seeds: area(
+    () => import("#routes/admin/seeds.ts"),
+    ["seed-data", "validation"],
+  ),
+  servicing: area(
+    () => import("#routes/admin/servicing.tsx"),
+    ["listings-table", "logistics", "servicing", "validation"],
+  ),
+  sessions: area(() => import("#routes/admin/sessions.ts"), ["users"]),
+  settings: area(
+    () => import("#routes/admin/settings.ts"),
+    [
+      "address-lookup",
+      "attendees",
+      "calendar",
+      "features",
+      "images",
+      "listing-defaults",
+      "listings-table",
+      "login",
+      "logistics",
+      "payment",
+      "settings",
+      "setup",
+      "sms",
+      "tickets",
+      "users",
+      "validation",
+    ],
+  ),
+  settingsLogistics: area(
+    () => import("#routes/admin/settings-logistics.ts"),
+    ["entity-pages", "logistics", "settings", "users", "validation"],
+  ),
+  settingsStatuses: area(
+    () => import("#routes/admin/settings-statuses.ts"),
+    ["entity-pages", "settings", "statuses", "validation"],
+  ),
+  site: area(
+    () => import("#routes/admin/site.ts"),
+    ["images", "site", "validation"],
+  ),
+  sitePages: area(
+    () => import("#routes/admin/site-pages.ts"),
+    ["entity-pages", "images", "site-pages", "validation"],
+  ),
+  sms: area(
+    () => import("#routes/admin/sms.ts"),
+    ["attendees", "sms", "validation"],
+  ),
+  support: area(
+    () => import("#routes/admin/support.ts"),
+    ["support", "validation"],
+  ),
+  update: area(() => import("#routes/admin/update.ts"), ["update"]),
+  users: area(
+    () => import("#routes/admin/users.ts"),
+    ["deliveries", "entity-pages", "login", "users", "validation"],
+  ),
+};

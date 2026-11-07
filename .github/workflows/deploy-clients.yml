@@ -1,0 +1,154 @@
+name: Deploy to Clients
+
+# Backs up and upgrades the built client sites that accept the chosen tier.
+#
+# The main instance holds each site's DB credentials — each site's own
+# full-access token, so although this workflow only reads (to take backups),
+# treat them as write-capable production secrets. This workflow therefore
+# no longer needs BUNNY_SCRIPT_DATA: it asks the main instance for the sites on
+# the published tier (a `tier` run input — alpha by default, or beta/release; the
+# master returns only the sites at that channel or more eager), backs each one up
+# to our Bunny storage, then deploys the freshly built script to it. A release
+# deploy reaches every site; beta reaches beta + alpha sites; alpha only alpha
+# sites — so the default run has the smallest blast radius and reaching the whole
+# fleet is the deliberate `release` choice. For a canary (alpha/beta) the workflow
+# fails closed unless the master echoes the tier back, so a not-yet-upgraded
+# master (which would ignore the filter and return everyone) can't be deployed to
+# by surprise.
+#
+# The MAIN_INSTANCE_KEY is pasted in at run time (a workflow input), never stored
+# as a GitHub secret — so the shared secret lives only on the main app and with
+# whoever triggers a deploy. It is masked out of the logs immediately. Note that
+# workflow_dispatch input values are visible in the run's metadata to anyone who
+# can view Actions, so treat it like a password you rotate if exposed.
+#
+# Stored secrets: MAIN_INSTANCE (url), BUNNY_ACCESS_KEY, STORAGE_ZONE_NAME,
+# STORAGE_ZONE_KEY, plus the optional CDN_URL and CDN_BUNNY_* build secrets.
+
+on:
+  workflow_dispatch:
+    inputs:
+      main_instance_key:
+        description: "MAIN_INSTANCE_KEY (pasted per run; not stored)"
+        required: true
+        type: string
+      tier:
+        description: "Release tier to publish (only sites on this channel or more eager are upgraded). Defaults to alpha — the smallest blast radius; choose release to reach the whole fleet."
+        required: true
+        default: alpha
+        type: choice
+        options:
+          - alpha
+          - beta
+          - release
+
+permissions:
+  contents: read
+
+jobs:
+  deploy:
+    runs-on: ubicloud-standard-4
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: Build Bunny edge script
+        id: build
+        uses: ./.github/actions/build-bunny-script
+        with:
+          build_commit: ${{ github.sha }}
+          cdn_url: ${{ secrets.CDN_URL }}
+          cdn_bunny_storage_zone_name: ${{ secrets.CDN_BUNNY_STORAGE_ZONE_NAME }}
+          cdn_bunny_storage_zone_key: ${{ secrets.CDN_BUNNY_STORAGE_ZONE_KEY }}
+          cdn_bunny_storage_host: ${{ secrets.CDN_BUNNY_STORAGE_HOST }}
+          cdn_bunny_pull_zone_id: ${{ secrets.CDN_BUNNY_PULL_ZONE_ID }}
+          bunny_access_key: ${{ secrets.BUNNY_ACCESS_KEY }}
+
+      - name: Back up and deploy each client site
+        shell: devenv --profile ci shell bash -- -e {0}
+        env:
+          MAIN_INSTANCE: ${{ secrets.MAIN_INSTANCE }}
+          MAIN_INSTANCE_KEY: ${{ inputs.main_instance_key }}
+          TIER: ${{ inputs.tier }}
+          BUNNY_ACCESS_KEY: ${{ secrets.BUNNY_ACCESS_KEY }}
+          BUILD_TAG: ${{ steps.build.outputs.build_tag }}
+          STORAGE_ZONE_NAME: ${{ secrets.STORAGE_ZONE_NAME }}
+          STORAGE_ZONE_KEY: ${{ secrets.STORAGE_ZONE_KEY }}
+        run: |
+          set -euo pipefail
+          # Keep the pasted key out of the logs.
+          echo "::add-mask::$MAIN_INSTANCE_KEY"
+
+          jq -Rs '{"Code": .}' bunny-script.ts > /tmp/code-payload.json
+
+          # Ask the main instance for the credentials of the sites that accept a
+          # deploy on this tier. The tier is a non-secret filter, so it rides in
+          # the query string; the master returns only the sites at that channel
+          # or more eager — a release deploy reaches every site, beta reaches
+          # beta + alpha sites, alpha only alpha sites.
+          echo "Publishing tier: ${TIER}"
+          sites_json=$(curl -fsS -X POST \
+            "${MAIN_INSTANCE%/}/instance/site-credentials?tier=${TIER}" \
+            -H "Authorization: Bearer ${MAIN_INSTANCE_KEY}")
+
+          # Fail closed if the main instance didn't acknowledge tier filtering. A
+          # pre-tier build ignores ?tier= and returns the whole fleet without the
+          # echoed "tier" field, so a non-release run could fan out to every site.
+          # release is the whole fleet anyway, so only guard the canary tiers.
+          acked_tier=$(jq -r '.tier // ""' <<<"$sites_json")
+          if [ "$TIER" != "release" ] && [ "$acked_tier" != "$TIER" ]; then
+            echo "✗ Main instance did not acknowledge tier '${TIER}' (got '${acked_tier:-none}')." >&2
+            echo "  It is likely running a build from before tier-aware deploys, which" >&2
+            echo "  returns the WHOLE fleet — refusing to canary-deploy to everyone." >&2
+            echo "  Upgrade the main instance to a tier-aware build first, then re-run." >&2
+            exit 1
+          fi
+
+          count=$(jq '.sites | length' <<<"$sites_json")
+          echo "Got credentials for $count site(s) on tier ${TIER} or more eager"
+
+          for i in $(seq 0 $((count - 1))); do
+            script_id=$(jq -r ".sites[$i].scriptId" <<<"$sites_json")
+            db_url=$(jq -r ".sites[$i].dbUrl" <<<"$sites_json")
+            db_token=$(jq -r ".sites[$i].dbToken" <<<"$sites_json")
+            site_url=$(jq -r ".sites[$i].siteUrl" <<<"$sites_json")
+            # The returned tokens are credentials — keep them out of the logs.
+            echo "::add-mask::$db_token"
+
+            echo "Backing up Script ${script_id}.."
+            DB_URL="$db_url" DB_TOKEN="$db_token" deno task backup
+
+            echo "Putting site ${script_id} into update mode.."
+            site_host="$(sed -E 's#^[a-z]+://([^/]+).*#\1#' <<<"$site_url")"
+            deno run \
+              --allow-env=BUNNY_ACCESS_KEY,BUNNY_API_KEY \
+              --allow-net="api.bunny.net,$site_host" \
+              scripts/update-mode.ts begin "$script_id" "$site_url"
+
+            echo "Updating site ${script_id}.."
+            code=$(curl -s -o /tmp/resp -w "%{http_code}" -X POST \
+              "https://api.bunny.net/compute/script/${script_id}/code" \
+              -H "AccessKey: ${BUNNY_ACCESS_KEY}" \
+              -H "Content-Type: application/json" \
+              -d @/tmp/code-payload.json)
+            if [ "$code" -lt 200 ] || [ "$code" -ge 300 ]; then
+              echo "  ✗ upload failed (HTTP $code): $(cat /tmp/resp)"
+              exit 1
+            fi
+            code=$(curl -s -o /tmp/resp -w "%{http_code}" -X POST \
+              "https://api.bunny.net/compute/script/${script_id}/publish" \
+              -H "AccessKey: ${BUNNY_ACCESS_KEY}" \
+              -H "Content-Type: application/json" -d '{}')
+            if [ "$code" -lt 200 ] || [ "$code" -ge 300 ]; then
+              echo "  ✗ publish failed (HTTP $code): $(cat /tmp/resp)"
+              exit 1
+            fi
+
+            echo "Waking site ${script_id} and lifting update mode.."
+            deno run \
+              --allow-env=BUNNY_ACCESS_KEY,BUNNY_API_KEY \
+              --allow-net="api.bunny.net,$site_host" \
+              scripts/update-mode.ts end "$script_id" "$site_url" "$BUILD_TAG"
+            echo "  ✓ ${script_id} updated"
+          done

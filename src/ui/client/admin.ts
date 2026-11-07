@@ -1,0 +1,74 @@
+/// <reference lib="dom" />
+/// <reference lib="dom.iterable" />
+/** Admin page behaviors - bundled by build-static-assets.ts for strict CSP.
+ *
+ * Thin entry point: each behavior lives in its own module under ./admin/
+ * and is wired up here. Modules are scoped to one concern and guard
+ * themselves against missing DOM elements so they are safe to run on
+ * every admin page. */
+
+import { initAddressLookup } from "./admin/address-lookup.ts";
+import { initAttendeeDates } from "./admin/attendee-dates.ts";
+import { initAvailabilityChecker } from "./admin/availability-checker.ts";
+import { initCharCounters } from "./admin/char-counter.ts";
+import { initCheckoutPopup } from "./admin/checkout-popup.ts";
+import { initChildCompat } from "./admin/child-compat.ts";
+import { initChildRequired } from "./admin/child-required.ts";
+import { initClosesAtAutofill } from "./admin/closes-at-autofill.ts";
+import { initQuestionVisibility } from "./admin/custom-question-visibility.ts";
+import { initDuplicatePreview } from "./admin/duplicate-preview.ts";
+import { initDurationWarning } from "./admin/duration-warning.ts";
+import { initFillDefaultTemplate } from "./admin/fill-default-template.ts";
+import { initFormSubmitDisable } from "./admin/form-submit-disable.ts";
+import { initIframeScrollIntoView } from "./admin/iframe-scroll-into-view.ts";
+import { initListingDatePicker } from "./admin/listing-date-picker.ts";
+import { initLogisticsMapLoader } from "./admin/logistics-map-loader.ts";
+import { initManualCheckin } from "./admin/manual-checkin.ts";
+import { initMarkdownEditorLoader } from "./admin/markdown-editor-loader.ts";
+import { initMarkdownPreview } from "./admin/markdown-preview.ts";
+import { initMultiBookingBuilder } from "./admin/multi-booking.ts";
+import { initNavSelect } from "./admin/nav-select.ts";
+import { initOrderGallery } from "./admin/order-gallery.ts";
+import { initPairedControls } from "./admin/paired-controls.ts";
+import { initPaymentResultNotifier } from "./admin/payment-result.ts";
+import { initPaymentTestButtons } from "./admin/payment-test-buttons.ts";
+import { initQrRefresh } from "./admin/qr-refresh.ts";
+import { initRunningTotal } from "./admin/running-total.ts";
+import { initSchemaAtlas } from "./admin/schema-atlas.ts";
+import { initSelectOnClick } from "./admin/select-on-click.ts";
+import { initShareButtons } from "./admin/share-button.ts";
+import { initTicketQuantityRequired } from "./admin/ticket-quantity-required.ts";
+
+initSelectOnClick();
+initShareButtons();
+initNavSelect();
+initAvailabilityChecker();
+initAttendeeDates();
+initMultiBookingBuilder();
+initFillDefaultTemplate();
+initClosesAtAutofill();
+initIframeScrollIntoView();
+initCheckoutPopup();
+initPaymentResultNotifier();
+initPaymentTestButtons();
+initQrRefresh();
+initRunningTotal();
+initCharCounters();
+initMarkdownPreview();
+// After the preview module so the injected editor's toggle can join the
+// preview's footer strip once its bundle loads.
+initMarkdownEditorLoader();
+initLogisticsMapLoader();
+initManualCheckin();
+initFormSubmitDisable();
+initQuestionVisibility();
+initChildRequired();
+initChildCompat();
+initOrderGallery();
+initListingDatePicker();
+initDuplicatePreview();
+initDurationWarning();
+initPairedControls();
+initTicketQuantityRequired();
+initAddressLookup();
+initSchemaAtlas();

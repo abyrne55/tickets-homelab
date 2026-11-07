@@ -1,0 +1,226 @@
+/**
+ * Narrowing the listings a page shows, in the cases a click cannot reach: a
+ * listing nobody checks in, an address nothing on the site links to, and a link
+ * whose wrong build would leave the very same rows on the page. Also the
+ * listings page's own narrowing and its download, and the details a customer is
+ * shown on the pages they read.
+ *
+ * The organiser's own journey through these filters is told in the story "The
+ * organiser narrows a long list down to what they are looking for".
+ */
+
+import { assert, assertStringIncludes } from "@std/assert";
+import { beforeEach, describe, it as test } from "@std/testing/bdd";
+import { handleRequest } from "#routes";
+import {
+  expectHtmlResponse,
+  expectIncludesAll,
+} from "#test-utils/assertions.ts";
+import { describeWithEnv } from "#test-utils/db.ts";
+import {
+  assignTestAttributeOptions,
+  createTestAttributeWithOptions,
+} from "#test-utils/db-helpers/attributes.ts";
+import { createTestListing } from "#test-utils/db-helpers/listings.ts";
+import { mockRequest } from "#test-utils/mocks.ts";
+import { adminGet } from "#test-utils/session.ts";
+import { enablePublicSite } from "#test-utils/settings.ts";
+
+const get = (path: string) => handleRequest(mockRequest(path));
+
+const DAILY = {
+  bookableDays: ["Monday", "Tuesday", "Wednesday"],
+  listingType: "daily" as const,
+  maximumDaysAfter: 14,
+  minimumDaysBefore: 0,
+};
+
+describeWithEnv("listings type filter", { db: true }, () => {
+  describe("admin listings dashboard", () => {
+    test("filters the listing table to purchase-only listings", async () => {
+      const standard = await createTestListing({ name: "Standard One" });
+      const merch = await createTestListing({
+        name: "Merch",
+        purchaseOnly: true,
+      });
+      const response = await adminGet("/admin?type=purchase-only");
+      const html = await response.text();
+      assertStringIncludes(html, `href="/admin/listing/${merch.id}"`);
+      assert(!html.includes(`href="/admin/listing/${standard.id}"`));
+      assertStringIncludes(html, "No check-in");
+    });
+
+    test("treats an unknown type as 'all'", async () => {
+      const standard = await createTestListing({ name: "Standard One" });
+      const daily = await createTestListing({ name: "Daily One", ...DAILY });
+      const response = await adminGet("/admin?type=bogus");
+      const html = await response.text();
+      expectIncludesAll(html, [
+        `href="/admin/listing/${standard.id}"`,
+        `href="/admin/listing/${daily.id}"`,
+        "<strong><u>All</u></strong>",
+      ]);
+    });
+
+    // Only reading the link itself tells this apart: dropping the kind from a
+    // wording link and dropping the wording altogether leave the very same rows
+    // on the page. The mirror claim — a kind link keeping the chosen wording —
+    // is told by the story, which narrows twice and reads what is left.
+    test("a wording link keeps the chosen listing type", async () => {
+      const daily = await createTestListing({ name: "Daily Hard", ...DAILY });
+      const difficulty = await createTestAttributeWithOptions("Difficulty", [
+        "Easy",
+        "Hard",
+      ]);
+      await assignTestAttributeOptions(daily.id, [difficulty.options[1]!]);
+
+      const response = await adminGet(
+        `/admin?type=daily&attribute_${difficulty.id}=${
+          difficulty.options[1]!.id
+        }`,
+      );
+
+      assertStringIncludes(
+        await response.text(),
+        `href="/admin/?type=daily">All`,
+      );
+    });
+  });
+
+  describe("admin listings index", () => {
+    const setupFilteredPair = async (labels: [string, string]) => {
+      const shown = await createTestListing({ name: labels[0] });
+      const hidden = await createTestListing({ name: labels[1] });
+      const difficulty = await createTestAttributeWithOptions("Difficulty", [
+        "Easy",
+        "Hard",
+      ]);
+      await assignTestAttributeOptions(shown.id, [difficulty.options[0]!]);
+      await assignTestAttributeOptions(hidden.id, [difficulty.options[1]!]);
+      return { difficulty, hidden, shown };
+    };
+
+    const filterUrl = (
+      path: string,
+      attributeId: number,
+      optionId: number,
+    ): string => `${path}?attribute_${attributeId}=${optionId}`;
+
+    test("filters listings by selected listing attribute", async () => {
+      const { shown, hidden, difficulty } = await setupFilteredPair([
+        "Shown",
+        "Hidden",
+      ]);
+
+      const response = await adminGet(
+        filterUrl("/admin/listings", difficulty.id, difficulty.options[0]!.id),
+      );
+      const html = await response.text();
+
+      assertStringIncludes(html, `href="/admin/listing/${shown.id}"`);
+      assert(!html.includes(`href="/admin/listing/${hidden.id}"`));
+    });
+
+    test("CSV export link carries the active attribute filter", async () => {
+      const listing = await createTestListing({ name: "Filtered CSV" });
+      const difficulty = await createTestAttributeWithOptions("Difficulty", [
+        "Easy",
+      ]);
+      await assignTestAttributeOptions(listing.id, difficulty.options);
+
+      const response = await adminGet(
+        filterUrl("/admin/listings", difficulty.id, difficulty.options[0]!.id),
+      );
+      const html = await response.text();
+      const filterParam = `attribute_${difficulty.id}=${
+        difficulty.options[0]!.id
+      }`;
+      assertStringIncludes(html, `href="/admin/listings/csv?${filterParam}"`);
+    });
+
+    test("CSV export respects attribute filter", async () => {
+      const { difficulty } = await setupFilteredPair([
+        "CSV Shown",
+        "CSV Hidden",
+      ]);
+
+      const response = await adminGet(
+        filterUrl(
+          "/admin/listings/csv",
+          difficulty.id,
+          difficulty.options[0]!.id,
+        ),
+      );
+      const csv = await response.text();
+
+      assertStringIncludes(csv, "CSV Shown");
+      assert(!csv.includes("CSV Hidden"));
+    });
+  });
+
+  describe("public listings page", () => {
+    beforeEach(async () => {
+      await enablePublicSite();
+    });
+
+    test("shows selected listing attributes on listing cards", async () => {
+      const listing = await createTestListing({ name: "Attribute Card" });
+      const difficulty = await createTestAttributeWithOptions("Difficulty", [
+        "Easy",
+      ]);
+      await assignTestAttributeOptions(listing.id, difficulty.options);
+
+      const html = await expectHtmlResponse(
+        await get("/listings"),
+        200,
+        "Attribute Card",
+        "listing-attributes",
+        "Difficulty",
+        "Easy",
+      );
+      assert(!html.includes("Showing:"));
+    });
+
+    test("shows selected listing attributes on a single ticket page", async () => {
+      const listing = await createTestListing({ name: "Ticket Attribute" });
+      const difficulty = await createTestAttributeWithOptions("Difficulty", [
+        "Easy",
+      ]);
+      await assignTestAttributeOptions(listing.id, difficulty.options);
+
+      await expectHtmlResponse(
+        await get(`/ticket/${listing.slug}`),
+        200,
+        "Ticket Attribute",
+        "listing-attributes",
+        "Difficulty",
+        "Easy",
+      );
+    });
+
+    test("shows each listing's attributes on a multi-listing ticket page", async () => {
+      const listing1 = await createTestListing({ name: "Multi Attribute One" });
+      const listing2 = await createTestListing({ name: "Multi Attribute Two" });
+      const format = await createTestAttributeWithOptions("Format", [
+        "In person",
+      ]);
+      const audience = await createTestAttributeWithOptions("Audience", [
+        "Adults",
+      ]);
+      await assignTestAttributeOptions(listing1.id, format.options);
+      await assignTestAttributeOptions(listing2.id, audience.options);
+
+      await expectHtmlResponse(
+        await get(`/ticket/${listing1.slug}+${listing2.slug}`),
+        200,
+        "Multi Attribute One",
+        "Multi Attribute Two",
+        "listing-attributes",
+        "Format",
+        "In person",
+        "Audience",
+        "Adults",
+      );
+    });
+  });
+});

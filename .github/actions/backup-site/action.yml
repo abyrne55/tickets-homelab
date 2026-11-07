@@ -1,0 +1,51 @@
+name: Back up one built site
+description: >-
+  Fetch a single built site's DB credentials from the main instance (matched by
+  Bunny script id) and dump its database to our storage before it is upgraded.
+  The returned token is the site's own full-access credential — this action only
+  reads, but handle it as a write-capable production secret. Fails unless
+  exactly one site matches the script id. Requires the devenv environment — run
+  the build-bunny-script action first.
+inputs:
+  main_instance:
+    description: Main instance base URL (serves POST /instance/site-credentials).
+    required: true
+  main_instance_key:
+    description: Shared secret authorizing the credentials endpoint (bearer token).
+    required: true
+  script_id:
+    description: Bunny script id of the site to back up.
+    required: true
+  storage_zone_name:
+    description: Bunny storage zone name (backup upload target).
+    required: true
+  storage_zone_key:
+    description: Bunny storage zone access key.
+    required: true
+runs:
+  using: composite
+  steps:
+    - name: Resolve the matching site
+      id: resolve
+      uses: ./.github/actions/resolve-site-credentials
+      with:
+        main_instance: ${{ inputs.main_instance }}
+        main_instance_key: ${{ inputs.main_instance_key }}
+        script_id: ${{ inputs.script_id }}
+
+    - name: Back up the matching site
+      shell: devenv --profile ci shell bash -- -e {0}
+      env:
+        SITE_NAME: ${{ steps.resolve.outputs.site_name }}
+        DB_URL: ${{ steps.resolve.outputs.db_url }}
+        DB_TOKEN: ${{ steps.resolve.outputs.db_token }}
+        SCRIPT_ID: ${{ inputs.script_id }}
+        STORAGE_ZONE_NAME: ${{ inputs.storage_zone_name }}
+        STORAGE_ZONE_KEY: ${{ inputs.storage_zone_key }}
+      run: |
+        set -euo pipefail
+        # Keep the returned token out of the logs.
+        echo "::add-mask::$DB_TOKEN"
+
+        echo "Backing up $SITE_NAME ($SCRIPT_ID)"
+        deno task backup

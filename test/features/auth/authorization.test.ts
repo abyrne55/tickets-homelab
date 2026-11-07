@@ -1,0 +1,247 @@
+import { assertStringIncludes } from "@std/assert";
+import { expect } from "@std/expect";
+import { it as test } from "@std/testing/bdd";
+import { t } from "#i18n";
+import { requireAdminApiOr } from "#routes/admin/api-mount.ts";
+import {
+  type AuthPolicy,
+  type AuthSession,
+  anyUserPage,
+  pageGuardFor,
+  requireContentOr,
+  requireDeliveryOr,
+  requireSiteOr,
+  withAuth,
+  withSession,
+} from "#routes/auth.ts";
+import { adminDestinationAt } from "#shared/admin-surface.ts";
+import { describeWithEnv } from "#test-utils/db.ts";
+import {
+  createTestAgentSession,
+  createTestEditorSession,
+  createTestManagerSession,
+  testCookie,
+} from "#test-utils/session.ts";
+
+/** A session guard: authenticates, checks role, and either runs the handler
+ *  with the session or returns an auth-failure response. */
+type Guard = (
+  request: Request,
+  handler: (session: AuthSession) => Response,
+) => Promise<Response>;
+
+const EVERY_GUARD: Guard[] = [
+  pageGuardFor(adminDestinationAt("/admin/backup")),
+  pageGuardFor(adminDestinationAt("/admin/calendar")),
+  requireContentOr,
+  requireSiteOr,
+  requireDeliveryOr,
+];
+
+/** A live, authenticated cookie for each admin level. */
+const roleCookies = async (): Promise<Record<string, string>> => ({
+  agent: (await createTestAgentSession()).cookie,
+  editor: (await createTestEditorSession()).cookie,
+  manager: await createTestManagerSession(),
+  owner: await testCookie(),
+});
+
+/** Run the JSON admin API gate. Its handler answers with the admitted role, so
+ *  a refusal and an admission can never be mistaken for each other. */
+const runAdminApi = (cookie?: string): Promise<Response | null> =>
+  requireAdminApiOr(
+    new Request("http://localhost/api/admin/x", {
+      headers: cookie ? { cookie } : {},
+    }),
+    (session) => new Response(session.adminLevel),
+  );
+
+/** Run a guard and return its response. The handler only fires when the guard
+ *  admits the request, and returns 200 only when handed a real session (so a
+ *  guard that forwarded `undefined` is caught, not silently accepted). */
+const runGuard = (guard: Guard, cookie?: string): Promise<Response> =>
+  guard(
+    new Request(
+      "http://localhost/admin/x",
+      cookie ? { headers: { cookie } } : undefined,
+    ),
+    (session) => new Response("OK", { status: session ? 200 : 500 }),
+  );
+
+const runAnyUserPage = (cookie?: string): Promise<Response> =>
+  anyUserPage((session) => session.adminLevel)(
+    new Request(
+      "http://localhost/admin/x",
+      cookie ? { headers: { cookie } } : undefined,
+    ),
+  );
+
+/** Assert a guard admits exactly `allowed` and forbids every other role. Every
+ *  cookie is a valid session, so a rejection is a 403 forbidden, never the
+ *  not-authenticated redirect. */
+const expectAdmits = async (
+  guard: Guard,
+  cookies: Record<string, string>,
+  allowed: string[],
+): Promise<void> => {
+  for (const [role, cookie] of Object.entries(cookies)) {
+    expect((await runGuard(guard, cookie)).status).toBe(
+      allowed.includes(role) ? 200 : 403,
+    );
+  }
+};
+
+describeWithEnv("auth authorization matrix", { db: true }, () => {
+  test("an owner-declared page guard admits only the owner", async () => {
+    await expectAdmits(
+      pageGuardFor(adminDestinationAt("/admin/backup")),
+      await roleCookies(),
+      ["owner"],
+    );
+  });
+
+  test("a staff-declared page guard admits only staff (owner, manager)", async () => {
+    await expectAdmits(
+      pageGuardFor(adminDestinationAt("/admin/calendar")),
+      await roleCookies(),
+      ["owner", "manager"],
+    );
+  });
+
+  test("requireContentOr admits content editors (owner, manager, editor), not agents", async () => {
+    await expectAdmits(requireContentOr, await roleCookies(), [
+      "owner",
+      "manager",
+      "editor",
+    ]);
+  });
+
+  test("requireSiteOr admits site editors (owner, editor), not managers or agents", async () => {
+    await expectAdmits(requireSiteOr, await roleCookies(), ["owner", "editor"]);
+  });
+
+  test("requireDeliveryOr admits delivery roles (owner, manager, agent), not editors", async () => {
+    await expectAdmits(requireDeliveryOr, await roleCookies(), [
+      "owner",
+      "manager",
+      "agent",
+    ]);
+  });
+
+  test("anyUserPage renders for every authenticated role", async () => {
+    for (const [role, cookie] of Object.entries(await roleCookies())) {
+      const response = await runAnyUserPage(cookie);
+      expect(response.status).toBe(200);
+      expect(await response.text()).toBe(role);
+    }
+  });
+
+  test("anyUserPage redirects an unauthenticated request", async () => {
+    const response = await runAnyUserPage();
+    expect(response.status).toBe(302);
+    expect(response.headers.get("location")).toBe("/admin");
+  });
+
+  test("every guard redirects an unauthenticated request instead of running the handler", async () => {
+    for (const guard of EVERY_GUARD) {
+      const response = await runGuard(guard); // no cookie
+      expect(response.status).toBe(302);
+      expect(response.headers.get("location")).toBe("/admin");
+    }
+  });
+
+  // The /api/admin mount gate authenticates only: each route's own policy
+  // decides the role (pinned per verb by the api-*.test.ts suites), so the
+  // mount can never veto what a route's declared policy admits.
+  test("the admin API mount admits every admin level and hands the session through", async () => {
+    const cookies = await roleCookies();
+    for (const [role, cookie] of Object.entries(cookies)) {
+      const response = await runAdminApi(cookie);
+      expect(response?.status).toBe(200);
+      expect(await response?.text()).toBe(role);
+    }
+  });
+
+  test("the admin API mount refuses a request with no session at all", async () => {
+    const response = await runAdminApi();
+
+    expect(response?.status).toBe(401);
+  });
+
+  test("withSession runs the handler with the session, or the fallback when absent", async () => {
+    const cookie = await testCookie();
+    const authed = await withSession(
+      new Request("http://localhost/admin/x", { headers: { cookie } }),
+      (session) => new Response(session.adminLevel),
+      () => new Response("no-session"),
+    );
+    expect(await authed.text()).toBe("owner");
+
+    const anonymous = await withSession(
+      new Request("http://localhost/admin/x"),
+      () => new Response("session"),
+      () => new Response("no-session"),
+    );
+    expect(await anonymous.text()).toBe("no-session");
+  });
+
+  test("an owner-only form gate gives a non-owner the owner-account body", async () => {
+    const response = await postThroughWithAuth(
+      await createTestEditorSession(),
+      { body: "form", roles: ["owner"] },
+    );
+    expect(response.status).toBe(403);
+    assertStringIncludes(await response.text(), t("auth.forbidden_owner_only"));
+  });
+
+  test("an owner-only session gate gives a non-owner the owner-account body", async () => {
+    const response = await pageGuardFor(adminDestinationAt("/admin/backup"))(
+      new Request("http://localhost/admin/x", {
+        headers: { cookie: (await createTestEditorSession()).cookie },
+      }),
+      (session) => new Response(session.adminLevel),
+    );
+    expect(response.status).toBe(403);
+    assertStringIncludes(await response.text(), t("auth.forbidden_owner_only"));
+  });
+
+  test("a multi-role form gate gives a non-owner the generic role body", async () => {
+    const response = await postThroughWithAuth(
+      await createTestEditorSession(),
+      { body: "form", roles: ["owner", "manager"] },
+    );
+    expect(response.status).toBe(403);
+    expect(await response.text()).toBe(t("auth.forbidden_role"));
+  });
+
+  test("an owner-only api gate keeps the generic json refusal body", async () => {
+    const response = await postThroughWithAuth(await createTestAgentSession(), {
+      body: "json",
+      roles: ["owner"],
+    });
+    expect(response.status).toBe(403);
+    expect(await response.json()).toEqual({ error: "Forbidden" });
+  });
+});
+
+/** Post a bodyless form/json request through the withAuth pipeline, so the
+ *  role refusal — which fires before CSRF parsing — carries the gate's
+ *  audience into the body. */
+const postThroughWithAuth = async (
+  session: { cookie: string },
+  policy: AuthPolicy<"form" | "json">,
+): Promise<Response> => {
+  const json = policy.body === "json";
+  return withAuth(
+    new Request("http://localhost/admin/x", {
+      body: json ? "{}" : new URLSearchParams(),
+      headers: {
+        cookie: session.cookie,
+        ...(json ? { "content-type": "application/json" } : {}),
+      },
+      method: "POST",
+    }),
+    policy,
+    () => new Response("OK"),
+  );
+};

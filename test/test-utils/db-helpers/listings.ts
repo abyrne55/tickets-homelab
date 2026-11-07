@@ -1,0 +1,222 @@
+import { getListingWithCount, listingsTable } from "#db/listings/records.ts";
+import type { ListingInput } from "#shared/catalog-fields/fields.ts";
+import {
+  resolveTestGroupIds,
+  type TestListingOverrides,
+  testListingInput,
+} from "#test-utils/factories.ts";
+import type { Listing, ListingWithCount } from "#types";
+import {
+  buildCreateListingForm,
+  buildUpdateListingForm,
+} from "./listing-forms.ts";
+import {
+  doAuthenticatedFormRequest,
+  doAuthenticatedMultipartFormRequest,
+} from "./request.ts";
+
+export const allDays: string[] = [
+  "Monday",
+  "Tuesday",
+  "Wednesday",
+  "Thursday",
+  "Friday",
+  "Saturday",
+  "Sunday",
+];
+
+/** A minute-precision ISO timestamp one minute in the past — always already
+ * closed. The reference `closesAt` value for "registration closed" tests. */
+export const pastCloseTime = (): string =>
+  new Date(Date.now() - 60000).toISOString().slice(0, 16);
+
+/** A minute-precision ISO timestamp an hour in the future — always still
+ * open, so a test can fetch a CSRF token before closing the listing out from
+ * under it. */
+export const futureCloseTime = (): string =>
+  new Date(Date.now() + 3600000).toISOString().slice(0, 16);
+
+/** Write a test listing's group membership directly (the form helper is
+ * single-value, so membership is set via setListingGroups rather than the
+ * group_ids checkboxes). No-op for an empty list. */
+const applyTestListingGroups = async (
+  listingId: number,
+  groupIds: number[],
+): Promise<void> => {
+  if (groupIds.length === 0) return;
+  const { setListingGroups } = await import("#db/groups.ts");
+  await setListingGroups(listingId, groupIds);
+};
+
+export const createTestListing = async (
+  overrides: TestListingOverrides = {},
+): Promise<ListingWithCount> => {
+  const input = testListingInput(overrides);
+  // The create form refuses a capacity below the field's declared minimum of
+  // 1. A fixture that needs a stored zero-capacity listing — the capacity
+  // suites do — submits the form with a bookable capacity and then writes the
+  // requested column value directly.
+  const formCapacity = Math.max(input.maxAttendees, 1);
+  const listing = await doAuthenticatedMultipartFormRequest(
+    "/admin/listing",
+    buildCreateListingForm({ ...input, maxAttendees: formCapacity }),
+    async () => {
+      const { getAllListings } = await import("#db/listings/records.ts");
+      const listings = await getAllListings();
+      return listings[0] as ListingWithCount;
+    },
+    "create listing",
+  );
+  await applyTestListingGroups(listing.id, resolveTestGroupIds(overrides));
+  if (formCapacity !== input.maxAttendees) {
+    const { execute } = await import("#db/client.ts");
+    await execute("UPDATE listings SET max_attendees = ? WHERE id = ?", [
+      input.maxAttendees,
+      listing.id,
+    ]);
+    return { ...listing, max_attendees: input.maxAttendees };
+  }
+  return listing;
+};
+
+/**
+ * Duplicate a listing the way the admin duplicate form does: POST a valid create
+ * body to `/admin/listing` carrying the hidden `duplicated_from` field, then
+ * return the newly created copy. Mirrors the real flow (the create handler reads
+ * `duplicated_from` to copy the source parent's child edges).
+ */
+export const duplicateTestListing = async (
+  sourceId: number,
+  overrides: TestListingOverrides = {},
+): Promise<ListingWithCount> => {
+  const input = testListingInput(overrides);
+  const listing = await doAuthenticatedMultipartFormRequest(
+    "/admin/listing",
+    { ...buildCreateListingForm(input), duplicated_from: String(sourceId) },
+    async () => {
+      const { getAllListings } = await import("#db/listings/records.ts");
+      const listings = await getAllListings();
+      return listings[0] as ListingWithCount;
+    },
+    "duplicate listing",
+  );
+  await applyTestListingGroups(listing.id, resolveTestGroupIds(overrides));
+  return listing;
+};
+
+export const updateTestListing = async (
+  listingId: number,
+  updates: Partial<Omit<ListingInput, "groupIds">> & {
+    assignUndatedTo?: string;
+    groupId?: number;
+    groupIds?: number[];
+  },
+): Promise<Listing> => {
+  const existing = await getListingWithCount(listingId);
+  if (!existing) {
+    throw new Error(`Listing not found: ${listingId}`);
+  }
+  const { setListingGroups } = await import("#db/groups.ts");
+  const { listingGroups } = await import("#db/groups/table.ts");
+  // The real edit form carries membership as pre-checked group_ids checkboxes;
+  // the form helper omits them. Resolve the intended set (requested change, else
+  // current membership) and submit its first id so the handler preserves
+  // membership during the request (e.g. its group-cap overflow check sees the
+  // group). Re-apply the full set afterwards for multi-group cases.
+  const previousGroups = await listingGroups.getIds(listingId);
+  const groupIds =
+    updates.groupId !== undefined || updates.groupIds !== undefined
+      ? resolveTestGroupIds(updates)
+      : previousGroups;
+  const form = buildUpdateListingForm(updates, existing);
+  const formWithGroups =
+    groupIds.length > 0 ? { ...form, group_ids: String(groupIds[0]) } : form;
+  const result = await doAuthenticatedMultipartFormRequest(
+    `/admin/listing/${listingId}/edit`,
+    formWithGroups,
+    async () => (await getListingWithCount(listingId)) as ListingWithCount,
+    "update listing",
+  );
+  await setListingGroups(listingId, groupIds);
+  return result;
+};
+
+const changeListingStatus =
+  (action: "deactivate" | "reactivate") =>
+  async (listingId: number): Promise<void> => {
+    const listing = await getListingWithCount(listingId);
+    if (!listing) {
+      throw new Error(`Listing not found: ${listingId}`);
+    }
+    return doAuthenticatedFormRequest(
+      `/admin/listing/${listingId}/${action}`,
+      { confirm_identifier: listing.name },
+      async () => {},
+      `${action} listing`,
+    );
+  };
+
+export const deactivateTestListing = changeListingStatus("deactivate");
+export const reactivateTestListing = changeListingStatus("reactivate");
+
+/** Delete a listing the way the admin's confirmed delete form does. */
+export const deleteTestListing = async (
+  listing: Pick<ListingWithCount, "id" | "name">,
+): Promise<void> =>
+  doAuthenticatedFormRequest(
+    `/admin/listing/${listing.id}/delete`,
+    { confirm_identifier: listing.name },
+    async () => {},
+    "delete listing",
+  );
+
+export const createDailyTestListing = (overrides: TestListingOverrides = {}) =>
+  createTestListing({
+    bookableDays: allDays,
+    listingType: "daily",
+    maxAttendees: 10,
+    maximumDaysAfter: 60,
+    minimumDaysBefore: 0,
+    ...overrides,
+  });
+
+/** The bookable start dates for a listing, with holidays already loaded and the
+ *  listing row already fetched with its counts — the fix to the repeated
+ *  three-import + two-call dance that surfaced across the parents-,
+ *  parents-e2e, and listing-qr-admin suites. Returns sorted YYYY-MM-DD
+ *  strings (see {@link getBookableStartDates}). */
+export const bookableStartDates = async (
+  listingId: number,
+): Promise<string[]> => {
+  const { getBookableStartDates } = await import("#shared/dates.ts");
+  const { getActiveHolidays } = await import("#db/holidays.ts");
+  return getBookableStartDates(
+    (await getListingWithCount(listingId))!,
+    await getActiveHolidays(),
+  );
+};
+
+/** A listing holding two undated bookings: one row of 2 places, one row of 3.
+ * The daily switch's assign flow dates both in one step. */
+export const listingWithTwoUndatedBookings = async (
+  overrides: TestListingOverrides = {},
+): Promise<ListingWithCount> => {
+  const { bookAttendee } = await import(
+    "#test-utils/db-helpers/attendee-payments.ts"
+  );
+  const listing = await createTestListing({ maxAttendees: 10, ...overrides });
+  await bookAttendee(listing, { quantity: 2 });
+  await bookAttendee(listing, {
+    email: "y@example.com",
+    name: "Y",
+    quantity: 3,
+  });
+  return listing;
+};
+
+/** The name of every listing now in the database. What a backup or restore test
+ * checks to see which listings survived. */
+export const storedListingNames = async (): Promise<string[]> =>
+  (await listingsTable.read.pick(["id", "name"]).many()).map(
+    ({ name }) => name,
+  );

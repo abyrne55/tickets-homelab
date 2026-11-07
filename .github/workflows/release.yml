@@ -1,0 +1,59 @@
+name: Create Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      release_name:
+        description: "Release name (will be suffixed to date, e.g. '2026-01-30 - your name')"
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  release:
+    permissions:
+      contents: write
+    runs-on: ubicloud-standard-4
+    outputs:
+      tag: ${{ steps.create-release.outputs.tag }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: Build Bunny edge script
+        uses: ./.github/actions/build-bunny-script
+        with:
+          build_commit: ${{ github.sha }}
+          cdn_url: ${{ secrets.CDN_URL }}
+          cdn_bunny_storage_zone_name: ${{ secrets.CDN_BUNNY_STORAGE_ZONE_NAME }}
+          cdn_bunny_storage_zone_key: ${{ secrets.CDN_BUNNY_STORAGE_ZONE_KEY }}
+          cdn_bunny_storage_host: ${{ secrets.CDN_BUNNY_STORAGE_HOST }}
+          cdn_bunny_pull_zone_id: ${{ secrets.CDN_BUNNY_PULL_ZONE_ID }}
+          bunny_access_key: ${{ secrets.BUNNY_ACCESS_KEY }}
+
+      - name: Create release
+        id: create-release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          TAG="$(cat .build-tag)"
+          TITLE="$(date -u +%Y-%m-%d) - ${{ inputs.release_name }}"
+          git tag "$TAG"
+          git push origin "$TAG"
+          gh release create "$TAG" \
+            --title "$TITLE" \
+            --notes "" \
+            bunny-script.ts
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+
+  publish-image:
+    needs: release
+    permissions:
+      contents: read
+      packages: write
+    uses: ./.github/workflows/publish-image.yml
+    with:
+      release_tag: ${{ needs.release.outputs.tag }}

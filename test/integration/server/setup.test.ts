@@ -1,0 +1,594 @@
+import type { InStatement } from "@libsql/client";
+import { assert, assertStringIncludes } from "@std/assert";
+import { expect } from "@std/expect";
+import { beforeEach, describe, it as test } from "@std/testing/bdd";
+import { getDb } from "#db/client.ts";
+import { invalidateInitDbCache, resetDatabase } from "#db/migrations.ts";
+import { settings } from "#db/settings.ts";
+import { handleRequest } from "#routes";
+import { getAllActivityLog } from "#test-utils/activity-log.ts";
+import {
+  assertPublicHtml,
+  expectFlashRedirect,
+  expectHtmlResponse,
+  expectRedirect,
+} from "#test-utils/assertions.ts";
+import { extractCsrfToken } from "#test-utils/csrf.ts";
+import { createTestDb, describeWithEnv, resetDb } from "#test-utils/db.ts";
+import { TEST_ADMIN_USERNAME } from "#test-utils/internal.ts";
+import {
+  assertSchemaEmpty,
+  schemaMarkerKeys,
+  settingsTableExists,
+  tableExists,
+} from "#test-utils/migrations.ts";
+import {
+  awaitTestRequest,
+  mockFormRequest,
+  mockRequest,
+  mockSetupFormRequest,
+  withExpectedError,
+  withMocks,
+} from "#test-utils/mocks.ts";
+import {
+  recordQueries,
+  statementSql,
+  wrapDbClient,
+} from "#test-utils/record-queries.ts";
+import { reloginAsAdmin } from "#test-utils/session.ts";
+import { invalidateTestDbCache } from "#test-utils/test-state.ts";
+
+describeWithEnv("server (setup)", { db: true }, () => {
+  /** Get CSRF token from setup page and submit setup form with given fields */
+  async function submitSetupForm(
+    fields: Record<string, string>,
+  ): Promise<Response> {
+    const getResponse = await handleRequest(mockRequest("/setup/"));
+    const csrfToken = extractCsrfToken(await getResponse.text());
+    expect(csrfToken).not.toBeNull();
+    return handleRequest(mockSetupFormRequest(fields, csrfToken as string));
+  }
+
+  /** Get CSRF token from setup page and submit with standard valid credentials + overrides */
+  function submitSetupFormWithDefaults(
+    overrides: Record<string, string> = {},
+  ): Promise<Response> {
+    return submitSetupForm({
+      admin_password: "mypassword123",
+      admin_password_confirm: "mypassword123",
+      admin_username: TEST_ADMIN_USERNAME,
+      country: "GB",
+      ...overrides,
+    });
+  }
+
+  /** Simulate a real browser completing setup through the given URL: GET the
+   *  page, read its CSRF token, then POST the standard valid credentials.
+   *  Asserts the GET returns 200, a token is present, and the POST redirects to
+   *  /setup/complete. */
+  async function completeSetupViaBrowser(setupUrl: string): Promise<void> {
+    const getResponse = await handleRequest(
+      new Request(setupUrl, {
+        headers: { host: "localhost" },
+        method: "GET",
+      }),
+    );
+    expect(getResponse.status).toBe(200);
+
+    const csrfToken = extractCsrfToken(await getResponse.text());
+    expect(csrfToken).not.toBeNull();
+
+    const postResponse = await handleRequest(
+      mockSetupFormRequest(
+        {
+          admin_password: "mypassword123",
+          admin_password_confirm: "mypassword123",
+          admin_username: TEST_ADMIN_USERNAME,
+          country: "GB",
+        },
+        csrfToken as string,
+      ),
+    );
+    expectRedirect(postResponse, /^\/setup\/complete$/);
+  }
+
+  async function resetToBrandNewDatabase(): Promise<void> {
+    await resetDatabase();
+    invalidateTestDbCache();
+    settings.invalidateCache();
+    settings.setup.clearCache();
+  }
+
+  async function createEmptySettingsTable(): Promise<void> {
+    await getDb().execute(
+      "CREATE TABLE settings (key TEXT PRIMARY KEY, value TEXT NOT NULL)",
+    );
+    settings.invalidateCache();
+    settings.setup.clearCache();
+  }
+
+  describe("setup routes", () => {
+    describe("when setup not complete", () => {
+      beforeEach(async () => {
+        // Use a fresh db without setup
+        resetDb();
+        await createTestDb();
+      });
+
+      test("returns not-activated page for home when setup is incomplete", async () => {
+        const response = await handleRequest(mockRequest("/"));
+        await expectHtmlResponse(
+          response,
+          503,
+          "This site has not been activated yet",
+        );
+      });
+
+      test("the not-activated response waits for the version prefetch to settle", async () => {
+        // An unactivated site never reaches loadKeys, so the pending-work
+        // flush must settle the prefetch before the 503 goes out (the edge
+        // runtime kills queries that outlive the response).
+        await resetToBrandNewDatabase();
+
+        const real = getDb();
+        let release = (): void => {};
+        const released = new Promise<void>((resolve) => {
+          release = resolve;
+        });
+        const holdProbe = async (statement: InStatement) => {
+          await released;
+          return real.execute(statement);
+        };
+        const restore = wrapDbClient({
+          batch: () => {},
+          execute: (statement) =>
+            statementSql(statement).startsWith("SELECT value FROM settings")
+              ? holdProbe(statement as InStatement)
+              : null,
+        });
+        try {
+          let settled = false;
+          const inFlight = (async () => {
+            const response = await handleRequest(mockRequest("/"));
+            settled = true;
+            return response;
+          })();
+          await new Promise((resolve) => setTimeout(resolve, 50));
+          expect(settled).toBe(false);
+          release();
+          await expectHtmlResponse(
+            await inFlight,
+            503,
+            "This site has not been activated yet",
+          );
+        } finally {
+          release();
+          restore();
+        }
+      });
+
+      test("does not probe the settings version before setup bootstraps the schema", async () => {
+        // On a setup path the settings table may not exist yet, and the
+        // request cache would share a still-pending probe failure with the
+        // loadKeys read that renders the page.
+        await resetToBrandNewDatabase();
+
+        const seen: string[] = [];
+        const restore = recordQueries(seen);
+        try {
+          const response = await handleRequest(mockRequest("/setup/"));
+          expect(response.status).toBe(200);
+        } finally {
+          restore();
+        }
+
+        const schemaBootstrap = seen.findIndex((sql) =>
+          sql.includes("CREATE TABLE"),
+        );
+        expect(schemaBootstrap).toBeGreaterThan(-1);
+        expect(
+          seen
+            .slice(0, schemaBootstrap)
+            .filter((sql) => sql.startsWith("SELECT value FROM settings")),
+        ).toEqual([]);
+      });
+
+      test("returns not-activated page without bootstrapping a missing settings table", async () => {
+        await resetToBrandNewDatabase();
+
+        const response = await handleRequest(mockRequest("/"));
+        const html = await expectHtmlResponse(
+          response,
+          503,
+          "This site has not been activated yet",
+        );
+        assert(!html.includes('http-equiv="refresh"'));
+
+        expect(await settingsTableExists()).toBe(false);
+      });
+
+      test("returns not-activated page without bootstrapping an empty settings table", async () => {
+        await resetToBrandNewDatabase();
+        await createEmptySettingsTable();
+
+        const response = await handleRequest(mockRequest("/"));
+        await expectHtmlResponse(
+          response,
+          503,
+          "This site has not been activated yet",
+        );
+
+        await assertSchemaEmpty();
+      });
+
+      test("returns not-activated page for admin when setup is incomplete", async () => {
+        const response = await handleRequest(mockRequest("/admin/"));
+        await expectHtmlResponse(
+          response,
+          503,
+          "This site has not been activated yet",
+        );
+      });
+
+      test("health check still works", async () => {
+        const response = await handleRequest(mockRequest("/health"));
+        expect(response.status).toBe(200);
+        expect(await response.text()).toBe("Up :)");
+      });
+
+      test("health check works without a settings table", async () => {
+        await resetToBrandNewDatabase();
+
+        const response = await handleRequest(mockRequest("/health"));
+        expect(response.status).toBe(200);
+        expect(await response.text()).toBe("Up :)");
+        expect(await settingsTableExists()).toBe(false);
+      });
+
+      test("static assets work without a settings table", async () => {
+        await resetToBrandNewDatabase();
+
+        const response = await handleRequest(mockRequest("/style.css"));
+
+        expect(response.status).toBe(200);
+        assertStringIncludes(
+          response.headers.get("content-type") ?? "",
+          "text/css",
+        );
+        expect(await settingsTableExists()).toBe(false);
+      });
+
+      test("custom.css is served as a stylesheet, not the HTML system page", async () => {
+        // The layout links /custom.css on the not-activated page itself, so the
+        // asset must stay text/css even before setup — an HTML fallback trips
+        // the browser's strict MIME check.
+        const response = await handleRequest(mockRequest("/custom.css"));
+
+        assertStringIncludes(
+          response.headers.get("content-type") ?? "",
+          "text/css",
+        );
+        assert(
+          !(response.headers.get("content-type") ?? "").includes("text/html"),
+        );
+        expect(await response.text()).toBe("");
+      });
+
+      test("health and static assets work when settings DB cannot be read", async () => {
+        const { stub } = await import("@std/testing/mock");
+        const executeStub = stub(getDb(), "execute", () =>
+          Promise.reject(new Error("db unavailable")),
+        );
+
+        try {
+          const health = await handleRequest(mockRequest("/health"));
+          expect(health.status).toBe(200);
+          expect(await health.text()).toBe("Up :)");
+
+          const response = await handleRequest(mockRequest("/style.css"));
+          expect(response.status).toBe(200);
+          assertStringIncludes(
+            response.headers.get("content-type") ?? "",
+            "text/css",
+          );
+        } finally {
+          executeStub.restore();
+        }
+      });
+
+      test("returns the temporary status page when settings DB cannot be read", async () => {
+        const { stub } = await import("@std/testing/mock");
+        // Drop the per-isolate "ready" cache so initDb really runs and the
+        // generic DB failure propagates through initializeDatabaseForPath.
+        invalidateInitDbCache();
+        const executeStub = stub(getDb(), "execute", () =>
+          Promise.reject(new Error("db unavailable")),
+        );
+
+        try {
+          await withExpectedError(async () => {
+            const response = await handleRequest(mockRequest("/"));
+            await expectHtmlResponse(
+              response,
+              503,
+              "Temporary error",
+              "status.bunny.net",
+            );
+          });
+        } finally {
+          executeStub.restore();
+        }
+      });
+
+      test("GET /setup/ bootstraps a database with no settings table", async () => {
+        await resetToBrandNewDatabase();
+
+        const response = await handleRequest(mockRequest("/setup/"));
+
+        await expectHtmlResponse(response, 200, "Initial setup");
+        expect(await settingsTableExists()).toBe(true);
+      });
+
+      test("GET /setup/ bootstraps an empty settings table with schema markers", async () => {
+        await resetToBrandNewDatabase();
+        await createEmptySettingsTable();
+
+        const response = await handleRequest(mockRequest("/setup/"));
+
+        await expectHtmlResponse(response, 200, "Initial setup");
+        expect(await settingsTableExists()).toBe(true);
+        expect(await tableExists("listings")).toBe(true);
+        expect(await schemaMarkerKeys()).toEqual([
+          "db_schema_hash",
+          "latest_db_update",
+        ]);
+      });
+
+      test("GET /setup/ shows setup page", async () => {
+        await assertPublicHtml(
+          "/setup/",
+          "Initial setup",
+          "Admin password",
+          "Your country",
+          "Data controller agreement",
+        );
+      });
+
+      test("GET /setup (without trailing slash) shows setup page", async () => {
+        await assertPublicHtml("/setup", "Initial setup");
+      });
+
+      test("POST /setup/ with valid data completes setup", async () => {
+        const response = await submitSetupFormWithDefaults({
+          country: "US",
+        });
+        expectRedirect(response, /^\/setup\/complete$/);
+      });
+
+      test("POST /setup/ without CSRF token rejects request", async () => {
+        // POST without getting CSRF token first
+        const response = await handleRequest(
+          mockFormRequest("/setup/", {
+            admin_password: "mypassword123",
+            admin_password_confirm: "mypassword123",
+            admin_username: TEST_ADMIN_USERNAME,
+            country: "US",
+          }),
+        );
+        await expectFlashRedirect(
+          "/setup/",
+          expect.stringContaining("Invalid or expired form"),
+          false,
+        )(response);
+      });
+
+      test("POST /setup/ with invalid CSRF token rejects request", async () => {
+        // Send a wrong token in the form body
+        const response = await handleRequest(
+          mockFormRequest("/setup/", {
+            admin_password: "mypassword123",
+            admin_password_confirm: "mypassword123",
+            admin_username: TEST_ADMIN_USERNAME,
+            country: "US",
+            csrf_token: "wrong-token-in-form",
+          }),
+        );
+        await expectFlashRedirect(
+          "/setup/",
+          expect.stringContaining("Invalid or expired form"),
+          false,
+        )(response);
+      });
+
+      test("POST /setup/ with empty password shows validation error", async () => {
+        const response = await submitSetupFormWithDefaults({
+          admin_password: "",
+          admin_password_confirm: "",
+        });
+        await expectFlashRedirect(
+          "/setup/",
+          expect.stringContaining("Admin password"),
+          false,
+        )(response);
+      });
+
+      test("POST /setup/ with mismatched passwords shows error", async () => {
+        const response = await submitSetupFormWithDefaults({
+          admin_password_confirm: "different",
+        });
+        await expectFlashRedirect(
+          "/setup/",
+          expect.stringContaining("Passwords do not match"),
+          false,
+        )(response);
+      });
+
+      test("POST /setup/ with short password shows error", async () => {
+        const response = await submitSetupFormWithDefaults({
+          admin_password: "short",
+          admin_password_confirm: "short",
+        });
+        await expectFlashRedirect(
+          "/setup/",
+          expect.stringContaining("at least 8 characters"),
+          false,
+        )(response);
+      });
+
+      test("POST /setup/ with invalid country shows error", async () => {
+        const response = await submitSetupFormWithDefaults({
+          country: "XX",
+        });
+        await expectFlashRedirect(
+          "/setup/",
+          expect.stringContaining("valid country"),
+          false,
+        )(response);
+      });
+
+      test("POST /setup/ without accepting agreement shows error", async () => {
+        const response = await submitSetupFormWithDefaults({
+          accept_agreement: "", // Explicitly not accepting
+        });
+        await expectFlashRedirect(
+          "/setup/",
+          expect.stringContaining("must accept the Data controller agreement"),
+          false,
+        )(response);
+      });
+
+      test("POST /setup/ normalizes lowercase country to uppercase", async () => {
+        const response = await submitSetupFormWithDefaults({
+          country: "us",
+        });
+        expectRedirect(response, /^\/setup\/complete$/);
+      });
+
+      test("POST /setup/ returns 503 when completeSetup fails", async () => {
+        const { stub } = await import("@std/testing/mock");
+        const { settings } = await import("#db/settings.ts");
+
+        const getResponse = await handleRequest(mockRequest("/setup/"));
+        const csrfToken = extractCsrfToken(await getResponse.text());
+
+        await withExpectedError(async () => {
+          await withMocks(
+            () => ({
+              mockCompleteSetup: stub(settings.setup, "complete", () =>
+                Promise.reject(new Error("Database error")),
+              ),
+              mockConsoleError: stub(console, "error", () => {}),
+            }),
+            async () => {
+              const response = await handleRequest(
+                mockSetupFormRequest(
+                  {
+                    admin_password: "mypassword123",
+                    admin_password_confirm: "mypassword123",
+                    admin_username: TEST_ADMIN_USERNAME,
+                    country: "GB",
+                  },
+                  csrfToken as string,
+                ),
+              );
+              await expectHtmlResponse(response, 503, "Temporary error");
+            },
+          );
+        });
+      });
+
+      test("PUT /setup/ redirects to /setup/ (unsupported method)", async () => {
+        const response = await awaitTestRequest("/setup/", { method: "PUT" });
+        // PUT method falls through routeSetup (returns null), then redirects to /setup/
+        expectRedirect(response, /^\/setup$/);
+      });
+
+      test("setup form works with full browser flow simulation", async () => {
+        // This test simulates what a real browser does:
+        // 1. GET /setup/ - browser receives the page with CSRF token
+        // 2. User fills form and submits
+        // 3. Browser sends POST with signed CSRF token
+        await completeSetupViaBrowser("http://localhost/setup/");
+      });
+
+      test("setup form works when accessed via /setup (no trailing slash)", async () => {
+        // Same full flow, but reached at /setup with no trailing slash.
+        await completeSetupViaBrowser("http://localhost/setup");
+      });
+
+      test("GET /setup/complete redirects to setup when not yet complete", async () => {
+        const response = await handleRequest(mockRequest("/setup/complete"));
+        expectRedirect(response, /^\/setup\/$/);
+      });
+    });
+
+    describe("when setup already complete", () => {
+      test("GET /setup/ redirects to home", async () => {
+        const response = await handleRequest(mockRequest("/setup/"));
+        expectRedirect(response, /^\/$/);
+      });
+
+      test("POST /setup/ redirects to home", async () => {
+        const response = await handleRequest(
+          mockFormRequest("/setup/", {
+            admin_password: "newpassword123",
+            admin_password_confirm: "newpassword123",
+            country: "FR",
+          }),
+        );
+        expectRedirect(response, /^\/$/);
+      });
+
+      test("GET /setup/complete shows success page when setup is done", async () => {
+        await assertPublicHtml(
+          "/setup/complete",
+          "Setup complete",
+          'href="/admin/login"',
+          "Log in",
+        );
+      });
+    });
+  });
+
+  describe("audit logging", () => {
+    test("logs activity when setup is completed", async () => {
+      resetDb();
+      await createTestDb();
+
+      const getResponse = await handleRequest(mockRequest("/setup/"));
+      const csrfToken = extractCsrfToken(await getResponse.text());
+
+      await handleRequest(
+        mockSetupFormRequest(
+          {
+            admin_password: "mypassword123",
+            admin_password_confirm: "mypassword123",
+            admin_username: TEST_ADMIN_USERNAME,
+            country: "US",
+          },
+          csrfToken as string,
+        ),
+      );
+
+      // The setup-completion entry is owner-key encrypted, so read it back as
+      // the newly-created owner (whose password is non-default here).
+      await reloginAsAdmin("mypassword123");
+      const logs = await getAllActivityLog();
+      expect(
+        logs.some((l) => l.message.includes("Initial setup completed")),
+      ).toBe(true);
+    });
+  });
+
+  describe("setup routes (country default)", () => {
+    test("POST /setup/ with empty country defaults to GB", async () => {
+      resetDb();
+      await createTestDb();
+
+      const response = await submitSetupFormWithDefaults({
+        country: "", // Empty defaults to GB
+      });
+      expectRedirect(response, /^\/setup\/complete$/);
+    });
+  });
+});

@@ -1,0 +1,70 @@
+/**
+ * Signed CSRF tokens using HMAC.
+ *
+ * Each token embeds a timestamp, nonce, and HMAC signed with DB_ENCRYPTION_KEY.
+ * The server verifies the signature and checks expiry — no cookies needed.
+ * This works everywhere including iframes in iOS in-app browsers (Facebook,
+ * Instagram) where Safari/WebKit blocks third-party cookies.
+ */
+
+import { hmacHash } from "#crypto/hashing.ts";
+import { verifySignedValue } from "#crypto/signed-value.ts";
+import { base64ToBase64Url, generateSecureToken } from "#crypto/utils.ts";
+import { t } from "#i18n";
+import { nowSeconds } from "#shared/now.ts";
+import { currentRequestStore, requestField } from "#shared/request-context.ts";
+
+const SIGNED_PREFIX = "s1.";
+const DEFAULT_MAX_AGE_S = 3600; // 1 hour
+
+/** Default message for invalid/expired CSRF form submissions (request-scoped). */
+export const csrfInvalidFormMessage = (): string => t("error.csrf_invalid");
+
+/** Build the HMAC message from timestamp and nonce */
+const buildMessage = (timestamp: number, nonce: string): string =>
+  `${SIGNED_PREFIX}${timestamp}.${nonce}`;
+
+/** Create a signed CSRF token: s1.{timestamp}.{nonce}.{hmac} */
+export const signCsrfToken = async (): Promise<string> => {
+  const timestamp = nowSeconds();
+  const nonce = generateSecureToken();
+  const message = buildMessage(timestamp, nonce);
+  const hmac = base64ToBase64Url(await hmacHash(message));
+  const token = `${message}.${hmac}`;
+  const store = currentRequestStore();
+  if (store) store.csrfToken = token;
+  return token;
+};
+
+/** Get the most recently generated CSRF token (for synchronous JSX rendering) */
+export const getCurrentCsrfToken = requestField((store) => store.csrfToken, "");
+
+/** Check whether a token uses the signed format */
+export const isSignedCsrfToken = (token: string): boolean =>
+  token.startsWith(SIGNED_PREFIX);
+
+/** Verify a signed CSRF token's signature and expiry */
+export const verifySignedCsrfToken = async (
+  token: string,
+  maxAge = DEFAULT_MAX_AGE_S,
+): Promise<boolean> => {
+  if (!token.startsWith(SIGNED_PREFIX)) return false;
+
+  const withoutPrefix = token.slice(SIGNED_PREFIX.length);
+  const parts = withoutPrefix.split(".");
+  if (parts.length !== 3) return false;
+
+  const timestampStr = parts[0];
+  const nonce = parts[1];
+  const providedHmac = parts[2];
+  if (!timestampStr || !nonce || !providedHmac) return false;
+
+  return verifySignedValue(
+    timestampStr,
+    providedHmac,
+    // Valid for `maxAge` seconds after issue, rejecting future timestamps
+    // beyond 60s of clock-skew slack.
+    (timestamp, nowS) => nowS - timestamp <= maxAge && timestamp - nowS <= 60,
+    (timestamp) => buildMessage(timestamp, nonce),
+  );
+};

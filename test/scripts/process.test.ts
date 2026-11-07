@@ -1,0 +1,163 @@
+import { expect } from "@std/expect";
+import { describe, it as test } from "@std/testing/bdd";
+import {
+  INHERIT_STDIO,
+  removeTree,
+  runDeno,
+  stopProcess,
+  stopProcessNow,
+} from "#scripts/process.ts";
+import { stubChildProcess } from "#test-utils/command-capture.ts";
+import { tempDir } from "#test-utils/files.ts";
+
+const stopped = (code = 0): Deno.CommandStatus => ({
+  code,
+  signal: null,
+  success: code === 0,
+});
+
+const fakeChild = (
+  onKill: (
+    signal: Deno.Signal | undefined,
+    finish: (status?: Deno.CommandStatus) => void,
+    fail: (error?: Error) => void,
+  ) => void,
+) => {
+  let refed = false;
+  const calls: (Deno.Signal | undefined)[] = [];
+  let resolveStatus: (status: Deno.CommandStatus) => void = () => {};
+  let rejectStatus: (error: Error) => void = () => {};
+  const status = new Promise<Deno.CommandStatus>((resolve, reject) => {
+    resolveStatus = resolve;
+    rejectStatus = reject;
+  });
+  const finish = (status = stopped()) => resolveStatus(status);
+  const fail = (error = new Error("stopped")) => rejectStatus(error);
+  const child = stubChildProcess({
+    kill: (signal?: Deno.Signal) => {
+      calls.push(signal);
+      onKill(signal, finish, fail);
+    },
+    ref: () => {
+      refed = true;
+    },
+    status,
+  });
+
+  return { calls, child, refed: () => refed };
+};
+
+describe("script process helpers", () => {
+  test("shares the terminal with the child on all three streams", () => {
+    expect(INHERIT_STDIO).toEqual({
+      stderr: "inherit",
+      stdin: "inherit",
+      stdout: "inherit",
+    });
+  });
+
+  test("removes a folder that still has things in it", async () => {
+    using dir = tempDir();
+    Deno.mkdirSync(`${dir.path}/nested`);
+    Deno.writeTextFileSync(`${dir.path}/nested/file.txt`, "bye");
+
+    await removeTree(`${dir.path}/nested`);
+
+    expect(() => Deno.statSync(`${dir.path}/nested`)).toThrow(
+      Deno.errors.NotFound,
+    );
+  });
+
+  test("runs the current Deno executable", async () => {
+    const result = await runDeno(["eval", "Deno.exit(7)"], Deno.cwd());
+
+    expect(result.code).toBe(7);
+    expect(result.success).toBe(false);
+  });
+
+  test("stops a child process gracefully and closes resources", async () => {
+    let closed = false;
+    const process = fakeChild((_signal, finish) => finish());
+
+    await stopProcess(process.child, 50, () => {
+      closed = true;
+      return Promise.resolve();
+    });
+
+    expect(process.refed()).toBe(true);
+    expect(closed).toBe(true);
+    expect(process.calls).toEqual([undefined]);
+  });
+
+  test("force-stops a child process that ignores the first signal", async () => {
+    const process = fakeChild((signal, _finish, fail) => {
+      if (signal === "SIGKILL") fail();
+    });
+
+    await stopProcess(process.child, 1);
+
+    expect(process.calls).toEqual([undefined, "SIGKILL"]);
+  });
+
+  test("waits for a force-stopped child to actually end", async () => {
+    const order: string[] = [];
+    const killed = Promise.withResolvers<() => void>();
+    const process = fakeChild((signal, finish) => {
+      if (signal === "SIGKILL") {
+        killed.resolve(() => {
+          order.push("child ended");
+          finish();
+        });
+      }
+    });
+
+    const stopping = stopProcess(process.child, 1, () => {
+      order.push("cleaned up");
+      return Promise.resolve();
+    });
+
+    // Wait for the force-stop to actually be asked for, then end the child.
+    const endKilled = await killed.promise;
+    endKilled();
+    await stopping;
+
+    expect(order).toEqual(["child ended", "cleaned up"]);
+  });
+
+  test("still closes resources when the graceful signal fails", async () => {
+    let closed = false;
+    const child = stubChildProcess({
+      kill: () => {
+        throw new Error("already stopped");
+      },
+      ref: () => {},
+      status: Promise.resolve(stopped()),
+    });
+
+    await stopProcess(child, 50, () => {
+      closed = true;
+      return Promise.resolve();
+    });
+
+    expect(closed).toBe(true);
+  });
+
+  test("ignores already-stopped children in immediate stop", () => {
+    const child = stubChildProcess({
+      kill: () => {
+        throw new Error("already stopped");
+      },
+    });
+
+    expect(() => stopProcessNow(child)).not.toThrow();
+  });
+
+  test("fails loudly when a killed child never exits", async () => {
+    const process = fakeChild((_signal, _finish) => {});
+
+    await expect(stopProcess(process.child, 1)).rejects.toThrow(
+      "child process did not exit after SIGKILL within 1ms",
+    );
+    expect(process.calls).toEqual([undefined, "SIGKILL"]);
+  });
+});

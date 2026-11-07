@@ -1,0 +1,81 @@
+/**
+ * Listing attendee CSV export (GET /admin/listing/:id/export).
+ *
+ * Mirrors the on-screen attendee table — same date filter and check-in
+ * filter — then renders the rows (with question answers) as CSV.
+ */
+
+import { logActivity } from "#db/activity-log.ts";
+import { getAttendeeIdsWithPaymentReference } from "#db/payment-references.ts";
+import { settings } from "#db/settings.ts";
+import { csvResponse, listingAttendeesLoader } from "#routes/admin/actions.ts";
+import { generateAttendeesCsv } from "#routes/admin/attendees-csv.ts";
+import type { TypedRouteHandler } from "#routes/router.ts";
+import { attendeeListOrder } from "#shared/attendee-list-controls.ts";
+import {
+  completePaymentAttendees,
+  filterAttendees,
+} from "#templates/admin/listings/attendees.tsx";
+import {
+  filteredAttendeesHandler,
+  loadListingQuestionData,
+} from "./listings-view.ts";
+
+export const handleAdminListingExport: TypedRouteHandler<
+  "GET /admin/listing/:id/export"
+> = (request, { id }) =>
+  listingAttendeesLoader(
+    "/admin/listing/:id/export",
+    request,
+    id,
+  )(
+    filteredAttendeesHandler(
+      request,
+      async ({ listing, dateFilter, checkin, filteredByDate, sort }) => {
+        const isDaily = listing.listing_type === "daily";
+        const paymentReferenceAttendeeIds =
+          await getAttendeeIdsWithPaymentReference(filteredByDate);
+        // Mirror the on-screen attendee table. Drop the failed-payment rows
+        // that are split into the Failed Payments section. Then apply the
+        // /in /out check-in filter and the roster's row order.
+        const exported = attendeeListOrder(sort)(
+          filterAttendees(
+            completePaymentAttendees(
+              listing,
+              filteredByDate,
+              paymentReferenceAttendeeIds,
+            ),
+            checkin,
+          ),
+        );
+
+        const attendeeIds = exported.map((a) => a.id);
+        const questionData = await loadListingQuestionData(
+          listing.id,
+          attendeeIds,
+        );
+
+        const csv = generateAttendeesCsv(
+          exported,
+          isDaily,
+          {
+            listingDate: listing.date,
+            listingLocation: listing.location,
+          },
+          questionData,
+          settings.timezone,
+        );
+        const sanitizedName = listing.name.replace(/[^a-zA-Z0-9]/g, "_");
+        const filename = dateFilter
+          ? `${sanitizedName}_${dateFilter}_attendees.csv`
+          : `${sanitizedName}_attendees.csv`;
+        await logActivity(
+          `CSV exported for '${listing.name}'${
+            dateFilter ? ` (date: ${dateFilter})` : ""
+          }`,
+          listing,
+        );
+        return csvResponse(csv, filename);
+      },
+    ),
+  );

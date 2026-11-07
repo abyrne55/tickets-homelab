@@ -1,0 +1,463 @@
+/**
+ * Attendee statuses table operations.
+ *
+ * Statuses are owner-defined labels an attendee moves through (e.g. a public
+ * reservation that later becomes paid). The flags and the reservation amount
+ * are stored as plaintext so the public balance-payment page and the payment
+ * webhook can read the reserved/paid state. Only the human-readable `name` is
+ * encrypted at rest.
+ */
+
+import { decrypt, encrypt } from "#crypto/encryption.ts";
+import type { EnvKeyEncrypted } from "#crypto/sealed.ts";
+import { logActivity } from "#db/activity-log.ts";
+import {
+  execute,
+  queryAll,
+  resultRows,
+  type SqlStatement,
+  type TxScope,
+  withTransaction,
+} from "#db/client.ts";
+import type { NamedSortOrderInput } from "#db/common-schema.ts";
+import { numberedStatement } from "#db/numbered-statement.ts";
+import { defineOrderedCollection } from "#db/ordered-collection.ts";
+import { col, defineCachedListTable, writeTableRow } from "#db/table.ts";
+import { requiredMapValue } from "#fp";
+import { t } from "#i18n";
+import { requireValue } from "#shared/required-value.ts";
+import { errorResult, okResult, type Result } from "#shared/result.ts";
+
+/** Name of the status seeded on first run so there is always at least one. */
+export const DEFAULT_ATTENDEE_STATUS_NAME = "Confirmed";
+
+/** A status an attendee can be in. */
+export interface AttendeeStatus {
+  id: number;
+  is_paid_default: boolean;
+  is_public_default: boolean;
+  is_reservation: boolean;
+  name: string; // encrypted at rest
+  reservation_amount: string;
+  sort_order: number;
+}
+
+/** Complete owner form input for creating or editing a status. */
+export interface AttendeeStatusWriteInput {
+  isPaidDefault: boolean;
+  isPublicDefault: boolean;
+  isReservation: boolean;
+  name: string;
+  reservationAmount: string;
+}
+
+export type AttendeeStatusSaveError =
+  | "public_default_required"
+  | "paid_default_required";
+
+export type AttendeeStatusDeleteError =
+  | "last_status"
+  | "public_default"
+  | "paid_default"
+  | "status_in_use";
+
+/** The message a refused status save answers with, per the error code. Shared
+ *  by the dashboard form and the admin JSON API, so an API caller reads the
+ *  same refusal an operator reads on the settings page. */
+export const attendeeStatusSaveMessage = (
+  code: AttendeeStatusSaveError,
+): string => {
+  switch (code) {
+    case "paid_default_required":
+      return "Choose another paid default before clearing this one";
+    case "public_default_required":
+      return "Choose another public default before clearing this one";
+  }
+};
+
+/** The message a refused status delete answers with, per the error code. The
+ *  catalog-backed message reads its translation at call time, because this db
+ *  module loads before the message groups. */
+export const attendeeStatusDeleteMessage = (
+  code: AttendeeStatusDeleteError,
+): string => {
+  switch (code) {
+    case "last_status":
+      return "You must keep at least one status";
+    case "paid_default":
+      return "Choose another paid default before deleting this status";
+    case "public_default":
+      return "Choose another public default before deleting this status";
+    case "status_in_use":
+      return t("statuses.delete_in_use_no_target");
+  }
+};
+
+/** The prerequisite the delete command refuses on before any reassign:
+ *  the one home of the order both the save and the delete page ask. */
+export type StatusDeleteBlocker = Exclude<
+  AttendeeStatusDeleteError,
+  "status_in_use"
+>;
+
+/** The prerequisite a delete of this status would be refused on, or null when
+ *  the delete can proceed (freely, or through a reassign choice). The delete
+ *  command refuses in exactly this order. The delete page predicts it. */
+export const statusDeleteBlocker = (
+  status: Pick<AttendeeStatus, "is_paid_default" | "is_public_default">,
+  anotherStatusExists: boolean,
+): StatusDeleteBlocker | null => {
+  if (!anotherStatusExists) return "last_status";
+  if (status.is_public_default) return "public_default";
+  if (status.is_paid_default) return "paid_default";
+  return null;
+};
+
+/** The other statuses and the blocker a delete of this status will be
+ *  refused on. The blocker is null when the delete can proceed. The delete
+ *  page and the JSON API both ask this before a delete, so they refuse
+ *  exactly the same statuses. Both callers have already loaded the status, so
+ *  a missing row is a broken race and throws loudly. */
+export const statusDeleteProspects = async (
+  id: number,
+): Promise<{
+  blocker: StatusDeleteBlocker | null;
+  others: readonly AttendeeStatus[];
+}> => {
+  const status = requireValue(
+    await getAttendeeStatus(id),
+    `Attendee status ${id} does not exist`,
+  );
+  const others = (await attendeeStatuses.getAll()).filter(
+    (other) => other.id !== id,
+  );
+  return { blocker: statusDeleteBlocker(status, others.length > 0), others };
+};
+
+/** Cached attendee_statuses table — only `name` is encrypted; writes
+ * auto-invalidate the cache. */
+export const attendeeStatuses = defineCachedListTable<
+  AttendeeStatus,
+  NamedSortOrderInput & Partial<AttendeeStatusWriteInput>
+>({
+  name: "attendee_statuses",
+  orderBy: "sort_order ASC, id ASC",
+  primaryKey: "id",
+  schema: {
+    id: col.generated<number>(),
+    is_paid_default: col.boolean(false),
+    is_public_default: col.boolean(false),
+    is_reservation: col.boolean(false),
+    name: col.encrypted(encrypt, decrypt),
+    reservation_amount: col.simple<string>(),
+    sort_order: col.simple<number>(),
+  },
+});
+
+export const attendeeStatusOrder = defineOrderedCollection({
+  key: "id",
+  table: "attendee_statuses",
+});
+
+/** Find the first cached status matching a predicate (decrypted), or null. */
+const findStatus = async (
+  pred: (s: AttendeeStatus) => boolean,
+): Promise<AttendeeStatus | null> => {
+  const all = await attendeeStatuses.getAll();
+  const found = all.find(pred);
+  return found === undefined ? null : found;
+};
+
+/** Get a single status by id (decrypted), or null. */
+export const getAttendeeStatus = (id: number): Promise<AttendeeStatus | null> =>
+  findStatus((s) => s.id === id);
+
+/** Get the status carrying a required default flag. */
+const getFlaggedStatus =
+  (flag: "is_public_default" | "is_paid_default") =>
+  async (): Promise<AttendeeStatus> =>
+    requireValue(
+      await findStatus((item) => item[flag]),
+      `No attendee status has the required ${flag} flag`,
+    );
+
+/** The status new public bookings start in. */
+export const requirePublicDefaultStatus: () => Promise<AttendeeStatus> =
+  getFlaggedStatus("is_public_default");
+
+/** The status an attendee moves to once a reservation balance is paid. */
+export const requirePaidDefaultStatus: () => Promise<AttendeeStatus> =
+  getFlaggedStatus("is_paid_default");
+
+/** The id of the public-default status. */
+export const requirePublicStatusId = async (): Promise<number> =>
+  (await requirePublicDefaultStatus()).id;
+
+/** The status new bookings start in, read from a status list the caller has
+ *  already loaded. Both attendee create paths resolve a missing choice to it —
+ *  the admin form and the admin JSON API — so the rule lives beside the save
+ *  and delete guards that keep one status carrying the flag. A list without a
+ *  public default is a broken setup and fails loudly; the seed and the write
+ *  guards make that state unreachable. */
+export const publicDefaultStatusOf = (
+  statuses: readonly AttendeeStatus[],
+): AttendeeStatus =>
+  requireValue(
+    statuses.find((status) => status.is_public_default),
+    "No public default status is configured",
+  );
+
+/** The three columns a status write reads back about itself, opened by the
+ * table — so the two default flags arrive as the booleans they are declared
+ * to be, not as the 1/0 the database stores. */
+const statusDefaults = attendeeStatuses.table.read.pick([
+  "is_paid_default",
+  "is_public_default",
+  "sort_order",
+]);
+
+type DefaultRow = NonNullable<Awaited<ReturnType<typeof statusDefaults.one>>>;
+
+const executeStatusWrite = async (
+  tx: TxScope,
+  statement: SqlStatement,
+): Promise<void> => {
+  await tx.execute(statement);
+};
+
+const getCurrentDefaults = async (
+  tx: TxScope,
+  id: number,
+): Promise<DefaultRow> => {
+  const [current] = await statusDefaults.readAll(
+    resultRows(await tx.execute(statusDefaults.statement({ id }))),
+  );
+  if (!current) throw new Error(`Attendee status ${id} does not exist`);
+  return current;
+};
+
+const defaultChangeError = (
+  current: DefaultRow,
+  input: AttendeeStatusWriteInput,
+): AttendeeStatusSaveError | null => {
+  if (current.is_public_default && !input.isPublicDefault) {
+    return "public_default_required";
+  }
+  return current.is_paid_default && !input.isPaidDefault
+    ? "paid_default_required"
+    : null;
+};
+
+const clearChosenDefaults = async (
+  tx: TxScope,
+  id: number | null,
+  input: AttendeeStatusWriteInput,
+): Promise<void> => {
+  const clearDefault = async (
+    column: "is_public_default" | "is_paid_default",
+  ): Promise<void> => {
+    await executeStatusWrite(
+      tx,
+      numberedStatement((bind) => {
+        const statusId = bind(id);
+        return `UPDATE attendee_statuses AS status
+               SET ${column} = 0
+             WHERE (${statusId} IS NULL OR status.id != ${statusId}) AND status.${column} = 1`;
+      }),
+    );
+  };
+  if (input.isPublicDefault) {
+    await clearDefault("is_public_default");
+  }
+  if (input.isPaidDefault) {
+    await clearDefault("is_paid_default");
+  }
+};
+
+const saveStatus = (
+  id: number | null,
+  input: AttendeeStatusWriteInput,
+): Promise<Result<AttendeeStatus, AttendeeStatusSaveError>> =>
+  withTransaction(async (tx) => {
+    if (id !== null) {
+      const current = await getCurrentDefaults(tx, id);
+      const error = defaultChangeError(current, input);
+      if (error !== null) return errorResult(error);
+      await clearChosenDefaults(tx, id, input);
+      await writeTableRow(tx, attendeeStatuses.table, {
+        id,
+        input,
+        kind: "update",
+      });
+      return okResult({
+        id,
+        is_paid_default: input.isPaidDefault,
+        is_public_default: input.isPublicDefault,
+        is_reservation: input.isReservation,
+        name: input.name,
+        reservation_amount: input.reservationAmount,
+        sort_order: current.sort_order,
+      });
+    }
+
+    await clearChosenDefaults(tx, null, input);
+    const sortOrder = await attendeeStatusOrder.next({ transaction: tx });
+    const status = await writeTableRow(tx, attendeeStatuses.table, {
+      input: { ...input, sortOrder },
+      kind: "insert",
+    });
+    return okResult(status);
+  });
+
+/** Reads the two statuses a reassign touches — the row being emptied and the
+ *  owner's chosen target — with their decoded names, in one query. Fewer than
+ *  two distinct rows means the target is missing. */
+const reassignNameRows = async (
+  tx: TxScope,
+  fromId: number,
+  toId: number,
+): Promise<{ fromName: string; toName: string } | null> => {
+  const rows = await txRows<{ id: number; name: EnvKeyEncrypted }>(tx, {
+    args: [fromId, toId],
+    sql: `SELECT status.id, status.name
+            FROM attendee_statuses AS status
+           WHERE status.id IN (?, ?)`,
+  });
+  if (rows.length !== 2) return null;
+  const named = new Map(
+    await Promise.all(
+      rows.map(async (row) => [row.id, await decrypt(row.name)] as const),
+    ),
+  );
+  return {
+    fromName: requiredMapValue(
+      named,
+      fromId,
+      `Attendee status ${fromId} missing`,
+    ),
+    toName: requiredMapValue(named, toId, `Attendee status ${toId} missing`),
+  };
+};
+
+/** The one occupancy query, read two ways: through a write transaction (the
+ *  delete command's probe) and through the plain client (the delete page's
+ *  displayed count). One query, so the two can never disagree on what holds. */
+const HELD_COUNT_SQL =
+  "SELECT COUNT(*) AS held FROM attendees AS attendee WHERE attendee.status_id = ?";
+
+const heldOf = (rows: readonly { held: number }[]): number => rows[0]!.held;
+
+/** How many attendees sit on a status, read inside a transaction. */
+const heldAttendeeCountTx = async (tx: TxScope, id: number): Promise<number> =>
+  heldOf(
+    await txRows<{ held: number }>(tx, { args: [id], sql: HELD_COUNT_SQL }),
+  );
+
+/** How many attendees sit on a status, read outside a transaction. */
+export const heldAttendeeCount = async (id: number): Promise<number> =>
+  heldOf(await queryAll<{ held: number }>(HELD_COUNT_SQL, [id]));
+
+/** Reads rows through an open write transaction, naming the rows. */
+const txRows = async <T>(tx: TxScope, stmt: SqlStatement): Promise<T[]> =>
+  resultRows<T>(await tx.execute(stmt));
+
+/** Moves every attendee off `id` onto the operator's chosen `reassignTo`
+ *  status, inside the caller's transaction, and records the move. Returns the
+ *  moved count, or null when attendees hold the status and the target is
+ *  missing or the status itself. */
+const reassignHeldAttendees = async (
+  tx: TxScope,
+  id: number,
+  reassignTo: number | undefined,
+): Promise<number | null> => {
+  const held = await heldAttendeeCountTx(tx, id);
+  if (held === 0) return 0;
+  if (reassignTo === undefined || reassignTo === id) return null;
+  const names = await reassignNameRows(tx, id, reassignTo);
+  if (names === null) return null;
+  await tx.execute({
+    args: [reassignTo, id],
+    sql: "UPDATE attendees AS attendee SET status_id = ? WHERE attendee.status_id = ?",
+  });
+  await logActivity(
+    `${held} attendee(s) moved from status '${names.fromName}' to '${names.toName}'`,
+    null,
+    null,
+    tx,
+  );
+  return held;
+};
+
+/** The single delete command for a status row. A status attendees hold needs
+ *  the operator's chosen target: every held attendee moves to it inside the
+ *  transaction, then the status goes. A missing target keeps everything. */
+const deleteStatus = (
+  id: number,
+  reassignTo?: number,
+): Promise<Result<void, AttendeeStatusDeleteError>> =>
+  withTransaction(async (tx) => {
+    const status = await getCurrentDefaults(tx, id);
+
+    const [anotherStatus] = await txRows<{ id: number }>(tx, {
+      args: [id],
+      sql: `SELECT status.id
+              FROM attendee_statuses AS status
+             WHERE status.id != ?
+             LIMIT 1`,
+    });
+    const blocker = statusDeleteBlocker(status, anotherStatus !== undefined);
+    if (blocker) return errorResult(blocker);
+
+    if ((await reassignHeldAttendees(tx, id, reassignTo)) === null) {
+      return errorResult("status_in_use");
+    }
+
+    await tx.execute({
+      args: [id],
+      sql: "DELETE FROM attendee_statuses AS status WHERE status.id = ?",
+    });
+    return okResult(undefined);
+  });
+
+export interface AttendeeStatusWrites {
+  delete: (
+    id: number,
+    reassignTo?: number,
+  ) => Promise<Result<void, AttendeeStatusDeleteError>>;
+  save: (
+    id: number | null,
+    input: AttendeeStatusWriteInput,
+  ) => Promise<Result<AttendeeStatus, AttendeeStatusSaveError>>;
+}
+
+/** The single owner-write boundary for status rows and their invariants. */
+export const attendeeStatusWrites: AttendeeStatusWrites = {
+  delete: deleteStatus,
+  save: saveStatus,
+};
+
+/**
+ * Ensure at least one status exists. Seeds a single non-reservation default
+ * (both the public-new and paid target) so fresh installs behave exactly as
+ * before — public bookings are paid in full with no balance — and backfills
+ * any pre-existing attendees onto it. Idempotent: a no-op once any status
+ * exists. Runs from the schema migration so every environment is seeded.
+ */
+export const ensureDefaultAttendeeStatus = async (): Promise<void> => {
+  const existing = await queryAll<{ id: number }>(
+    "SELECT status.id FROM attendee_statuses AS status LIMIT 1",
+  );
+  if (existing.length > 0) return;
+  const status = await attendeeStatuses.table.insert({
+    isPaidDefault: true,
+    isPublicDefault: true,
+    isReservation: false,
+    name: DEFAULT_ATTENDEE_STATUS_NAME,
+    reservationAmount: "0",
+    sortOrder: 0,
+  });
+  await execute(
+    "UPDATE attendees AS attendee SET status_id = ? WHERE attendee.status_id IS NULL",
+    [status.id],
+  );
+};

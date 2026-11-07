@@ -1,0 +1,314 @@
+import { assert, assertStringIncludes } from "@std/assert";
+import { expect } from "@std/expect";
+import { describe, it as test } from "@std/testing/bdd";
+import { formatDateLabel } from "#shared/date-labels.ts";
+import {
+  postCheckin,
+  readTicketPage,
+  setupCheckinTest,
+} from "#test/features/checkin/helpers.ts";
+import {
+  expectIncludesAll,
+  tableRowContaining,
+} from "#test-utils/assertions.ts";
+import { describeWithEnv } from "#test-utils/db.ts";
+import { bookAttendee } from "#test-utils/db-helpers/attendee-payments.ts";
+import {
+  createDailyTestAttendee,
+  createMultiBookingAttendee,
+  createTestAttendeeWithToken,
+} from "#test-utils/db-helpers/attendees.ts";
+import { createTwoListingBooking } from "#test-utils/db-helpers/bookings.ts";
+import { createTestListing } from "#test-utils/db-helpers/listings.ts";
+import { awaitTestRequest, mockFormRequest } from "#test-utils/mocks.ts";
+import { adminGet, testCookie, testCsrfToken } from "#test-utils/session.ts";
+
+describeWithEnv("check-in page (GET /checkin/:tokens)", { db: true }, () => {
+  describe("GET /checkin/:tokens (unauthenticated)", () => {
+    test("shows public check-in message for unauthenticated users", async () => {
+      const { token } = await createTestAttendeeWithToken(
+        "Alice",
+        "alice@test.com",
+      );
+
+      const response = await awaitTestRequest(`/checkin/${token}`);
+      expect(response.status).toBe(200);
+
+      const body = await response.text();
+      expectIncludesAll(body, ["Check-in", "show this QR code"]);
+    });
+
+    test("returns 404 for invalid token", async () => {
+      const response = await awaitTestRequest("/checkin/bad-token");
+      expect(response.status).toBe(404);
+    });
+  });
+  describe("GET /checkin/:tokens (authenticated admin)", () => {
+    test("shows current status without auto-checking-in", async () => {
+      const { token, session } = await setupCheckinTest("Bob", "bob@test.com");
+      const body = await readTicketPage(token, session.cookie);
+      expectIncludesAll(body, ["Check in", "Check In All"]);
+      assert(!body.includes('class="success"'));
+    });
+
+    test("keeps one row per booking line, each with its own listing's check-in button", async () => {
+      const first = await createTestListing({
+        maxAttendees: 10,
+        name: "First Listing",
+      });
+      const second = await createTestListing({
+        maxAttendees: 10,
+        name: "Second Listing",
+      });
+      const attendee = await createMultiBookingAttendee(
+        "Multi",
+        "multi@test.com",
+        [{ listingId: first.id }, { listingId: second.id }],
+      );
+      const cookie = await testCookie();
+
+      const response = await awaitTestRequest(
+        `/checkin/${attendee.ticket_token}`,
+        { cookie },
+      );
+      const body = await response.text();
+      // The bookings stay separate rows so each listing checks in on its own.
+      expectIncludesAll(body, [
+        `/admin/listing/${first.id}/attendee/${attendee.id}/checkin`,
+        `/admin/listing/${second.id}/attendee/${attendee.id}/checkin`,
+      ]);
+    });
+
+    test("shows attendee contact details in admin view", async () => {
+      const { token, session } = await setupCheckinTest(
+        "Bob",
+        "bob@test.com",
+        { fields: "email,phone" },
+        1,
+        "555-1234",
+      );
+      const body = await readTicketPage(token, session.cookie);
+      expectIncludesAll(body, ["Bob", "bob@test.com", "555-1234"]);
+    });
+
+    test("shows multiple attendees from different listings", async () => {
+      const { listing: listingA, token: tokenA } =
+        await createTestAttendeeWithToken("Carol", "carol@test.com");
+      const { listing: listingB, token: tokenB } =
+        await createTestAttendeeWithToken("Carol", "carol@test.com");
+
+      const response = await adminGet(`/checkin/${tokenA}+${tokenB}`);
+      expect(response.status).toBe(200);
+
+      const body = await response.text();
+      expectIncludesAll(body, [listingA.name, listingB.name]);
+    });
+
+    test("returns 404 for invalid tokens when authenticated", async () => {
+      const response = await adminGet("/checkin/bad-token");
+      expect(response.status).toBe(404);
+    });
+
+    test("returns 404 for orphaned attendee with no listing links", async () => {
+      const { listing, token } = await setupCheckinTest(
+        "Orphan",
+        "orphan@test.com",
+      );
+      const { getDb } = await import("#db/client.ts");
+      await getDb().execute({
+        args: [listing.id],
+        sql: "DELETE FROM listing_attendees WHERE listing_id = ?",
+      });
+      const response = await adminGet(`/checkin/${token}`);
+      expect(response.status).toBe(404);
+    });
+
+    test("shows listing name and quantity in admin view", async () => {
+      const { listing, token, session } = await setupCheckinTest(
+        "Dave",
+        "dave@test.com",
+        { maxQuantity: 5 },
+        3,
+      );
+      const body = await readTicketPage(token, session.cookie);
+      expectIncludesAll(body, [listing.name, "3"]);
+    });
+
+    test("links listing name to admin listing page", async () => {
+      const { listing, token, session } = await setupCheckinTest(
+        "Fay",
+        "fay@test.com",
+      );
+      const body = await readTicketPage(token, session.cookie);
+      assertStringIncludes(body, `href="/admin/listing/${listing.id}"`);
+    });
+
+    test("shows green bulk check-in button when not checked in", async () => {
+      const { token, session } = await setupCheckinTest("Eve", "eve@test.com");
+      const body = await readTicketPage(token, session.cookie);
+      expectIncludesAll(body, [
+        'class="bulk-checkin"',
+        "Check In All",
+        // The form posts this hidden input, so the name the POST handler reads
+        // is part of what the page renders. The input and the bulk button sit
+        // together, apart from the per-row forms that carry the same name.
+        '<input name="check_in" type="hidden" value="true">' +
+          '<button class="bulk-checkin" type="submit">Check In All</button>',
+      ]);
+    });
+
+    test("displays booked date for daily listing in admin view", async () => {
+      const date = "2026-02-15";
+      const { token } = await createDailyTestAttendee(
+        "Zara",
+        "zara@test.com",
+        date,
+      );
+
+      const response = await adminGet(`/checkin/${token}`);
+      expect(response.status).toBe(200);
+
+      const body = await response.text();
+      expectIncludesAll(body, [formatDateLabel(date), "<th>Date</th>"]);
+    });
+
+    test("shows the Date column when a daily listing attendee is combined with a standard one", async () => {
+      const date = "2026-02-15";
+      const { token: tokenA } = await createDailyTestAttendee(
+        "Zara",
+        "zara@test.com",
+        date,
+      );
+      const { token: tokenB } = await createTestAttendeeWithToken(
+        "Alice",
+        "alice@test.com",
+      );
+
+      const response = await adminGet(`/checkin/${tokenA}+${tokenB}`);
+      const body = await response.text();
+      // The column header renders because at least one attendee in the bundle
+      // has a date. Zara's row shows the formatted date label; Alice's row
+      // shows an empty cell instead. The negative case — column hidden when
+      // no attendee has a date — is covered by the test below.
+      assertStringIncludes(body, "<th>Date</th>");
+      assertStringIncludes(
+        tableRowContaining(body, "Zara"),
+        formatDateLabel(date),
+      );
+      assert(
+        !tableRowContaining(body, "Alice").includes(formatDateLabel(date)),
+      );
+    });
+
+    test("renders an empty cell for an attendee with no email when another attendee has one", async () => {
+      // The email and phone columns only render when at least one attendee
+      // in the bundle has the field. Mix one attendee with contact details
+      // and one without so the columns render, then check each attendee's own
+      // row for the right cell values.
+      const listing = await createTestListing({ maxAttendees: 10 });
+      const withContact = await bookAttendee(listing, {
+        email: "with@test.com",
+        name: "WithContact",
+        phone: "0712345678",
+      });
+      if (!withContact.success) throw new Error("Failed to create attendee");
+      const withoutContact = await bookAttendee(listing, {
+        email: "",
+        name: "NoContact",
+      });
+      if (!withoutContact.success) throw new Error("Failed to create attendee");
+
+      const response = await adminGet(
+        `/checkin/${withContact.attendees[0]!.ticket_token}+${
+          withoutContact.attendees[0]!.ticket_token
+        }`,
+      );
+      const body = await response.text();
+      // Column headers render because at least one attendee has each field.
+      expectIncludesAll(body, ["<th>Email</th>", "<th>Phone</th>"]);
+      assertStringIncludes(
+        tableRowContaining(body, "WithContact"),
+        '<td>with@test.com</td><td><a href="tel:+44712345678">0712345678</a></td>',
+      );
+      assertStringIncludes(
+        tableRowContaining(body, "NoContact"),
+        "<td></td><td></td>",
+      );
+    });
+
+    test("does not show date column for standard listing in admin view", async () => {
+      const { token, session } = await setupCheckinTest(
+        "Alice",
+        "alice@test.com",
+      );
+      const body = await readTicketPage(token, session.cookie);
+      assert(!body.includes("<th>Date</th>"));
+    });
+
+    test("keeps the check-in action while some eligible rows await check-in", async () => {
+      const { attendee, first } = await createTwoListingBooking(
+        "Staff Mixed",
+        "staffmixed@test.com",
+      );
+      const { handleRequest } = await import("#routes");
+      const session = {
+        cookie: await testCookie(),
+        csrfToken: await testCsrfToken(),
+      };
+      // Staff check in one leg through its own row's form; the other waits.
+      await handleRequest(
+        mockFormRequest(
+          `/admin/listing/${first.id}/attendee/${attendee.id}/checkin`,
+          { check_in: "true", csrf_token: session.csrfToken, quantity: "1" },
+          session.cookie,
+        ),
+      );
+
+      const response = await awaitTestRequest(
+        `/checkin/${attendee.ticket_token}`,
+        { cookie: session.cookie },
+      );
+      const body = await response.text();
+      // Staff have the per-row controls for fine-grained work, so the bulk
+      // action stays on check-in until EVERY eligible row is in.
+      expectIncludesAll(body, ["Check In All", "Check out"]);
+    });
+
+    test("offers checkout when every eligible row is checked in", async () => {
+      const { token } = await setupCheckinTest("Stella", "stella@test.com");
+      const session = {
+        cookie: await testCookie(),
+        csrfToken: await testCsrfToken(),
+      };
+      await postCheckin(token, session, "true");
+
+      const body = await (await adminGet(`/checkin/${token}`)).text();
+      expectIncludesAll(body, [
+        "Check Out All",
+        // The bulk way out posts its own false spelling, tied to its button.
+        '<input name="check_in" type="hidden" value="false">' +
+          '<button class="bulk-checkout" type="submit">Check Out All</button>',
+      ]);
+    });
+
+    test("hides the bulk action when no eligible row remains", async () => {
+      const { attendee, listing, token } = await createTestAttendeeWithToken(
+        "Staff Refunded",
+        "staffrefunded@test.com",
+      );
+      const cookie = await testCookie();
+      const session = { cookie, csrfToken: await testCsrfToken() };
+      await postCheckin(token, session, "true");
+      const { refundThroughLedger } = await import("#test-utils/ledger.ts");
+      await refundThroughLedger(attendee.id, listing.id);
+
+      const body = await readTicketPage(token, session.cookie);
+      // The token's only row is refunded, so the POST has nothing it may
+      // change: no bulk action is advertised, for staff or scanner.
+      assertStringIncludes(body, "Refunded");
+      assert(!body.includes("Check In All"));
+      assert(!body.includes("Check Out All"));
+      assert(!body.includes('name="check_in"'));
+    });
+  });
+});

@@ -1,0 +1,307 @@
+/**
+ * One description of an attendee list's filters and sort. A page says which
+ * controls it offers (`AttendeeListSetup`); the visitor's choices are read
+ * from the address bar (`readAttendeeListState`) and written back into every
+ * link (`attendeeListHref`) by the same table of query parameters, so each
+ * list reads its address and builds its links the same way — only the base
+ * path differs. This module is pure; the rendering lives in
+ * `src/ui/templates/attendee-table/controls.tsx`.
+ */
+
+import * as v from "valibot";
+import { compact, sort } from "#fp";
+import {
+  filterHref,
+  filterParams,
+  type ParamWriter,
+} from "#shared/filter-href.ts";
+import type { LedgerScopeOption } from "#shared/ledger-scope.ts";
+import {
+  isListingFilter,
+  type ListingFilter,
+  readChosenId,
+} from "#shared/listing-filter.ts";
+import {
+  type DateString,
+  isIsoDate,
+  parseDateStringOrThrow,
+} from "#shared/validation/date-string.ts";
+import { guardFor } from "#shared/validation/guard.ts";
+import { parsePositiveInt } from "#shared/validation/number.ts";
+import type { ListingWithCount } from "#types";
+
+export const AttendeeSortSchema = v.picklist(["newest", "oldest"]);
+export type AttendeeSort = v.InferOutput<typeof AttendeeSortSchema>;
+
+/** Type guard: narrows an arbitrary string to an {@link AttendeeSort}. */
+export const isAttendeeSort = guardFor(AttendeeSortSchema);
+
+/** The check-in filter: everyone, checked in only, or not checked in only. */
+export type AttendeeFilter = "all" | "in" | "out";
+
+/** One day the date dropdown offers. The value is the branded date the list
+ *  state reads back. */
+export type DateOption = { value: DateString; label: string };
+
+/**
+ * How one attendee list is set up: where it lives and which controls it
+ * offers. `Sort` narrows what "no ?sort= in the address" means for this list —
+ * an {@link AttendeeSort} for a list whose own order is one of them (the
+ * attendees browser starts at newest first), or null for a list whose own
+ * order is something else (a listing's roster orders by date and name).
+ */
+export type AttendeeListSetup<
+  Sort extends AttendeeSort | null = AttendeeSort | null,
+> = {
+  /** The page the filter links land on. */
+  basePath: string;
+  /** The list's CSV download, or null when it has none. */
+  csvPath: string | null;
+  /** Listings offered by the listing dropdown; fewer than two hides it. */
+  listings: ListingWithCount[];
+  /** Groups offered by the group dropdown. An empty list hides it. */
+  groups: LedgerScopeOption[];
+  /** Whether the list understands the ?type= listing-kind filter. */
+  withTypes: boolean;
+  /** Whether the list understands the ?date= day filter. */
+  withDates: boolean;
+  /** Days offered by the date dropdown; empty hides it. */
+  dates: DateOption[];
+  /** Whether the list offers the checked-in / checked-out filter. */
+  withCheckin: boolean;
+  /** Whether the list is split into pages (?page=). */
+  withPaging: boolean;
+  /** The order used when the address names none. */
+  defaultSort: Sort;
+};
+
+/** The choices a visitor has made on one attendee list, read from the
+ *  address bar. `sort` is null when the list's own default order applies. */
+export type AttendeeListState<
+  Sort extends AttendeeSort | null = AttendeeSort | null,
+> = {
+  listingId: number | null;
+  groupId: number | null;
+  type: ListingFilter;
+  sort: AttendeeSort | Sort;
+  checkin: AttendeeFilter;
+  date: DateString | null;
+  page: number;
+};
+
+const readCheckin = (raw: string | null): AttendeeFilter =>
+  raw === "in" || raw === "out" ? raw : "all";
+
+/**
+ * Read the visitor's choices from a request's query string. Each control is
+ * read only when the setup offers it, so a pasted address cannot claim a
+ * filter the page has no control for; an unrecognised listing, type, sort, or
+ * check-in value falls back to that control's "everything" choice. The day is
+ * different: any well-formed day is honoured, even one the dropdown does not
+ * offer — an empty list is the honest answer for a day nobody booked, and the
+ * CSV export reads days with no dropdown at all. Only a malformed day is
+ * ignored.
+ */
+export const readAttendeeListState = <Sort extends AttendeeSort | null>(
+  setup: AttendeeListSetup<Sort>,
+  query: URLSearchParams,
+): AttendeeListState<Sort> => {
+  const rawSort = query.get("sort");
+  const rawDate = query.get("date");
+  const rawType = query.get("type");
+  const rawPage = query.get("page");
+  const page = rawPage === null ? null : parsePositiveInt(rawPage);
+  return {
+    checkin: setup.withCheckin ? readCheckin(query.get("filter")) : "all",
+    date:
+      setup.withDates && rawDate !== null && isIsoDate(rawDate)
+        ? parseDateStringOrThrow(rawDate, "the attendee list date filter")
+        : null,
+    groupId: readChosenId(setup.groups, query.get("group")),
+    listingId: readChosenId(setup.listings, query.get("listing")),
+    page: setup.withPaging && page !== null ? page : 0,
+    sort:
+      rawSort !== null && isAttendeeSort(rawSort) ? rawSort : setup.defaultSort,
+    type: setup.withTypes && isListingFilter(rawType) ? rawType : "all",
+  };
+};
+
+/** A list's state read together with the setup that says what its defaults
+ *  are, since a parameter is written only when it differs from one. */
+type AttendeeListView = {
+  readonly setup: AttendeeListSetup;
+  readonly state: AttendeeListState;
+};
+
+/** One writer for an id choice: the param names the control and carries the
+ *  chosen id, or nothing when the control is at its "everything" choice. */
+const idChoiceWriter = (
+  name: "group" | "listing",
+  choice: "groupId" | "listingId",
+): ParamWriter<AttendeeListView> => ({
+  name,
+  value: ({ state }) => (state[choice] === null ? null : String(state[choice])),
+});
+
+const PARAM_WRITERS: ParamWriter<AttendeeListView>[] = [
+  idChoiceWriter("listing", "listingId"),
+  idChoiceWriter("group", "groupId"),
+  {
+    name: "type",
+    value: ({ state }) => (state.type === "all" ? null : state.type),
+  },
+  {
+    name: "sort",
+    value: ({ setup, state }) =>
+      state.sort !== null && state.sort !== setup.defaultSort
+        ? state.sort
+        : null,
+  },
+  {
+    name: "filter",
+    value: ({ state }) => (state.checkin === "all" ? null : state.checkin),
+  },
+  { name: "date", value: ({ state }) => state.date },
+  {
+    name: "page",
+    value: ({ state }) => (state.page > 0 ? String(state.page) : null),
+  },
+];
+
+/** The non-default query parameters for a state, in the order links use. */
+export const attendeeListParams = (
+  setup: AttendeeListSetup,
+  state: AttendeeListState,
+): [name: string, value: string][] =>
+  filterParams(PARAM_WRITERS, { setup, state });
+
+/** The address for a state — the setup's base path unless another is given. */
+export const attendeeListHref = (
+  setup: AttendeeListSetup,
+  state: AttendeeListState,
+  path: string = setup.basePath,
+): string => filterHref(PARAM_WRITERS, path, { setup, state });
+
+/** A link that changes some of the current choices. Any change starts back at
+ *  the first page — only an explicit `page` keeps a page number. */
+export const attendeeListLink =
+  (setup: AttendeeListSetup, state: AttendeeListState) =>
+  (changes: Partial<AttendeeListState>): string =>
+    attendeeListHref(setup, { ...state, page: 0, ...changes });
+
+/** The CSV download for the current filters (sort and page do not change what
+ *  the export holds), or null when the list has no export. */
+export const attendeeListCsvHref = (
+  setup: AttendeeListSetup,
+  state: AttendeeListState,
+): string | null =>
+  setup.csvPath === null
+    ? null
+    : attendeeListHref(
+        setup,
+        { ...state, page: 0, sort: setup.defaultSort },
+        setup.csvPath,
+      );
+
+/** One option in a bar of choices: its copy, and the change it makes. */
+export type ListChoice = {
+  labelKey: string;
+  change: Partial<AttendeeListState>;
+};
+
+const sortChoice = (
+  sort: AttendeeSort | null,
+  labelKey: string,
+): ListChoice => ({ change: { sort }, labelKey });
+
+/** The sort orders a list offers, its own default first. */
+export const attendeeListSortChoices = (
+  setup: AttendeeListSetup,
+): ListChoice[] =>
+  compact([
+    setup.defaultSort === null
+      ? sortChoice(null, "attendees_list.sort_by_date")
+      : null,
+    sortChoice("newest", "attendees_list.newest_first"),
+    sortChoice("oldest", "attendees_list.oldest_first"),
+  ]);
+
+const checkinChoice = (
+  checkin: AttendeeFilter,
+  labelKey: string,
+): ListChoice => ({ change: { checkin }, labelKey });
+
+/** The check-in bar's options: everyone, checked in, not checked in. */
+export const ATTENDEE_CHECKIN_CHOICES: ListChoice[] = [
+  checkinChoice("all", "listings_table.all"),
+  checkinChoice("in", "common.checked_in"),
+  checkinChoice("out", "listings_table.checked_out"),
+];
+
+const STATE_FIELDS = [
+  "listingId",
+  "type",
+  "sort",
+  "checkin",
+  "date",
+  "page",
+] as const;
+
+/** Whether a choice is the one currently in force: every field its change
+ *  names already holds that value. */
+export const choiceIsActive = (
+  state: AttendeeListState,
+  change: Partial<AttendeeListState>,
+): boolean =>
+  STATE_FIELDS.every(
+    (field) => !(field in change) || state[field] === change[field],
+  );
+
+/** Order rows by when they were registered — their id — newest or oldest
+ *  first. This matches what the attendees browser's query means by "newest". */
+export const inRegistrationOrder =
+  (order: AttendeeSort) =>
+  <Row extends { id: number }>(rows: Row[]): Row[] =>
+    sort<Row>((first, second) =>
+      order === "newest" ? second.id - first.id : first.id - second.id,
+    )(rows);
+
+/** Compare two optional YYYY-MM-DD dates ascending; a missing date sorts after
+ *  the dated ones. One rule for every row order that sorts by such a date. */
+export const compareOptionalDates = (
+  first: string | null | undefined,
+  second: string | null | undefined,
+): number => {
+  const firstDate = first ?? "";
+  const secondDate = second ?? "";
+  if (firstDate === secondDate) return 0;
+  if (firstDate === "") return 1;
+  if (secondDate === "") return -1;
+  return firstDate.localeCompare(secondDate);
+};
+
+/** The table's own order: booked date, then name, then registration id. This
+ *  matches what the attendee table's default sort does with one listing's rows
+ *  — every row shares the listing, so its name never breaks a tie. */
+export const inDateAndNameOrder = <
+  Row extends { date: string | null; id: number; name: string },
+>(
+  rows: Row[],
+): Row[] =>
+  sort<Row>((first, second) => {
+    const byDate = compareOptionalDates(first.date, second.date);
+    if (byDate !== 0) return byDate;
+    return first.name.localeCompare(second.name) || first.id - second.id;
+  })(rows);
+
+/** A roster's row order, one helper for every surface that shows it — the page
+ *  and the CSV export: the chosen registration order, or the table's own
+ *  date-and-name order when the address named none. */
+export const attendeeListOrder =
+  (order: AttendeeSort | null) =>
+  <Row extends { date: string | null; id: number; name: string }>(
+    rows: Row[],
+  ): Row[] =>
+    order === null
+      ? inDateAndNameOrder(rows)
+      : inRegistrationOrder(order)(rows);

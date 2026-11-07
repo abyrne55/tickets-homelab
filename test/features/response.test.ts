@@ -1,0 +1,370 @@
+import { assert, assertArrayIncludes, assertStringIncludes } from "@std/assert";
+import { expect } from "@std/expect";
+import { describe, it as test } from "@std/testing/bdd";
+import {
+  adminRedirect,
+  databaseBusyResponse,
+  downloadResponse,
+  errorRedirect,
+  htmlResponse,
+  icsResponse,
+  jsonResponse,
+  migrationInProgressResponse,
+  notFoundResponse,
+  plainResponse,
+  rateLimitedResponse,
+  redirect,
+  redirectResponse,
+  rssResponse,
+  siteNotActivatedResponse,
+  temporaryErrorResponse,
+  withCookie,
+  withHeaders,
+} from "#routes/response.ts";
+import { detectIframeMode } from "#shared/request-context.ts";
+import { UpdatePageCheckError } from "#shared/update-guard.ts";
+import {
+  expectHtmlResponse,
+  expectRedirectWithFlash,
+} from "#test-utils/assertions.ts";
+import { describeWithEnv } from "#test-utils/db.ts";
+import { withRequestContext } from "#test-utils/request-context.ts";
+import { expectTemporaryError } from "#test-utils/temporary-error.ts";
+
+describeWithEnv("route responses", { db: true }, () => {
+  describe("encoded responses", () => {
+    for (const [build, type, body] of [
+      [htmlResponse, "text/html", "<p>Hello</p>"],
+      [plainResponse, "text/plain", "Hello"],
+      [icsResponse, "text/calendar", "BEGIN:VCALENDAR"],
+      [rssResponse, "application/rss+xml", "<rss/>"],
+    ] as const) {
+      test(`returns ${type} with its body and charset`, async () => {
+        const response = build(body, 201);
+        expect(response.status).toBe(201);
+        expect(response.headers.get("content-type")).toBe(
+          `${type}; charset=utf-8`,
+        );
+        expect(await response.text()).toBe(body);
+      });
+    }
+
+    test("returns HTML with its default 200 status", () => {
+      expect(htmlResponse("<p>Hello</p>").status).toBe(200);
+    });
+
+    test("returns JSON with the default status and content type", async () => {
+      const response = jsonResponse({ saved: true });
+      expect(response.status).toBe(200);
+      expect(response.headers.get("content-type")).toBe(
+        "application/json; charset=utf-8",
+      );
+      expect(await response.json()).toEqual({ saved: true });
+    });
+
+    test("uses an explicit JSON response status", () => {
+      expect(jsonResponse({ saved: false }, 409).status).toBe(409);
+    });
+  });
+
+  describe("withCookie", () => {
+    test("adds a cookie to a response without existing cookies", async () => {
+      const response = new Response("body", { status: 200 });
+      const result = await withCookie(response, "session=abc; Path=/");
+      expect(result.headers.get("set-cookie")).toBe("session=abc; Path=/");
+    });
+
+    test("preserves existing set-cookie headers when adding another", async () => {
+      const headers = new Headers();
+      headers.append("set-cookie", "first=one; Path=/");
+      const response = new Response("body", { headers, status: 200 });
+      const result = await withCookie(response, "second=two; Path=/");
+      const cookies = result.headers.getSetCookie();
+      expect(cookies.length).toBe(2);
+      assertArrayIncludes(cookies, ["first=one; Path=/"]);
+      assertArrayIncludes(cookies, ["second=two; Path=/"]);
+    });
+
+    test("preserves response status", async () => {
+      const response = new Response("body", { status: 201 });
+      const result = await withCookie(response, "session=abc; Path=/");
+      expect(result.status).toBe(201);
+    });
+
+    test("preserves text response body", async () => {
+      const response = new Response("hello world", { status: 200 });
+      const result = await withCookie(response, "session=abc; Path=/");
+      expect(await result.text()).toBe("hello world");
+    });
+
+    test("preserves binary response body", async () => {
+      const bytes = new Uint8Array([0, 1, 2, 128, 255]);
+      const response = new Response(bytes, { status: 200 });
+      const result = await withCookie(response, "session=abc; Path=/");
+      const body = new Uint8Array(await result.arrayBuffer());
+      expect(body.length).toBe(5);
+      expect(body[0]).toBe(0);
+      expect(body[3]).toBe(128);
+      expect(body[4]).toBe(255);
+    });
+
+    test("handles null body response", async () => {
+      const response = new Response(null, { status: 204 });
+      const result = await withCookie(response, "session=abc; Path=/");
+      expect(result.status).toBe(204);
+      expect(result.headers.get("set-cookie")).toBe("session=abc; Path=/");
+    });
+  });
+
+  describe("withHeaders", () => {
+    test("sets a header on a built response", () => {
+      const response = withHeaders(htmlResponse("<p>hi</p>"), {
+        "retry-after": "2",
+      });
+      expect(response.headers.get("retry-after")).toBe("2");
+    });
+
+    test("replaces an existing header value", () => {
+      const response = withHeaders(htmlResponse("<p>hi</p>"), {
+        "content-type": "text/plain",
+      });
+      expect(response.headers.get("content-type")).toBe("text/plain");
+    });
+  });
+
+  describe("redirect", () => {
+    test("stores a success message without adding it to the URL", () =>
+      withRequestContext(() => {
+        const response = redirect("/admin/settings", "Saved", true);
+        expectRedirectWithFlash("/admin/settings", "Saved")(response);
+        assert(!(response.headers.get("location") ?? "").includes("success="));
+      }));
+
+    test("replaces the existing anchor with the target form", () =>
+      withRequestContext(() => {
+        const response = redirect("/admin/settings#old", "Updated", true, {
+          formId: "settings&email",
+        });
+        expectRedirectWithFlash(
+          "/admin/settings?form=settings%26email#settings&email",
+          "Updated",
+        )(response);
+      }));
+
+    test("preserves an existing query and fragment", () =>
+      withRequestContext(() => {
+        const response = redirect(
+          "/admin/listing/1?tab=attendees#notes",
+          "Updated",
+          true,
+        );
+        expectRedirectWithFlash(
+          "/admin/listing/1?tab=attendees#notes",
+          "Updated",
+        )(response);
+      }));
+
+    test("stores an error flash", () =>
+      withRequestContext(() => {
+        const response = redirect("/admin/settings", "Failed", false);
+        expectRedirectWithFlash("/admin/settings", "Failed", false)(response);
+      }));
+
+    test("errorRedirect stores an error flash on the target page", () =>
+      withRequestContext(() => {
+        const response = errorRedirect("/admin/settings", "No good");
+        expectRedirectWithFlash("/admin/settings", "No good", false)(response);
+      }));
+
+    test("keeps a caller-provided cookie beside the flash cookie", () =>
+      withRequestContext(() => {
+        const response = redirect("/admin", "Done", true, {
+          cookie: "session=abc; Path=/",
+        });
+        assertArrayIncludes(response.headers.getSetCookie(), [
+          "session=abc; Path=/",
+        ]);
+        expectRedirectWithFlash("/admin", "Done")(response);
+      }));
+  });
+
+  describe("adminRedirect", () => {
+    test("fills distinct endpoint parameters and stores the success flash", () =>
+      withRequestContext(() => {
+        const response = adminRedirect(
+          "answerEdit",
+          { answerId: 9, id: 42 },
+          "Answer saved",
+          true,
+        );
+        expectRedirectWithFlash(
+          "/admin/questions/42/answers/9/edit",
+          "Answer saved",
+        )(response);
+      }));
+  });
+
+  describe("redirectResponse", () => {
+    test("creates a 302 response with the requested location and cookie", () => {
+      const response = redirectResponse("/ticket/test", "session=abc; Path=/");
+      expect(response.status).toBe(302);
+      expect(response.headers.get("location")).toBe("/ticket/test");
+      expect(response.headers.get("set-cookie")).toBe("session=abc; Path=/");
+      expect(response.headers.get("content-type")).toBe(
+        "text/html; charset=utf-8",
+      );
+    });
+
+    test("carries iframe mode into the redirect location", () =>
+      withRequestContext(() => {
+        detectIframeMode(new URL("https://example.com/?iframe=true"));
+        const response = redirectResponse("/ticket/reserved?tokens=abc");
+        expect(response.headers.get("location")).toBe(
+          "/ticket/reserved?tokens=abc&iframe=true",
+        );
+      }));
+
+    test("leaves the location alone outside iframe mode", () =>
+      withRequestContext(() => {
+        const response = redirectResponse("/ticket/test");
+        expect(response.headers.get("location")).toBe("/ticket/test");
+      }));
+  });
+
+  describe("downloadResponse", () => {
+    test("sets the attachment disposition with the quoted filename", async () => {
+      const response = downloadResponse("csv,here", "report.csv", "text/csv");
+      expect(response.status).toBe(200);
+      expect(response.headers.get("content-disposition")).toBe(
+        'attachment; filename="report.csv"',
+      );
+      expect(response.headers.get("content-type")).toBe("text/csv");
+      expect(await response.text()).toBe("csv,here");
+    });
+
+    test("returns the body bytes unchanged for a binary download", async () => {
+      const bytes = new Uint8Array([0, 1, 2, 128, 255]);
+      const response = downloadResponse(
+        bytes,
+        "backup-2024-01-15T12-00-00-000Z.zip",
+        "application/zip",
+      );
+      expect(response.headers.get("content-type")).toBe("application/zip");
+      assertStringIncludes(
+        response.headers.get("content-disposition") ?? "",
+        'filename="backup-2024-01-15T12-00-00-000Z.zip"',
+      );
+      const body = new Uint8Array(await response.arrayBuffer());
+      expect(body).toEqual(bytes);
+    });
+  });
+
+  describe("system responses", () => {
+    test("returns the not-found page with status 404", async () => {
+      await expectHtmlResponse(
+        await notFoundResponse(),
+        404,
+        "<h1>Not Found</h1>",
+      );
+    });
+
+    test("returns the rate-limit page with status 429", async () => {
+      await expectHtmlResponse(
+        await rateLimitedResponse(),
+        429,
+        "<h1>Too Many Requests</h1>",
+      );
+    });
+
+    for (const [method, autoRefresh] of [
+      ["GET", true],
+      ["HEAD", true],
+      ["POST", false],
+      ["PUT", false],
+      ["PATCH", false],
+      ["DELETE", false],
+      ["OPTIONS", false],
+    ] as const) {
+      test(`applies the temporary error refresh policy for ${method}`, async () => {
+        await expectTemporaryError(autoRefresh)(
+          await temporaryErrorResponse(method),
+        );
+      });
+    }
+
+    test("reloads a busy database page only for a safe request", async () => {
+      const retry = await expectHtmlResponse(
+        await databaseBusyResponse("GET"),
+        503,
+        "The database is too busy.",
+        'http-equiv="refresh"',
+      );
+      const noRetry = await expectHtmlResponse(
+        await databaseBusyResponse("POST"),
+        503,
+        "Please go back and try again",
+      );
+      assertStringIncludes(retry, 'http-equiv="refresh"');
+      assert(!noRetry.includes('http-equiv="refresh"'));
+    });
+
+    test("renders the not-activated page without reloading", async () => {
+      const html = await expectHtmlResponse(
+        await siteNotActivatedResponse(),
+        503,
+        "This site has not been activated yet",
+      );
+      assert(!html.includes('http-equiv="refresh"'));
+    });
+
+    test("renders the migration page with reloading", async () => {
+      const html = await expectHtmlResponse(
+        await migrationInProgressResponse(),
+        503,
+        "Update In Progress",
+        "backing up and updating the database",
+        'http-equiv="refresh"',
+      );
+      assert(!html.includes("Temporary error"));
+    });
+
+    test("answers the status the deploy wait retries", async () => {
+      // The wait lifts UPDATE_IN_PROGRESS only after the migration page stops.
+      // Keep the page's status and the wait's retry on one fact.
+      const { status } = await migrationInProgressResponse();
+      expect(new UpdatePageCheckError(status).retryable).toBe(true);
+    });
+
+    test("sets Retry-After to the page refresh interval on temporary errors", async () => {
+      expect(
+        (await temporaryErrorResponse("GET")).headers.get("retry-after"),
+      ).toBe("2");
+      expect(
+        (await temporaryErrorResponse("POST")).headers.get("retry-after"),
+      ).toBe("2");
+    });
+
+    test("sets Retry-After on the busy database response", async () => {
+      expect(
+        (await databaseBusyResponse("GET")).headers.get("retry-after"),
+      ).toBe("2");
+    });
+
+    test("sets Retry-After to the migration refresh interval", async () => {
+      expect(
+        (await migrationInProgressResponse()).headers.get("retry-after"),
+      ).toBe("5");
+    });
+
+    test("sends no Retry-After while the site is not activated", async () => {
+      expect(
+        (await siteNotActivatedResponse()).headers.get("retry-after"),
+      ).toBeNull();
+    });
+
+    test("sends no Retry-After on the token rate-limit page", async () => {
+      const response = await rateLimitedResponse();
+      expect(response.headers.get("retry-after")).toBeNull();
+    });
+  });
+});

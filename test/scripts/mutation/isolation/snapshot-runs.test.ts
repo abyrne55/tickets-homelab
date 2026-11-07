@@ -1,0 +1,376 @@
+import { join } from "node:path";
+import { assert, assertStringIncludes } from "@std/assert";
+import { expect } from "@std/expect";
+import { describe, it as test } from "@std/testing/bdd";
+import { stub } from "@std/testing/mock";
+import { runIsolatedMutationCommand } from "#scripts/mutation/isolation.ts";
+import { writeRunRecord } from "#scripts/mutation/isolation-records.ts";
+import {
+  copyBackLockPath,
+  createRunId,
+  MUTATION_RECORD_FILE,
+  MUTATION_RUN_ROOT_ENV,
+  MUTATION_SNAPSHOT_CHILD_ENV,
+  markFinished,
+  newRunRecord,
+} from "#scripts/mutation/isolation-state.ts";
+import {
+  captureMutationCommand,
+  withTempDir,
+  writeFakeMutationScript,
+} from "#test/scripts/mutation/isolation-helpers.ts";
+import { pathExists } from "#test-utils/files.ts";
+import {
+  capturePlainSnapshotFailure,
+  captureSimpleSnapshotMutation,
+  controlledChild,
+  failRunningStatusWrite,
+  failSnapshotRead,
+  failTextFileWrites,
+  failWorkRemoval,
+  finishedChild,
+  readOnlyRunRecord,
+  SNAPSHOT_FAILED,
+  stubCommand,
+  waitForRecord,
+  waitForRunningRecord,
+} from "./helpers.ts";
+
+describe("running mutation inside a snapshot", () => {
+  test("runs mutation in a copied snapshot and records the exit code", async () => {
+    await withTempDir(async (root) => {
+      await writeFakeMutationScript(root, "Deno.exit(7);\n");
+
+      const run = await captureMutationCommand(
+        ["src/a.ts", join(root, "test/a.test.ts")],
+        root,
+      );
+      const record = await readOnlyRunRecord(root);
+
+      expect(run.result).toBe(7);
+      expect(run.errors).toEqual([]);
+      expect(run.logs[0]?.startsWith("Creating isolated mutation run ")).toBe(
+        true,
+      );
+      // The pid is printed so a stray run can be found and stopped by hand.
+      expect(
+        run.logs.some((line) => /^Mutation child pid \d+$/.test(line)),
+      ).toBe(true);
+      expect(record.status).toBe("failed");
+      expect(record.exitCode).toBe(7);
+      expect(record.args).toEqual(["src/a.ts", join(root, "test/a.test.ts")]);
+      // The child is gone by the time the record settles, and its id with it.
+      expect(Object.hasOwn(record, "pid")).toBe(false);
+      // Nothing to bring back, so the shared copy-back lock is never taken —
+      // a run with no kept files must not queue behind one that has them.
+      expect(await pathExists(copyBackLockPath(root))).toBe(false);
+    });
+  });
+
+  test("throws away the snapshot once the run has ended", async () => {
+    await withTempDir(async (root) => {
+      await writeFakeMutationScript(root, "Deno.exit(0);\n");
+
+      await captureSimpleSnapshotMutation(root);
+      const record = await readOnlyRunRecord(root);
+
+      // The snapshot is a whole copy of the checkout, so it must not be left
+      // behind; the small record stays so the run is still listed.
+      expect(await pathExists(record.workRoot)).toBe(false);
+      expect(await pathExists(join(record.root, MUTATION_RECORD_FILE))).toBe(
+        true,
+      );
+    });
+  });
+
+  test("reports a snapshot it cannot throw away", async () => {
+    await withTempDir(async (root) => {
+      await writeFakeMutationScript(root, "Deno.exit(0);\n");
+
+      const run = await (async () => {
+        using _remove = failWorkRemoval();
+        return await captureSimpleSnapshotMutation(root);
+      })();
+
+      expect(run.errors).toEqual([
+        `Failed to remove the snapshot of ${
+          (await readOnlyRunRecord(root)).id
+        }: work is busy`,
+      ]);
+    });
+  });
+
+  test("says nothing when the snapshot is already gone", async () => {
+    await withTempDir(async (root) => {
+      // The child tidies its own snapshot away before the run ends.
+      await writeFakeMutationScript(
+        root,
+        "Deno.removeSync(Deno.cwd(), { recursive: true });\nDeno.exit(0);\n",
+      );
+
+      const run = await captureSimpleSnapshotMutation(root);
+
+      expect(run.errors).toEqual([]);
+      expect(await pathExists((await readOnlyRunRecord(root)).workRoot)).toBe(
+        false,
+      );
+    });
+  });
+
+  test("clears out runs that ended earlier before starting a new one", async () => {
+    await withTempDir(async (root) => {
+      await writeFakeMutationScript(root, "Deno.exit(0);\n");
+      const old = markFinished(newRunRecord(createRunId(), [], root), 0);
+      await writeRunRecord(old);
+      await Deno.mkdir(old.workRoot, { recursive: true });
+
+      await captureSimpleSnapshotMutation(root);
+
+      expect(await pathExists(old.root)).toBe(false);
+      // Only the run that just happened is left.
+      expect((await readOnlyRunRecord(root)).id).not.toBe(old.id);
+    });
+  });
+
+  test("tells the child it is running inside a snapshot", async () => {
+    await withTempDir(async (root) => {
+      const starts: Deno.CommandOptions[] = [];
+      using _command = stubCommand(finishedChild(42_426), starts);
+
+      await captureSimpleSnapshotMutation(root);
+
+      expect(starts[0]?.env?.[MUTATION_SNAPSHOT_CHILD_ENV]).toBe("1");
+    });
+  });
+
+  test("keeps its folder claimed against a clean while the run is going", async () => {
+    await withTempDir(async (root) => {
+      const child = controlledChild(42_427, () => {});
+      using _command = stubCommand(child.child);
+
+      const run = captureSimpleSnapshotMutation(root);
+      const started = await waitForRunningRecord(root);
+
+      // A `--clean` sweeping mid-run finds the folder claimed and leaves it.
+      expect(await runIsolatedMutationCommand(["--clean", "all"], root)).toBe(
+        1,
+      );
+      expect(await pathExists(started.root)).toBe(true);
+
+      child.finish({ code: 0, signal: null, success: true });
+      expect((await run).result).toBe(0);
+    });
+  });
+
+  test("gives up waiting when no run record ever appears", async () => {
+    await withTempDir(async (root) => {
+      await expect(
+        waitForRecord(root, (records) => records[0], "no record", 2),
+      ).rejects.toThrow("no record");
+    });
+  });
+
+  test("records a failed run when snapshot copying throws a plain value", async () => {
+    await withTempDir(async (root) => {
+      const run = await capturePlainSnapshotFailure(root);
+      const record = await readOnlyRunRecord(root);
+
+      expect(run).toMatchObject({ errors: [SNAPSHOT_FAILED], result: 1 });
+      expect(record.status).toBe("failed");
+      expect(record.exitCode).toBe(1);
+    });
+  });
+
+  test("keeps the original failure when the failed record cannot be rewritten", async () => {
+    await withTempDir(async (root) => {
+      let copyFailed = false;
+      const run = await (async () => {
+        using _readDir = failSnapshotRead(SNAPSHOT_FAILED, () => {
+          copyFailed = true;
+        });
+        using _writeTextFile = failTextFileWrites(() => copyFailed);
+
+        return await captureSimpleSnapshotMutation(root);
+      })();
+      const record = await readOnlyRunRecord(root);
+
+      expect(run).toMatchObject({ errors: [SNAPSHOT_FAILED], result: 1 });
+      expect(record.status).toBe("copying");
+    });
+  });
+
+  test("stops the child when recording its pid fails", async () => {
+    await withTempDir(async (root) => {
+      await writeFakeMutationScript(root, "Deno.exit(0);\n");
+
+      const killCalls: (Deno.Signal | undefined)[] = [];
+      const process = controlledChild(42_424, (signal, finish) => {
+        killCalls.push(signal);
+        finish({ code: 143, signal: "SIGTERM", success: false });
+      });
+      using _command = stubCommand(process.child);
+
+      using _writeTextFile = failRunningStatusWrite();
+
+      const run = await captureSimpleSnapshotMutation(root);
+      const record = await readOnlyRunRecord(root);
+
+      expect(run.result).toBe(1);
+      expect(run.errors).toEqual(["record write failed"]);
+      expect(killCalls).toEqual([undefined]);
+      expect(record.status).toBe("failed");
+      expect(record.exitCode).toBe(1);
+    });
+  });
+
+  test("publishes the pid-less record the moment the child ends", async () => {
+    await withTempDir(async (root) => {
+      await writeFakeMutationScript(root, "Deno.exit(0);\n");
+      const written: {
+        pid?: number;
+        status: string;
+        supervisorPid?: number;
+      }[] = [];
+      const writeTextFile = Deno.writeTextFile;
+      using _write = stub(Deno, "writeTextFile", ((
+        target: string | URL,
+        data: string | ReadableStream<string>,
+        options?: Deno.WriteFileOptions,
+      ) => {
+        // Records land in a pending file first, so match by name, not tail.
+        if (
+          `${target}`.includes(MUTATION_RECORD_FILE) &&
+          typeof data === "string"
+        ) {
+          written.push(JSON.parse(data));
+        }
+        return writeTextFile(target, data, options);
+      }) as typeof Deno.writeTextFile);
+
+      await captureSimpleSnapshotMutation(root);
+
+      // The pid leaves the written record the moment the child ends — before
+      // the kept files come back — so --kill can never trust it late. The
+      // supervisor's stays: --kill reaches the run through it to the end.
+      const running = written.filter((record) => record.status === "running");
+      expect(running.at(0)?.pid).toBeGreaterThan(0);
+      expect(running.at(0)?.supervisorPid).toBe(Deno.pid);
+      // The child is its own process, never the supervisor: a record that
+      // named the supervisor as its child would mislead a stray-run hunt.
+      expect(running.at(0)?.pid).not.toBe(Deno.pid);
+      const settled = running.at(-1);
+      assert(settled !== undefined);
+      expect(Object.hasOwn(settled, "pid")).toBe(false);
+      expect(settled.supervisorPid).toBe(Deno.pid);
+    });
+  });
+
+  test("records failure when starting the snapshot child throws", async () => {
+    await withTempDir(async (root) => {
+      await writeFakeMutationScript(root, "Deno.exit(0);\n");
+
+      using _addSignal = stub(Deno, "addSignalListener", (() => {
+        throw new Error("signals unavailable");
+      }) as typeof Deno.addSignalListener);
+      using _removeSignal = stub(Deno, "removeSignalListener", (() => {
+        throw new Error("not registered");
+      }) as typeof Deno.removeSignalListener);
+      using _execPath = stub(Deno, "execPath", (() =>
+        join(root, "missing-deno")) as typeof Deno.execPath);
+
+      const run = await captureSimpleSnapshotMutation(root);
+      const record = await readOnlyRunRecord(root);
+
+      expect(run.result).toBe(1);
+      expect(run.errors).toHaveLength(1);
+      assertStringIncludes(run.errors[0] ?? "", "missing-deno");
+      expect(record.status).toBe("failed");
+      expect(record.exitCode).toBe(1);
+    });
+  });
+
+  test("a conclusive child's summary lands in the tracked journal", async () => {
+    await withTempDir(async (root) => {
+      // The journal lives inside the checkout's scripts/mutation/, which a
+      // real checkout always carries; the temp root needs it made here.
+      await Deno.mkdir(join(root, "scripts/mutation"), { recursive: true });
+      await writeFakeMutationScript(
+        root,
+        `const runRoot = Deno.env.get("${MUTATION_RUN_ROOT_ENV}");
+         await Deno.writeTextFile(runRoot + "/summary.json", JSON.stringify({
+           effective: 1,
+           exhaustive: false,
+           finishedAt: "2026-10-28T12:00:00.000Z",
+           harness: false,
+           ignored: 0,
+           killed: 1,
+           score: 100,
+           sources: ["src/a.ts"],
+           survived: 0,
+           tests: ["test/a.test.ts"],
+           total: 1,
+         }));
+         Deno.exit(0);
+        `,
+      );
+
+      await captureMutationCommand(
+        ["src/a.ts", join(root, "test/a.test.ts")],
+        root,
+      );
+      const record = await readOnlyRunRecord(root);
+      const line = JSON.parse(
+        await Deno.readTextFile(join(root, "scripts/mutation/runs.jsonl")),
+      );
+
+      expect(record.status).toBe("passed");
+      expect(line.id).toBe(record.id);
+      expect(line.killed).toBe(1);
+      expect(line.score).toBe(100);
+      // The commit stamp names the checkout the supervisor stays in, so a
+      // score is always attributable to the tree that produced it.
+      expect(line.commit).toMatch(/^[0-9a-f]{40}$/);
+    });
+  });
+
+  test("a journal it cannot write is reported and the verdict stands", async () => {
+    await withTempDir(async (root) => {
+      await writeFakeMutationScript(
+        root,
+        `const runRoot = Deno.env.get("${MUTATION_RUN_ROOT_ENV}");
+         await Deno.writeTextFile(runRoot + "/summary.json", JSON.stringify({
+           effective: 1,
+           exhaustive: false,
+           finishedAt: "2026-10-28T12:00:00.000Z",
+           harness: false,
+           ignored: 0,
+           killed: 1,
+           score: 100,
+           sources: ["src/a.ts"],
+           survived: 0,
+           tests: ["test/a.test.ts"],
+           total: 1,
+         }));
+         Deno.exit(0);
+        `,
+      );
+      // `scripts/mutation` as a file, so the journal's append cannot open.
+      await Deno.writeTextFile(join(root, "scripts", "mutation"), "");
+
+      const run = await captureMutationCommand(
+        ["src/a.ts", join(root, "test/a.test.ts")],
+        root,
+      );
+      const record = await readOnlyRunRecord(root);
+
+      // The run's own verdict is untouched: the journal is record-keeping.
+      expect(run.result).toBe(0);
+      expect(record.status).toBe("passed");
+      expect(run.errors).toHaveLength(1);
+      assertStringIncludes(
+        run.errors[0] ?? "",
+        "could not be recorded in scripts/mutation/runs.jsonl",
+      );
+    });
+  });
+});

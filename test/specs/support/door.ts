@@ -1,0 +1,342 @@
+/**
+ * Checking people in at the door. The organiser works from the listing's
+ * scanner page: it reads a ticket code and asks the site whether that person
+ * may come in. Every check here goes through that page — the page is opened
+ * first, and the code it carries for the request is the one the page itself
+ * supplies, so a scanner page that stopped working would fail the story rather
+ * than being stepped around.
+ */
+
+import { getAttendeesByTokens } from "#db/attendees/tokens.ts";
+import { handleRequest } from "#routes";
+import { leaveEvidencePage } from "#scripts/specs/evidence/pages.ts";
+import { personBookedOnListing } from "#test/specs/support/booked-person.ts";
+import {
+  expectAccepted,
+  openAdminPage,
+  requireGroup,
+} from "#test/specs/support/browser.ts";
+import {
+  listingIdNamed,
+  listingNamed,
+  rememberListing,
+} from "#test/specs/support/listings.ts";
+import {
+  ticketTheirBookingHandsOver,
+  visitorBooks,
+} from "#test/specs/support/public-booking.ts";
+import { dayFromToday, openStayListing } from "#test/specs/support/stays.ts";
+import {
+  type ActOnOneThing,
+  type ActsOnPersonsBooking,
+  type ReadAboutOneThing,
+  type ReadsWhatWasKept,
+  type TicketsWorld,
+  whatWasKeptFor,
+} from "#test/specs/support/world.ts";
+import { createTestListing } from "#test-utils/db-helpers/listings.ts";
+import { postAttendeeRefund } from "#test-utils/ledger.ts";
+import type { TestBrowser } from "#test-utils/test-browser.ts";
+
+/** What the site says about one person at the door. */
+export interface DoorAnswer {
+  listingName?: string;
+  max?: number;
+  name?: string;
+  /** The numbers an over-admitted check-in answers: what the delivery
+   * named, what its landing admitted, and what the booking holds. */
+  overAdmission?: { admitted: number; bought: number; named: number };
+  quantity?: number;
+  remaining?: number;
+  status: string;
+  total?: number;
+}
+
+/** An admin page belonging to one record — its listing, or the group its
+ * listings sit under. Shared by the listing door and the group door. */
+export const recordPath = (
+  kind: "listing" | "groups",
+  id: number,
+  page: string,
+): string => `/admin/${kind}/${id}/${page}`;
+
+/** A page belonging to one of the story's listings. */
+const listingPath = (
+  world: TicketsWorld,
+  listing: string,
+  page: string,
+): string => recordPath("listing", listingIdNamed(world, listing), page);
+
+/** What the organiser decides about a ticket the door queried. */
+export type DoorChoice = {
+  confirmedTheirId?: boolean;
+  letInAnyway?: boolean;
+  tickets?: number;
+};
+
+/** One door's own pages: its scanner page, and the door that page answers. */
+export type DoorPaths = { page: string; scan: string };
+
+/** Someone with a ticket for one of the story's listings. Both the listing and
+ * the ticket are kept under the names the story uses for them. */
+/** Somebody the door lets in with a ticket for one listing, named once. */
+type PersonWithATicket = (
+  world: TicketsWorld,
+  who: string,
+  listing: string,
+  options?: { needsIdChecked?: boolean; places?: number },
+) => Promise<void>;
+
+export const personWithTicket: PersonWithATicket = async (
+  world,
+  who,
+  listing,
+  options = {},
+) => {
+  const { token } = await personBookedOnListing(world, who, listing, {
+    nonTransferable: options.needsIdChecked ?? false,
+    places: options.places ?? 1,
+  });
+  // The door this person belongs to, so a screenshot capture can open it.
+  leaveEvidencePage(
+    world,
+    ["qr-code-check-in"],
+    listingPath(world, listing, "scanner"),
+  );
+  rememberTicket(world, who, token);
+};
+
+/** Keep a ticket under the name the story calls its holder — the one place
+ * both doors keep them. */
+export const rememberTicket = (
+  world: TicketsWorld,
+  who: string,
+  ticket: string,
+): void => {
+  world.things.remember("ticket", who, ticket);
+};
+
+/** Someone who booked a stay of several days through the listing's own page.
+ * The ticket they hold is the one the site hands them on the page their
+ * booking lands on — nothing is invented for them. */
+/** Somebody whose stay booking covers a run of days. */
+type PersonWithStayTicket = (
+  world: TicketsWorld,
+  who: string,
+  listing: string,
+  days: number,
+) => Promise<void>;
+
+export const personWithStayTicket: PersonWithStayTicket = async (
+  world,
+  who,
+  listing,
+  days,
+) => {
+  await openStayListing(world, listing, days, 5);
+  const booking = await visitorBooks(world, listingNamed(world, listing), {
+    day: dayFromToday(world, 10),
+    email: `${who.toLowerCase()}@example.com`,
+    who,
+  });
+  rememberTicket(world, who, ticketTheirBookingHandsOver(booking));
+};
+
+/** Another listing running its own door, with nobody booked on it yet. */
+export const otherListing: ActOnOneThing = async (world, listing) => {
+  rememberListing(
+    world,
+    listing,
+    await createTestListing({ maxAttendees: 10, name: listing }),
+  );
+};
+
+/** The ticket code the story gave this person. */
+export const ticketOf: ReadsWhatWasKept<"ticket"> = whatWasKeptFor("ticket");
+
+/** Their money is given back, so the ticket should no longer let them in. */
+export const refundTicket: ActsOnPersonsBooking = async (
+  world,
+  who,
+  listing,
+) => {
+  const [attendee] = await getAttendeesByTokens([ticketOf(world, who)]);
+  if (!attendee) throw new Error(`${who}'s ticket is not on any booking`);
+  await postAttendeeRefund({
+    attendeeId: attendee.id,
+    listingId: listingIdNamed(world, listing),
+  });
+};
+
+/** The one-use code the scanner page carries for its own requests. Reading it
+ * off the page is what the page's own script does, so a page that stopped
+ * supplying it fails the story here rather than the story inventing one. */
+export const codeOnPage = (browser: TestBrowser): string =>
+  requireGroup(
+    browser.currentHtml.match(
+      /<meta[^>]*name="csrf-token"[^>]*content="([^"]*)"/,
+    ),
+    "The scanner page carries no code to send",
+  );
+
+/** The browser's cookies as one header value — the request the page's own
+ * script sends carries them. */
+export const cookiesOf = (browser: TestBrowser): string =>
+  [...browser.debugCookies()]
+    .map(([name, value]) => `${name}=${value}`)
+    .join("; ");
+
+/** Post one JSON body to a door's scan API, carrying one browser's own
+ * cookies and the one-use code off that browser's page — the request the
+ * door page's own script sends. Every door reader stands on this. */
+export const sendDoorJson = async (
+  scanPath: string,
+  browser: TestBrowser,
+  body: Record<string, unknown>,
+): Promise<DoorAnswer> => {
+  const response = await handleRequest(
+    new Request(`http://localhost${scanPath}`, {
+      body: JSON.stringify(body),
+      headers: {
+        "content-type": "application/json",
+        cookie: cookiesOf(browser),
+        host: "localhost",
+        "x-csrf-token": codeOnPage(browser),
+      },
+      method: "POST",
+    }),
+  );
+  return (await expectAccepted(response).json()) as DoorAnswer;
+};
+
+/** Send one scanned ticket to a door's JSON API: the body the door page's
+ * own script builds for a scan. Every door reader stands on this. */
+export const sendDoorScan = async (
+  scanPath: string,
+  browser: TestBrowser,
+  ticket: string,
+  choices: DoorChoice = {},
+): Promise<DoorAnswer> =>
+  sendDoorJson(scanPath, browser, {
+    token: ticket,
+    ...(choices.letInAnyway === undefined
+      ? {}
+      : { force: choices.letInAnyway }),
+    ...(choices.confirmedTheirId === undefined
+      ? {}
+      : { id_verified: choices.confirmedTheirId }),
+    ...(choices.tickets === undefined ? {} : { quantity: choices.tickets }),
+  });
+
+/** Post one scanned ticket to a scanner page's own JSON door, as the page's
+ * own script would. The page is opened first so the code and cookies are its
+ * own; both the listing door and the group door go through here. */
+export const postScanAtPath = async (
+  world: TicketsWorld,
+  doorPaths: DoorPaths,
+  ticket: string,
+  choices: DoorChoice,
+): Promise<DoorAnswer> =>
+  sendDoorScan(
+    doorPaths.scan,
+    await openAdminPage(world, doorPaths.page),
+    ticket,
+    choices,
+  );
+
+/** What one door's scan gives a story: whose door, whose ticket, and what the
+ * organiser decided when the door asked. */
+export type ShowTicketAtDoor = (
+  world: TicketsWorld,
+  doorName: string,
+  ticket: string,
+  choices?: DoorChoice,
+) => Promise<DoorAnswer>;
+
+/** One queued check-in an offline page holds for the connection: the body
+ * the page's own script builds, the door it belongs to, and the path it
+ * posts to when the connection returns. */
+export interface QueuedDelivery {
+  body: Record<string, unknown>;
+  listing: string;
+  scanPath: string;
+}
+
+/** One door's scan, from the paths its own pages live at. Both the listing
+ * door and the group door stand on this. */
+export const scanAt =
+  (
+    pathsOf: (world: TicketsWorld, doorName: string) => DoorPaths,
+  ): ShowTicketAtDoor =>
+  async (world, doorName, ticket, choices = {}) =>
+    postScanAtPath(world, pathsOf(world, doorName), ticket, choices);
+
+/** The organiser holds a ticket up to a listing's door and is told what to do
+ * with the person in front of them. Letting someone in who belongs to another
+ * listing is a deliberate second press, so it is asked for rather than assumed.
+ */
+export const showTicketAtDoor: ShowTicketAtDoor = scanAt((world, listing) => ({
+  page: listingPath(world, listing, "scanner"),
+  scan: listingPath(world, listing, "scan"),
+}));
+
+/** The whole door page, for checks about what is not on it at all. */
+export const doorPageHtml: ReadAboutOneThing = async (world, listing) =>
+  (await openAdminPage(world, listingPath(world, listing, "scanner")))
+    .currentHtml;
+
+/** The people a scanner page's list offers when the organiser looks someone
+ * up by hand instead of reading their ticket. Each one is read from the row
+ * the organiser would click, so a name shown anywhere else on the page does
+ * not count as being offered. */
+export const readOfferedPeople = (html: string): Array<{ name: string }> =>
+  [...html.matchAll(/<div[^>]*role="option"[^>]*>/g)].map(([row]) => ({
+    name: readOf(row, "name"),
+  }));
+
+/** The people a door's own list offers, whatever door page the caller
+ * names: the listing's door and the group's door both stand on this. */
+export const offeredAt =
+  (
+    pageHtml: ReadAboutOneThing<string>,
+  ): ReadAboutOneThing<Array<{ name: string }>> =>
+  async (world, doorName) =>
+    readOfferedPeople(await pageHtml(world, doorName));
+
+/** One thing the door records about a person it is offering. A row missing it
+ * is a broken page, not an empty answer. */
+const readOf = (row: string, what: string): string =>
+  requireGroup(
+    row.match(new RegExp(`data-${what}="([^"]*)"`)),
+    `A row at the door has no ${what}`,
+  );
+
+/** The people the listing's door offers when the organiser looks someone up by
+ * hand instead of reading their ticket. */
+export const peopleOfferedAtDoor = offeredAt(doorPageHtml);
+
+/** How many tickets the listing's door offers one person for when the
+ * organiser looks them up by hand: what their party still owes. */
+export const ticketsOfferedAtDoor = async (
+  world: TicketsWorld,
+  listing: string,
+  who: string,
+): Promise<number> => {
+  const rows = [
+    ...(await doorPageHtml(world, listing)).matchAll(
+      /<div[^>]*role="option"[^>]*>/g,
+    ),
+  ].map(([row]) => row);
+  const row = rows.find((one) => readOf(one, "name") === who);
+  if (!row) throw new Error(`The door does not offer ${who}`);
+  return Number(readOf(row, "quantity"));
+};
+
+/** What the listing's own record of the day says happened. */
+export const dayLog: ReadAboutOneThing = async (world, listing) => {
+  // The listing whose own record of the day a capture of a check-in goes to.
+  const path = listingPath(world, listing, "activity");
+  leaveEvidencePage(world, ["checked-in-on-the-day"], path);
+  const browser = await openAdminPage(world, path);
+  return browser.pageText;
+};

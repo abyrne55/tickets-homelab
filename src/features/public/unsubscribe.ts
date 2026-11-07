@@ -1,0 +1,84 @@
+/**
+ * Public unsubscribe / resubscribe routes for marketing emails.
+ *
+ * The link carries an opaque contact hash (HMAC), so the address is never
+ * exposed and state only changes via POST. No login required — recipients act
+ * on their own address via the capability in their link.
+ */
+
+import {
+  forgetContact,
+  isHashUnsubscribed,
+  resubscribeHash,
+  unsubscribeHash,
+} from "#db/contact-preferences.ts";
+import { t } from "#i18n";
+import { withCsrfForm } from "#routes/csrf.ts";
+import { flashForPage } from "#routes/flash-for-page.ts";
+import {
+  infoRedirect,
+  publicPageResponse,
+  redirect,
+} from "#routes/response.ts";
+import { encodedAfter } from "#shared/encoded-after.ts";
+import { unsubscribePage } from "#templates/public/unsubscribe.tsx";
+
+const pagePath = encodedAfter("/unsubscribe?email=");
+
+/** GET /unsubscribe?email=<hash> — show current status and the toggle form. */
+export const handleUnsubscribeGet = async (
+  request: Request,
+): Promise<Response> => {
+  const flash = await flashForPage(request);
+  const hash = new URL(request.url).searchParams.get("email");
+  const unsubscribed = hash ? await isHashUnsubscribed(hash) : false;
+  return publicPageResponse(() =>
+    unsubscribePage({
+      error: flash.error,
+      hash,
+      info: flash.info,
+      success: flash.success,
+      unsubscribed,
+    }),
+  );
+};
+
+/** POST /unsubscribe — toggle subscription state for the link's hash. */
+export const handleUnsubscribePost = (request: Request): Promise<Response> =>
+  withCsrfForm(
+    request,
+    (message, status) =>
+      publicPageResponse(
+        () =>
+          unsubscribePage({
+            error: message,
+            hash: null,
+            unsubscribed: false,
+          }),
+        status,
+      ),
+    async (form) => {
+      const hash = form.getString("email");
+      if (!hash) {
+        return redirect(
+          "/unsubscribe",
+          t("unsubscribe.invalid_link_flash"),
+          false,
+        );
+      }
+      if (form.getString("action") === "resubscribe") {
+        await resubscribeHash(hash);
+        return redirect(
+          pagePath(hash),
+          t("unsubscribe.resubscribed_flash"),
+          true,
+        );
+      }
+      if (form.getString("action") === "forget") {
+        await forgetContact(hash);
+        return redirect("/unsubscribe", t("unsubscribe.deleted_flash"), true);
+      }
+      await unsubscribeHash(hash);
+      return infoRedirect(pagePath(hash), t("unsubscribe.unsubscribed_flash"));
+    },
+  );

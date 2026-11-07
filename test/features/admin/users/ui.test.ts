@@ -1,0 +1,167 @@
+import { assert, assertStringIncludes } from "@std/assert";
+import { expect } from "@std/expect";
+import { describe, it as test } from "@std/testing/bdd";
+import { encrypt } from "#crypto/encryption.ts";
+import { getDb } from "#db/client.ts";
+import { invalidateUsersCache } from "#db/users.ts";
+import { getAllActivityLog } from "#test-utils/activity-log.ts";
+import { assertPublicHtml, expectIncludesAll } from "#test-utils/assertions.ts";
+import { describeWithEnv } from "#test-utils/db.ts";
+import { awaitTestRequest } from "#test-utils/mocks.ts";
+import {
+  adminFormPost,
+  adminGet,
+  createTestManagerSession,
+} from "#test-utils/session.ts";
+
+describeWithEnv("server (multi-user admin)", { db: true }, () => {
+  describe("navigation", () => {
+    test("owner sees all nav links", async () => {
+      const response = await adminGet("/admin/");
+      const html = await response.text();
+      expectIncludesAll(html, ["Settings", "Users"]);
+    });
+
+    test("manager does not see owner-only nav links", async () => {
+      const cookie = await createTestManagerSession(
+        "navmgr-session",
+        "navmanager",
+      );
+      const dashboardResponse = await awaitTestRequest("/admin/", { cookie });
+      const html = await dashboardResponse.text();
+      assert(!html.includes("Settings"));
+      assert(!html.includes("Users"));
+    });
+
+    test("manager sees log nav link", async () => {
+      const cookie = await createTestManagerSession(
+        "navmgr-log-session",
+        "navmanagerlog",
+      );
+      const dashboardResponse = await awaitTestRequest("/admin/", { cookie });
+      const html = await dashboardResponse.text();
+      assertStringIncludes(html, "/admin/log");
+    });
+  });
+
+  describe("setup page", () => {
+    test("setup includes admin_username field", async () => {
+      const { getDb: getDbFn } = await import("#db/client.ts");
+      await getDbFn().execute("DELETE FROM settings");
+      await getDbFn().execute("DELETE FROM users");
+      const { settings: s } = await import("#db/settings.ts");
+      s.setup.clearCache();
+      s.invalidateCache();
+      invalidateUsersCache();
+
+      const html = await assertPublicHtml("/setup/", "admin_username");
+      const input = html.match(/<input[^>]*name="admin_username"[^>]*>/)?.[0];
+      assert(input, "the setup page renders the admin_username input");
+      // The browser must refuse an invalid username before anything is sent.
+      expectIncludesAll(input, [
+        'pattern="[a-zA-Z0-9][a-zA-Z0-9_\\-]*"',
+        'minlength="1"',
+        'maxlength="250"',
+        'title="Letters, numbers, hyphens, and underscores only. Start with a letter or number."',
+      ]);
+    });
+  });
+
+  describe("users template rendering", () => {
+    test("shows Invited status for user without password", async () => {
+      await adminFormPost("/admin/users", {
+        admin_level: "manager",
+        username: "invited-only",
+      });
+
+      const response = await adminGet("/admin/users");
+      const html = await response.text();
+      assertStringIncludes(html, "Invited");
+    });
+
+    test("shows Invite Expired status for expired invite", async () => {
+      await adminFormPost("/admin/users", {
+        admin_level: "manager",
+        username: "expired-display",
+      });
+
+      const expiredExpiry = await encrypt(
+        new Date(Date.now() - 1000).toISOString(),
+      );
+      await getDb().execute({
+        args: [expiredExpiry],
+        sql: "UPDATE users SET invite_expiry = ? WHERE id = 2",
+      });
+      invalidateUsersCache();
+
+      const response = await adminGet("/admin/users");
+      const html = await response.text();
+      assertStringIncludes(html, "Invite Expired");
+    });
+  });
+
+  describe("fields.ts (username validation)", () => {
+    test("validateUsername accepts a one-character username", async () => {
+      const { validateUsername } = await import(
+        "#templates/fields/validators.ts"
+      );
+      expect(validateUsername("a")).toBeNull();
+    });
+
+    test("validateUsername rejects a long username", async () => {
+      const { validateUsername } = await import(
+        "#templates/fields/validators.ts"
+      );
+      expect(validateUsername("a".repeat(251))).toBe(
+        "Username must be 250 characters or fewer",
+      );
+    });
+
+    test("validateUsername rejects special characters", async () => {
+      const { validateUsername } = await import(
+        "#templates/fields/validators.ts"
+      );
+      const result = validateUsername("user name");
+      assertStringIncludes(result ?? "", "letters, numbers");
+    });
+
+    test("validateUsername accepts valid username", async () => {
+      const { validateUsername } = await import(
+        "#templates/fields/validators.ts"
+      );
+      expect(validateUsername("valid_user-1")).toBeNull();
+    });
+  });
+
+  describe("audit logging", () => {
+    test("logs activity when user is invited", async () => {
+      await adminFormPost("/admin/users", {
+        admin_level: "manager",
+        username: "auditinvite",
+      });
+
+      const logs = await getAllActivityLog();
+      expect(
+        logs.some((l) =>
+          l.message.includes("User 'auditinvite' invited as manager"),
+        ),
+      ).toBe(true);
+    });
+
+    test("logs activity when user is deleted", async () => {
+      await adminFormPost("/admin/users", {
+        admin_level: "manager",
+        username: "auditdelete",
+      });
+
+      await adminFormPost("/admin/users/2/delete", {
+        confirm_identifier: "auditdelete",
+      });
+
+      const logs = await getAllActivityLog();
+      expect(
+        logs.some((l) => l.message.includes("User 'auditdelete' deleted")),
+      ).toBe(true);
+    });
+  });
+});

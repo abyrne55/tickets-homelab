@@ -1,0 +1,77 @@
+/**
+ * Loader for the attendee Ledger tab: the plain-language order summary, the
+ * shared account statement (the source of truth), the balance path, and the
+ * activity history. The balance collects through a customer pay link
+ * or offline guidance. Rendered by the attendee entity page
+ * (attendee-page.ts). The tab is owner-only, matching the money-exposing
+ * standalone /admin/ledger routes.
+ */
+
+import { attendeeAccount } from "#accounting/accounts.ts";
+import { getAttendeeStatus } from "#db/attendee-statuses.ts";
+import {
+  getAttendeeBalanceState,
+  getAttendeeOrderSummary,
+} from "#db/attendees/balance.ts";
+import { getOpenInvoice } from "#db/invoices.ts";
+import { loadAccountLedger } from "#routes/admin/ledger/statements.ts";
+import { signBalanceToken } from "#shared/balance-link.ts";
+import { isPaymentsEnabled } from "#shared/config.ts";
+import { computeReservationDeposit } from "#shared/reservation-amount.ts";
+import { AttendeeLedgerPanel } from "#templates/admin/attendee-ledger-panel.tsx";
+import {
+  canCreateInvoice,
+  invoiceCreatePath,
+} from "./attendee-invoice-link.ts";
+
+/** Build the Ledger tab's merged panel for an already-loaded attendee. */
+export const loadAttendeeLedgerPanel = async (
+  attendeeId: number,
+  baseUrl: string,
+  returnUrl: string,
+  activityHref: string,
+): Promise<JSX.Element> => {
+  const account = attendeeAccount(attendeeId);
+  // The entity page already loaded this attendee, so its balance state exists.
+  const state = (await getAttendeeBalanceState(attendeeId))!;
+
+  const [status, summary, token, ledger, openInvoice] = await Promise.all([
+    state.statusId ? getAttendeeStatus(state.statusId) : Promise.resolve(null),
+    getAttendeeOrderSummary(attendeeId),
+    signBalanceToken(attendeeId),
+    loadAccountLedger(account),
+    getOpenInvoice(attendeeId),
+  ]);
+
+  const deposit = status?.is_reservation
+    ? computeReservationDeposit(
+        status.reservation_amount,
+        summary.reservationSubtotal,
+        summary.totalQuantity,
+      )
+    : 0;
+
+  return AttendeeLedgerPanel({
+    activityHref,
+    deposit,
+    fullLedgerHref: `/admin/ledger/${account.type}/${account.id}`,
+    // An invoice bills what the booking still owes. The link shows only under
+    // the rule the Actions tab reads: Invoices on, money owing, and no new
+    // invoice.
+    invoiceHref: canCreateInvoice({
+      balance: state,
+      hasNewInvoice: openInvoice !== null,
+    })
+      ? invoiceCreatePath(attendeeId)
+      : null,
+    ledger,
+    link: `${baseUrl}/pay/${token}`,
+    // The customer pay link only works when a provider can take the payment.
+    // Without one, the /pay POST dead-ends, so the template withholds it.
+    paymentsEnabled: isPaymentsEnabled(),
+    remainingBalance: state.remainingBalance,
+    returnUrl,
+    status,
+    summary,
+  });
+};

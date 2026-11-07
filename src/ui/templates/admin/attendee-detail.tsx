@@ -1,0 +1,252 @@
+/**
+ * Read-only attendee views shown at the top of the edit attendee page.
+ *
+ * `AttendeeDetail` is the single-attendee counterpart to the multi-attendee
+ * `AttendeeTable`: instead of one row per attendee it lays a single attendee's
+ * details out vertically as a key/value table. `AttendeeAnswersTable` renders
+ * the attendee's custom-question answers, and `AttendeeLogSection` wraps the
+ * shared activity-log table (filtered to this attendee) in a collapsed
+ * details/summary disclosure.
+ */
+
+import type { SelectedQuestionAnswers } from "#db/question-types.ts";
+import { compact, sumOf } from "#fp";
+import { t } from "#i18n";
+import { type Child, Raw } from "#jsx/jsx-runtime.ts";
+import type { AttendeeBooking } from "#routes/admin/attendee-form-dates.ts";
+import { formatDateRangeLabel } from "#shared/date-labels.ts";
+import type { TableColumn } from "#shared/tables/column.ts";
+import { defineTable } from "#shared/tables/definition.ts";
+import { answerRows } from "#templates/admin/answer-rows.ts";
+import { Badge } from "#templates/components/badge.tsx";
+import { DetailTable } from "#templates/components/detail-table.tsx";
+import { HeaderRow } from "#templates/components/header-row.tsx";
+import { PageBlock } from "#templates/components/page-structure.tsx";
+import { renderTable } from "#templates/components/table.tsx";
+import { colClass } from "#templates/components/table-columns.ts";
+import { translatedTableColumn } from "#templates/components/translated-table-column.ts";
+
+/** One key/value row of a detail table: a header cell plus a value cell. */
+const DetailTableRow = ({
+  label,
+  children,
+}: {
+  label: string;
+  children: Child;
+}): JSX.Element => (
+  <HeaderRow header={label}>
+    <td>{children}</td>
+  </HeaderRow>
+);
+
+/**
+ * "Checked in" / "Refunded" status badges for a booking, or null when neither
+ * applies. Shared by the read-only bookings summary and the listing-editor rows.
+ * A part booking names its count, so "2 of 3" cannot read as fully arrived.
+ */
+export const BookingStatusBadges = ({
+  checkedIn,
+  quantity,
+  refunded,
+}: {
+  checkedIn: number;
+  quantity: number;
+  refunded: boolean;
+}): JSX.Element | null => {
+  const badges = compact([
+    checkedIn > 0 ? (
+      <Badge>
+        {checkedIn < quantity
+          ? t("attendee_form.checked_in_count", {
+              count: checkedIn,
+              total: quantity,
+            })
+          : t("attendee_form.checked_in")}
+      </Badge>
+    ) : null,
+    refunded ? (
+      <Badge variant="danger">{t("attendee_form.refunded")}</Badge>
+    ) : null,
+  ]);
+  return badges.length > 0 ? (
+    <div class="muted small">
+      <Raw html={badges.join(" ")} />
+    </div>
+  ) : null;
+};
+
+/**
+ * The muted "(inactive)" marker shown after an inactive listing's name, or
+ * nothing when the listing is active. Shared by the read-only bookings summary
+ * and the listing-editor rows; `leadingSpace` adds a space before the marker
+ * for callers that render it inline right after the name.
+ */
+export const InactiveNote = ({
+  active,
+  leadingSpace,
+}: {
+  active: boolean;
+  leadingSpace?: boolean;
+}): JSX.Element | null =>
+  active ? null : (
+    <span class="muted small">
+      {leadingSpace ? " " : ""}({t("common.inactive")})
+    </span>
+  );
+
+type BookingTableContext = {
+  childNamesByParentId: Map<number, string[]>;
+  nameByListingId: Map<number, string>;
+  /** True when a completed, unrefunded plan sale has no site for this
+   * buyer — the repair cue then shows on every plan row. */
+  planSaleMissingSite: boolean;
+};
+
+const bookingColumns: readonly TableColumn<
+  AttendeeBooking,
+  BookingTableContext
+>[] = [
+  translatedTableColumn("listing", "terms.listing", (booking, context) => {
+    // The add-on names hang off this row's own listing id, and the map holds
+    // an entry only for a parent that has children.
+    const childNames = context.childNamesByParentId.get(booking.listingId);
+    return (
+      <>
+        <a href={`/admin/listing/${booking.listingId}`}>
+          {booking.listingName}
+        </a>
+        <InactiveNote active={booking.listingActive} leadingSpace />
+        {booking.parentListingId > 0 ? (
+          <div class="muted small">
+            {t("attendee_detail.addon_under", {
+              parent:
+                context.nameByListingId.get(booking.parentListingId) ??
+                `#${booking.parentListingId}`,
+            })}
+          </div>
+        ) : null}
+        {booking.assignBuiltSite &&
+        booking.quantity >= 1 &&
+        !booking.refunded &&
+        context.planSaleMissingSite ? (
+          <div class="muted small">{t("attendee_detail.no_site_assigned")}</div>
+        ) : null}
+        {childNames ? (
+          <div class="muted small">
+            {t("attendee_detail.includes_addon", {
+              children: childNames.join(", "),
+            })}
+          </div>
+        ) : null}
+      </>
+    );
+  }),
+  translatedTableColumn("date", "common.date", (booking) =>
+    booking.startAt
+      ? formatDateRangeLabel(booking.startAt, booking.endAt)
+      : "—",
+  ),
+  translatedTableColumn(
+    "quantity",
+    "common.quantity",
+    (booking) => booking.quantity,
+    { class: "quantity" },
+  ),
+  translatedTableColumn(
+    "status",
+    "common.status",
+    (booking) =>
+      BookingStatusBadges({
+        checkedIn: booking.checkedIn,
+        quantity: booking.quantity,
+        refunded: booking.refunded,
+      }) ?? "—",
+  ),
+];
+
+const bookingsTable = defineTable(bookingColumns);
+
+/**
+ * Read-only summary of the listings an attendee currently books, shown as a
+ * table near the top of the edit page: one row per booking with its quantity,
+ * dates (for daily listings), and check-in / refund status, plus a total ticket
+ * count. Returns null when nothing is booked so the caller can drop the section.
+ */
+export const AttendeeBookingsTable = ({
+  bookings,
+  planSaleMissingSite,
+}: {
+  bookings: AttendeeBooking[];
+  /** One site serves every plan row this buyer holds, so the cue is a
+   * single buyer-level fact, not a per-row listing check. */
+  planSaleMissingSite: boolean;
+}): JSX.Element | null => {
+  if (bookings.length === 0) return null;
+  const totalQuantity = sumOf((b: AttendeeBooking) => b.quantity)(bookings);
+  // A folded child row carries the parent listing it was chosen under; the
+  // parent is booked in this same order, so resolve its name from the row set.
+  const nameByListingId = new Map(
+    bookings.map((b) => [b.listingId, b.listingName]),
+  );
+  // The reverse link: each parent's chosen add-on children, so the parent row
+  // shows what was folded under it (usability #5).
+  const childNamesByParentId = new Map<number, string[]>();
+  for (const b of bookings) {
+    if (b.parentListingId > 0) {
+      const names = childNamesByParentId.get(b.parentListingId) ?? [];
+      childNamesByParentId.set(b.parentListingId, names);
+      names.push(b.listingName);
+    }
+  }
+  return (
+    <PageBlock>
+      <h3>{t("terms.bookings")}</h3>
+      {renderTable(bookingsTable, bookings, {
+        context: {
+          childNamesByParentId,
+          nameByListingId,
+          planSaleMissingSite,
+        },
+        foot: (
+          <tr>
+            <th colspan="2" scope="row">
+              {t("attendee_detail.total")}
+            </th>
+            <td class={colClass("quantity")}>{totalQuantity}</td>
+            <td />
+          </tr>
+        ),
+      })}
+    </PageBlock>
+  );
+};
+
+/**
+ * The attendee's answers to custom questions, one row per answered question,
+ * with a note under any answer that differs from the booking. Returns null
+ * when there is nothing to show, so the caller can drop the section.
+ */
+export const AttendeeAnswersTable = (
+  selected: SelectedQuestionAnswers,
+): JSX.Element | null => {
+  const rows = answerRows(selected);
+  if (rows.length === 0) return null;
+  return (
+    <PageBlock>
+      <h3>{t("attendee_detail.answers")}</h3>
+      <DetailTable>
+        {rows.map((row) => (
+          <DetailTableRow label={row.question}>
+            {row.answer}
+            {row.notes.map((note) => (
+              <>
+                <br />
+                <small>{note}</small>
+              </>
+            ))}
+          </DetailTableRow>
+        ))}
+      </DetailTable>
+    </PageBlock>
+  );
+};

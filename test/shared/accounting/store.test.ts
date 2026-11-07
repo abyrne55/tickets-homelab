@@ -1,0 +1,453 @@
+import { assertStringIncludes } from "@std/assert";
+import { expect } from "@std/expect";
+import { describe, it as test } from "@std/testing/bdd";
+import { LedgerConflictError } from "#accounting/conflicts.ts";
+import {
+  allTransfers,
+  transfersByAccount,
+  transfersByEventGroup,
+} from "#accounting/queries.ts";
+import {
+  postTransferGroupBatches,
+  postTransferGroups,
+  postTransfers,
+  postTransfersTx,
+} from "#accounting/store.ts";
+import { withTransaction } from "#db/client.ts";
+import { account } from "#shared/ledger/account.ts";
+import { balanceOf } from "#shared/ledger/project.ts";
+import type { TransferInput } from "#shared/ledger/types.ts";
+import {
+  rejection,
+  saleAndPayment,
+  tx,
+  useTransactionalDb,
+} from "#test-utils/ledger.ts";
+
+describe("db > accounting > store", () => {
+  useTransactionalDb();
+
+  describe("postTransfers", () => {
+    test("round-trips an event and feeds the balance projections", async () => {
+      const attendee = account("attendee", 3);
+      const revenue = account("revenue", 7);
+      const result = await postTransfers([
+        tx({ destination: revenue, reference: "sale-1", source: attendee }),
+        tx({
+          destination: attendee,
+          reference: "pay-1",
+          source: account("external", "world"),
+        }),
+      ]);
+      expect(result).toEqual({ inserted: 2, skipped: 0 });
+      expect(balanceOf(attendee)(await transfersByAccount(attendee))).toBe(0);
+      expect(balanceOf(revenue)(await transfersByAccount(revenue))).toBe(5000);
+    });
+
+    test("replaying the same event writes nothing", async () => {
+      const legs = saleAndPayment();
+      expect(await postTransfers(legs)).toEqual({ inserted: 2, skipped: 0 });
+      expect(await postTransfers(legs)).toEqual({ inserted: 0, skipped: 2 });
+      expect((await allTransfers()).length).toBe(2);
+    });
+
+    test("rejects replaying an event group with a changed leg", async () => {
+      const original = saleAndPayment();
+      expect(await postTransfers(original)).toEqual({
+        inserted: 2,
+        skipped: 0,
+      });
+      // Same event group and references, but one leg's amount differs — not an
+      // idempotent replay, so the single-event guard must reject it.
+      const tampered = [
+        { ...original[0]!, amount: original[0]!.amount + 1 },
+        original[1]!,
+      ];
+      const error = await rejection(postTransfers(tampered));
+      expect(error).toBeInstanceOf(LedgerConflictError);
+      expect((await allTransfers()).length).toBe(2); // the original legs, untouched
+    });
+
+    test("rejects a reversal whose original transfer is absent", async () => {
+      // A reverses_id pointing at no stored transfer must be refused before the
+      // insert, so it never uses up the unique one-void-per-original slot.
+      const error = await rejection(
+        postTransfers([
+          tx({
+            eventGroup: "orphan-void",
+            reference: "orphan-void",
+            reversesId: 999,
+          }),
+        ]),
+      );
+      expect(error).toBeInstanceOf(LedgerConflictError);
+      assertStringIncludes(error.message, "refers to no transfer");
+      expect((await allTransfers()).length).toBe(0);
+    });
+
+    test("rejects duplicate references within one post", async () => {
+      const error = await rejection(
+        postTransfers([
+          tx({ reference: "dup" }),
+          tx({
+            destination: account("fee_income", "booking"),
+            reference: "dup",
+          }),
+        ]),
+      );
+      // The exact message matters: this guard runs before any database work,
+      // so the batch never opens a transaction. The batch-level guard reports
+      // a different message, which would not satisfy this.
+      expect(error.message).toBe(
+        "postTransfers: duplicate reference within one event",
+      );
+      expect((await allTransfers()).length).toBe(0);
+    });
+
+    test("rejects a colliding reference without committing the other legs", async () => {
+      await postTransfers([tx({ eventGroup: "evt-a", reference: "shared" })]);
+      // evt-b reuses evt-a's reference for one leg and adds a fresh leg. The
+      // collision is caught before inserting, so the fresh leg is never written
+      // (a post-insert check would leave it behind as a partial event).
+      const error = await rejection(
+        postTransfers([
+          tx({ eventGroup: "evt-b", reference: "shared" }),
+          tx({
+            destination: account("fee_income", "booking"),
+            eventGroup: "evt-b",
+            reference: "fresh-leg",
+          }),
+        ]),
+      );
+      expect(error).toBeInstanceOf(LedgerConflictError);
+      expect((await allTransfers()).length).toBe(1);
+    });
+
+    test("rejects an invalid transfer before writing anything", async () => {
+      const error = await rejection(
+        postTransfers([tx({ amount: 0, reference: "bad" })]),
+      );
+      assertStringIncludes(error.message, "non_positive_amount");
+      expect((await allTransfers()).length).toBe(0);
+    });
+
+    test("rejects legs that span more than one event group", async () => {
+      const error = await rejection(
+        postTransfers([
+          tx({ eventGroup: "evt-a", reference: "a" }),
+          tx({ eventGroup: "evt-b", reference: "b" }),
+        ]),
+      );
+      expect(error.message).toBe(
+        "postTransfers: every leg must share one eventGroup (got evt-a, evt-b)",
+      );
+    });
+
+    test("replaying a single-leg event skips it rather than posting again", async () => {
+      const lone = [tx({ eventGroup: "lone", reference: "lone-sale" })];
+      expect(await postTransfers(lone)).toEqual({ inserted: 1, skipped: 0 });
+      expect(await postTransfers(lone)).toEqual({ inserted: 0, skipped: 1 });
+      expect((await transfersByEventGroup("lone")).length).toBe(1);
+    });
+
+    test("treats an empty post as a no-op", async () => {
+      expect(await postTransfers([])).toEqual({ inserted: 0, skipped: 0 });
+      expect((await allTransfers()).length).toBe(0);
+    });
+  });
+
+  describe("postTransfersTx (composed in a wider transaction)", () => {
+    test("commits the legs with the surrounding transaction", async () => {
+      const result = await withTransaction((t) =>
+        postTransfersTx(t, saleAndPayment()),
+      );
+      expect(result).toEqual({ inserted: 2, skipped: 0 });
+      expect((await allTransfers()).length).toBe(2);
+    });
+
+    test("rolls the legs back when the surrounding transaction fails", async () => {
+      // The whole point of the tx-scoped variant: a later failure in the same
+      // transaction undoes the ledger legs, so a booking and its legs are
+      // all-or-nothing.
+      const error = await rejection(
+        withTransaction(async (t) => {
+          await postTransfersTx(t, saleAndPayment());
+          throw new Error("surrounding work failed");
+        }),
+      );
+      assertStringIncludes(error.message, "surrounding work failed");
+      expect((await allTransfers()).length).toBe(0);
+    });
+
+    test("rejects an invalid transfer before writing anything", async () => {
+      // The pre-DB validation is part of this path's contract too, not just
+      // the batch poster's: a malformed leg must abort the whole transaction.
+      const error = await rejection(
+        withTransaction((t) =>
+          postTransfersTx(t, [tx({ amount: -5, reference: "bad" })]),
+        ),
+      );
+      assertStringIncludes(error.message, "non_positive_amount");
+      expect((await allTransfers()).length).toBe(0);
+    });
+
+    test("skips an already-posted event as an idempotent replay", async () => {
+      // The in-transaction poster the booking path uses must be idempotent too:
+      // re-posting an event whose legs already match writes nothing rather than
+      // doubling the ledger.
+      await withTransaction((t) => postTransfersTx(t, saleAndPayment()));
+      const replay = await withTransaction((t) =>
+        postTransfersTx(t, saleAndPayment()),
+      );
+      expect(replay).toEqual({ inserted: 0, skipped: 2 });
+      expect((await allTransfers()).length).toBe(2);
+    });
+
+    test("rejects a reference already owned by a different event", async () => {
+      // A reference is globally unique to one event; reusing it under a new event
+      // group is a conflict, caught before the write opens.
+      await withTransaction((t) =>
+        postTransfersTx(t, [tx({ eventGroup: "e1", reference: "shared" })]),
+      );
+      const error = await rejection(
+        withTransaction((t) =>
+          postTransfersTx(t, [tx({ eventGroup: "e2", reference: "shared" })]),
+        ),
+      );
+      expect(error).toBeInstanceOf(LedgerConflictError);
+      assertStringIncludes(
+        error.message,
+        "already belongs to a different event",
+      );
+      expect((await allTransfers()).length).toBe(1);
+    });
+
+    test("validates a reversal against the stored original it reads in-tx", async () => {
+      // The in-transaction poster checks a reversing leg against the original it
+      // links to, read through its own transaction — the admin-void path. Post the
+      // original, then void it by the stored id in a separate event.
+      await withTransaction((t) =>
+        postTransfersTx(t, [tx({ eventGroup: "orig", reference: "sale" })]),
+      );
+      const origId = (await transfersByEventGroup("orig"))[0]!.id;
+      const result = await withTransaction((t) =>
+        postTransfersTx(t, [
+          tx({
+            destination: account("attendee", 1),
+            eventGroup: "void",
+            reference: "void",
+            reversesId: origId,
+            source: account("revenue", 1),
+          }),
+        ]),
+      );
+      expect(result).toEqual({ inserted: 1, skipped: 0 });
+    });
+
+    test("rejects an in-tx reversal whose original does not exist", async () => {
+      // selectById returns null for an unknown id; the void then refers to no
+      // transfer and is refused before any write.
+      const error = await rejection(
+        withTransaction((t) =>
+          postTransfersTx(t, [
+            tx({ eventGroup: "void", reference: "void", reversesId: 9999 }),
+          ]),
+        ),
+      );
+      expect(error).toBeInstanceOf(LedgerConflictError);
+      assertStringIncludes(error.message, "refers to no transfer");
+      expect((await allTransfers()).length).toBe(0);
+    });
+  });
+
+  describe("postTransferGroups (one atomic batch of many events)", () => {
+    /** A sale+payment event for `attendeeId`, isolated under its own group. */
+    const event = (group: string, attendeeId: number): TransferInput[] => [
+      tx({
+        destination: account("revenue", attendeeId),
+        eventGroup: group,
+        reference: `sale-${group}`,
+        source: account("attendee", attendeeId),
+      }),
+      tx({
+        destination: account("attendee", attendeeId),
+        eventGroup: group,
+        reference: `pay-${group}`,
+        source: account("external", "world"),
+      }),
+    ];
+
+    test("posts many independent events together and feeds projections", async () => {
+      const results = await postTransferGroups([
+        event("evt-a", 1),
+        event("evt-b", 2),
+      ]);
+      expect(results).toEqual([
+        { inserted: 2, skipped: 0 },
+        { inserted: 2, skipped: 0 },
+      ]);
+      expect((await allTransfers()).length).toBe(4);
+      const rev1 = account("revenue", 1);
+      const rev2 = account("revenue", 2);
+      expect(balanceOf(rev1)(await transfersByAccount(rev1))).toBe(5000);
+      expect(balanceOf(rev2)(await transfersByAccount(rev2))).toBe(5000);
+    });
+
+    test("replays an already-stored event as a skip while inserting the new one", async () => {
+      await postTransferGroups([event("evt-a", 1)]);
+      // evt-a's two stored legs are re-loaded and matched (a skip); evt-b is new.
+      const results = await postTransferGroups([
+        event("evt-a", 1),
+        event("evt-b", 2),
+      ]);
+      expect(results).toEqual([
+        { inserted: 0, skipped: 2 },
+        { inserted: 2, skipped: 0 },
+      ]);
+      expect((await allTransfers()).length).toBe(4);
+    });
+
+    test("rejects a changed leg on an already-stored event, writing nothing", async () => {
+      await postTransferGroups([event("evt-a", 1)]);
+      const [sale, pay] = event("evt-a", 1);
+      const error = await rejection(
+        postTransferGroups([[{ ...sale!, amount: 9999 }, pay!]]),
+      );
+      expect(error).toBeInstanceOf(LedgerConflictError);
+      assertStringIncludes(error.message, "amount");
+      expect((await allTransfers()).length).toBe(2);
+    });
+
+    test("rejects a reference that already belongs to a different event", async () => {
+      await postTransfers([tx({ eventGroup: "evt-a", reference: "shared" })]);
+      const error = await rejection(
+        postTransferGroups([
+          [tx({ eventGroup: "evt-b", reference: "shared" })],
+        ]),
+      );
+      expect(error).toBeInstanceOf(LedgerConflictError);
+      assertStringIncludes(error.message, "different event");
+      expect((await allTransfers()).length).toBe(1);
+    });
+
+    test("posts clean batches while returning a stored conflict beside them", async () => {
+      await postTransfers([tx({ eventGroup: "evt-a", reference: "shared" })]);
+      const results = await postTransferGroupBatches([
+        [event("evt-clean", 2)],
+        [[tx({ eventGroup: "evt-conflict", reference: "shared" })]],
+      ]);
+
+      expect(results[0]).toMatchObject({ kind: "posted" });
+      expect(results[1]).toMatchObject({ kind: "conflict" });
+      expect((await allTransfers()).length).toBe(3);
+    });
+
+    test("rejects a duplicate reference across two groups in the batch", async () => {
+      const error = await rejection(
+        postTransferGroups([
+          [tx({ eventGroup: "evt-a", reference: "dup" })],
+          [
+            tx({
+              destination: account("fee_income", "booking"),
+              eventGroup: "evt-b",
+              reference: "dup",
+            }),
+          ],
+        ]),
+      );
+      assertStringIncludes(
+        error.message,
+        "duplicate reference across the batch",
+      );
+      expect((await allTransfers()).length).toBe(0);
+    });
+
+    test("rejects two groups that share an eventGroup in the batch", async () => {
+      // Each group is meant to be one event; two sharing a group would both plan
+      // against the same snapshot and merge into one event's legs, breaking a
+      // later idempotent replay of either.
+      const error = await rejection(
+        postTransferGroups([
+          [tx({ eventGroup: "evt-shared", reference: "a" })],
+          [
+            tx({
+              destination: account("fee_income", "booking"),
+              eventGroup: "evt-shared",
+              reference: "b",
+            }),
+          ],
+        ]),
+      );
+      assertStringIncludes(
+        error.message,
+        "duplicate eventGroup across the batch",
+      );
+      expect((await allTransfers()).length).toBe(0);
+    });
+
+    test("validates every group up front, rejecting the whole batch before any write", async () => {
+      const error = await rejection(
+        postTransferGroups([
+          event("evt-a", 1),
+          [tx({ amount: 0, eventGroup: "evt-b", reference: "bad" })],
+        ]),
+      );
+      assertStringIncludes(error.message, "non_positive_amount");
+      // All-or-nothing: the valid group is not written either.
+      expect((await allTransfers()).length).toBe(0);
+    });
+
+    test("treats an all-empty batch as a no-op, one result per group", async () => {
+      expect(await postTransferGroups([[], []])).toEqual([
+        { inserted: 0, skipped: 0 },
+        { inserted: 0, skipped: 0 },
+      ]);
+      expect((await allTransfers()).length).toBe(0);
+    });
+
+    test("keeps results aligned with the input groups around empty groups", async () => {
+      const results = await postTransferGroups([[], event("evt-a", 1), []]);
+      expect(results).toEqual([
+        { inserted: 0, skipped: 0 },
+        { inserted: 2, skipped: 0 },
+        { inserted: 0, skipped: 0 },
+      ]);
+      expect((await allTransfers()).length).toBe(2);
+    });
+
+    test("posts a valid reversal, checking it against the pre-loaded original", async () => {
+      await postTransfers([tx({ eventGroup: "evt-1", reference: "sale" })]);
+      const originalId = (await transfersByEventGroup("evt-1"))[0]!.id;
+      const result = await postTransferGroups([
+        [
+          tx({
+            destination: account("attendee", 1),
+            eventGroup: "evt-2",
+            reference: "void",
+            reversesId: originalId,
+            source: account("revenue", 1),
+          }),
+        ],
+      ]);
+      expect(result).toEqual([{ inserted: 1, skipped: 0 }]);
+    });
+
+    test("rejects a reversal whose original is missing", async () => {
+      const error = await rejection(
+        postTransferGroups([
+          [
+            tx({
+              destination: account("attendee", 1),
+              eventGroup: "evt-2",
+              reference: "void",
+              reversesId: 999_999,
+              source: account("revenue", 1),
+            }),
+          ],
+        ]),
+      );
+      expect(error).toBeInstanceOf(LedgerConflictError);
+      assertStringIncludes(error.message, "refers to no transfer");
+    });
+  });
+});

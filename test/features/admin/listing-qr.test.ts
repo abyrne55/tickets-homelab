@@ -1,0 +1,420 @@
+/**
+ * Tests for the admin "generate booking QR code" page.
+ *
+ * Exercises the end-to-end flow: form rendering, validation, token signing,
+ * and the embedded QR SVG. Auth, CSRF, and role checks are shared with other
+ * admin routes and tested there.
+ */
+
+import { assert, assertStringIncludes } from "@std/assert";
+import { expect } from "@std/expect";
+import { describe, it as test } from "@std/testing/bdd";
+import { handleRequest } from "#routes";
+import { EMPTY_QR_VALUES } from "#routes/admin/listing-qr.ts";
+import { addDays } from "#shared/dates.ts";
+import { verifyQrBookToken } from "#shared/qr-token.ts";
+import { todayInTz } from "#shared/timezone.ts";
+import { expectIncludesAll, testRequiresAuth } from "#test-utils/assertions.ts";
+import { testDate } from "#test-utils/dates.ts";
+import { describeWithEnv } from "#test-utils/db.ts";
+import { createTestGroup } from "#test-utils/db-helpers/groups.ts";
+import {
+  createDailyTestListing,
+  createTestListing,
+} from "#test-utils/db-helpers/listings.ts";
+import { mockFormRequest, mockRequest } from "#test-utils/mocks.ts";
+import { adminFormPost, adminGet, testCookie } from "#test-utils/session.ts";
+
+describe("EMPTY_QR_VALUES", () => {
+  test("keeps every blankable field empty with quantity at 1", () => {
+    expect(EMPTY_QR_VALUES).toEqual({
+      customer_name: "",
+      date: "",
+      quantity: "1",
+      value: "",
+    });
+  });
+});
+
+/** Parent with a Monday-only child: computes bookable start dates for each.
+ * Shared by two tests that exercise the child-date-constrained QR flow. */
+const setupParentWithMondayChild = async () => {
+  const { listingChildren } = await import("#db/listing-parents.ts");
+  const { getBookableStartDates } = await import("#shared/dates.ts");
+  const { getActiveHolidays } = await import("#db/holidays.ts");
+  const { getListingWithCount } = await import("#db/listings/records.ts");
+  const parent = await createDailyTestListing({ unitPrice: 500 });
+  const child = await createDailyTestListing({
+    bookableDays: ["Monday"],
+    unitPrice: 500,
+  });
+  await listingChildren.setIds(parent.id, [child.id]);
+  const holidays = await getActiveHolidays();
+  const parentDates = getBookableStartDates(
+    (await getListingWithCount(parent.id))!,
+    holidays,
+  );
+  const childDates = new Set(
+    getBookableStartDates((await getListingWithCount(child.id))!, holidays),
+  );
+  return { child, childDates, parent, parentDates };
+};
+
+describeWithEnv("admin listing QR routes", { db: true }, () => {
+  describe("GET /admin/listing/:id/qr", () => {
+    testRequiresAuth("/admin/listing/1/qr", {
+      setup: async () => {
+        await createTestListing({ maxAttendees: 10 });
+      },
+    });
+
+    test("returns 404 when the listing does not exist", async () => {
+      const response = await adminGet("/admin/listing/99999/qr");
+      expect(response.status).toBe(404);
+      response.body?.cancel();
+    });
+
+    test("renders the form with quantity defaulted to 1", async () => {
+      const listing = await createTestListing({
+        maxAttendees: 10,
+        unitPrice: 500,
+      });
+      const response = await adminGet(`/admin/listing/${listing.id}/qr`);
+      expect(response.status).toBe(200);
+      const body = await response.text();
+      expectIncludesAll(body, [
+        'name="customer_name"',
+        // The customer name input carries the contact-field cap, like every
+        // other hand-rendered contact input.
+        'maxlength="250"',
+        'name="value"',
+        'name="quantity"',
+        'value="1"',
+      ]);
+    });
+
+    test("shows green indicator for listing with no extra fields, red when extra fields required", async () => {
+      const noFields = await createTestListing({
+        fields: "",
+        maxAttendees: 10,
+        unitPrice: 500,
+      });
+      const withFields = await createTestListing({
+        fields: "email",
+        maxAttendees: 10,
+        unitPrice: 500,
+      });
+      const r1 = await adminGet(`/admin/listing/${noFields.id}/qr`);
+      const r2 = await adminGet(`/admin/listing/${withFields.id}/qr`);
+      assertStringIncludes(await r1.text(), 'class="success-text"');
+      assertStringIncludes(await r2.text(), 'class="danger-text"');
+    });
+
+    test("shows a date selector for daily listings", async () => {
+      const listing = await createDailyTestListing({ unitPrice: 500 });
+      const response = await adminGet(`/admin/listing/${listing.id}/qr`);
+      const body = await response.text();
+      assertStringIncludes(body, 'name="date"');
+    });
+
+    test("offers single-day dates for a customisable daily listing", async () => {
+      const listing = await createDailyTestListing({
+        customisableDays: true,
+        dayPrices: { 1: 1000, 2: 1800 },
+        durationDays: 2,
+        maximumDaysAfter: 60,
+        minimumDaysBefore: 0,
+      });
+      const response = await adminGet(`/admin/listing/${listing.id}/qr`);
+      const body = await response.text();
+      expectIncludesAll(body, [
+        'name="date"',
+        // A date one day before the window edge supports a single day even though
+        // it can't fit the 2-day maximum — single-day availability still offers it.
+        addDays(testDate(todayInTz("UTC")), 60),
+      ]);
+    });
+
+    test("offers only child-servable dates for a daily parent", async () => {
+      // The parent is bookable every weekday, but its only (daily) child is
+      // bookable only on Mondays. The QR form's date choices must be constrained
+      // to dates a required child can serve, so an admin can't mint a QR for a
+      // date the (child-constrained) scanned booking form would reject.
+      const { parent, parentDates, childDates } =
+        await setupParentWithMondayChild();
+      const servable = parentDates.find((d) => childDates.has(d))!;
+      const unservable = parentDates.find((d) => !childDates.has(d))!;
+
+      const response = await adminGet(`/admin/listing/${parent.id}/qr`);
+      const body = await response.text();
+      assertStringIncludes(body, `value="${servable}"`);
+      assert(!body.includes(`value="${unservable}"`));
+    });
+
+    test("omits the date selector for standard listings", async () => {
+      const listing = await createTestListing({
+        maxAttendees: 10,
+        unitPrice: 500,
+      });
+      const response = await adminGet(`/admin/listing/${listing.id}/qr`);
+      const body = await response.text();
+      assert(!body.includes('name="date"'));
+    });
+  });
+
+  describe("POST /admin/listing/:id/qr", () => {
+    test("rejects invalid CSRF for an authenticated session", async () => {
+      const listing = await createTestListing({
+        maxAttendees: 10,
+        unitPrice: 500,
+      });
+      const cookie = await testCookie();
+      const response = await handleRequest(
+        mockFormRequest(
+          `/admin/listing/${listing.id}/qr`,
+          { csrf_token: "invalid", quantity: "1" },
+          cookie,
+        ),
+      );
+      expect(response.status).toBe(403);
+      response.body?.cancel();
+    });
+
+    test("renders a validation error when quantity exceeds max", async () => {
+      const listing = await createTestListing({
+        maxAttendees: 10,
+        maxQuantity: 2,
+        unitPrice: 500,
+      });
+      const { response } = await adminFormPost(
+        `/admin/listing/${listing.id}/qr`,
+        {
+          quantity: "5",
+        },
+      );
+      expect(response.status).toBe(200);
+      const body = await response.text();
+      assertStringIncludes(body, "Quantity must be at most 2.");
+      assert(!body.includes("/qr-book?t="));
+    });
+
+    test("renders a validation error when quantity is not a strict integer", async () => {
+      const listing = await createTestListing({
+        maxAttendees: 10,
+        unitPrice: 500,
+      });
+      const { response } = await adminFormPost(
+        `/admin/listing/${listing.id}/qr`,
+        { quantity: "2x" },
+      );
+      const body = await response.text();
+      assertStringIncludes(
+        body,
+        "Enter a whole-number quantity of at least 1.",
+      );
+    });
+
+    test("renders a validation error when daily listing is missing a date", async () => {
+      const listing = await createDailyTestListing({ unitPrice: 500 });
+      const { response } = await adminFormPost(
+        `/admin/listing/${listing.id}/qr`,
+        {
+          customer_name: "Ada",
+          quantity: "1",
+          value: "5.00",
+        },
+      );
+      const body = await response.text();
+      assertStringIncludes(body, "Date is required");
+    });
+
+    test("refuses a customer name the booking form would reject", async () => {
+      // Regression: the signed name pre-fills the booking form (or rides
+      // direct-checkout metadata), so it answers to the same contact-name
+      // rule BEFORE it is signed — an unchecked name only failed later, at
+      // the buyer's form ("x1" prefill refuses) or at Square's metadata cap.
+      const listing = await createTestListing({
+        maxAttendees: 10,
+        unitPrice: 500,
+      });
+      const { response } = await adminFormPost(
+        `/admin/listing/${listing.id}/qr`,
+        { customer_name: "A".repeat(251), quantity: "1", value: "5.00" },
+      );
+      expect(response.status).toBe(200);
+      const body = await response.text();
+      assertStringIncludes(body, "Name must be 250 characters or fewer");
+      assert(!body.includes("/qr-book?t="));
+    });
+
+    test("returns 404 when the listing does not exist", async () => {
+      const { response } = await adminFormPost("/admin/listing/99999/qr", {
+        quantity: "1",
+      });
+      expect(response.status).toBe(404);
+      response.body?.cancel();
+    });
+
+    test("rejects a daily date no required child can serve", async () => {
+      // Posting a raw date the dropdown wouldn't offer (a date no required child
+      // can serve) is rejected by the validator, not just hidden from the form.
+      const { parent, parentDates, childDates } =
+        await setupParentWithMondayChild();
+      const unservable = parentDates.find((d) => !childDates.has(d))!;
+      const { response } = await adminFormPost(
+        `/admin/listing/${parent.id}/qr`,
+        { customer_name: "Ada", date: unservable, quantity: "1" },
+      );
+      const body = await response.text();
+      assertStringIncludes(body, "Please select a valid date");
+      assert(!body.includes("/qr-book?t="));
+    });
+
+    test("renders a validation error for pay-more price below minimum", async () => {
+      const listing = await createTestListing({
+        canPayMore: true,
+        maxAttendees: 10,
+        maxPrice: 10000,
+        unitPrice: 500,
+      });
+      const { response } = await adminFormPost(
+        `/admin/listing/${listing.id}/qr`,
+        {
+          quantity: "1",
+          value: "1.00",
+        },
+      );
+      const body = await response.text();
+      assertStringIncludes(body, "at least the minimum");
+    });
+
+    test("an inactive listing's share actions and QR generators are gone", async () => {
+      const group = await createTestGroup({ isPackage: true });
+      const listing = await createTestListing({
+        groupId: group.id,
+        maxAttendees: 10,
+        unitPrice: 500,
+      });
+      const overview = async (): Promise<string> =>
+        (await adminGet(`/admin/listing/${listing.id}`)).text();
+
+      const before = await overview();
+      assertStringIncludes(before, "/ticket/");
+
+      const { deactivateTestListing, reactivateTestListing } = await import(
+        "#test-utils/db-helpers/listings.ts"
+      );
+      await deactivateTestListing(listing.id);
+
+      // The overview hides the public URL, QR, and embed controls whose
+      // destinations would 404, and names the state honestly.
+      const after = await overview();
+      assert(!after.includes(`href="${listing.slug}"`));
+      assert(!after.includes(`/admin/listing/${listing.id}/qr">`));
+      assertStringIncludes(after, "inactive");
+
+      // The generator refuses before minting anything, and a signed QR
+      // refresh is equally closed.
+      const post = await adminFormPost(`/admin/listing/${listing.id}/qr`, {
+        customer_name: "Ada",
+        quantity: "1",
+        value: "5.00",
+      });
+      expect(post.response.status).toBe(404);
+      const json = await adminGet(`/admin/listing/${listing.id}/qr.json`);
+      expect(json.status).toBe(404);
+      json.body?.cancel();
+
+      // The public QR image route 404s too: it encodes a page that is off.
+      const publicQr = await handleRequest(
+        mockRequest(`/ticket/${listing.slug}/qr`),
+      );
+      expect(publicQr.status).toBe(404);
+      publicQr.body?.cancel();
+
+      await reactivateTestListing(listing.id);
+      assertStringIncludes(await overview(), "/ticket/");
+    });
+  });
+
+  describe("GET /admin/listing/:id/qr.json (client-side refresh)", () => {
+    testRequiresAuth("/admin/listing/1/qr.json?quantity=1", {
+      setup: async () => {
+        await createTestListing({ maxAttendees: 10 });
+      },
+    });
+
+    test("returns 404 when the listing does not exist", async () => {
+      const response = await adminGet(
+        "/admin/listing/99999/qr.json?quantity=1",
+      );
+      expect(response.status).toBe(404);
+      response.body?.cancel();
+    });
+
+    test("returns JSON with a fresh token matching submitted values", async () => {
+      const listing = await createTestListing({
+        maxAttendees: 10,
+        maxQuantity: 5,
+        unitPrice: 500,
+      });
+      const response = await adminGet(
+        `/admin/listing/${listing.id}/qr.json?customer_name=Ada&value=7.50&quantity=2`,
+      );
+      expect(response.status).toBe(200);
+      assertStringIncludes(
+        response.headers.get("content-type") ?? "",
+        "application/json",
+      );
+      const body = (await response.json()) as {
+        ok: boolean;
+        url: string;
+        svg: string;
+      };
+      expect(body.ok).toBe(true);
+      assertStringIncludes(body.svg, "<svg");
+      const match = body.url.match(/\/qr-book\?t=([^&]+)/);
+      expect(match).not.toBeNull();
+      const token = decodeURIComponent(match![1]!);
+      const payload = await verifyQrBookToken(listing.slug, token);
+      expect(payload!.n).toBe("Ada");
+      expect(payload!.v).toBe(750);
+      expect(payload!.q).toBe(2);
+    });
+
+    test("returns 400 JSON on validation failure", async () => {
+      const listing = await createTestListing({
+        maxAttendees: 10,
+        maxQuantity: 2,
+        unitPrice: 500,
+      });
+      const response = await adminGet(
+        `/admin/listing/${listing.id}/qr.json?quantity=99`,
+      );
+      expect(response.status).toBe(400);
+      const body = (await response.json()) as {
+        ok: boolean;
+        error?: string;
+      };
+      expect(body.ok).toBe(false);
+      assertStringIncludes(body.error ?? "", "Quantity must be at most 2.");
+    });
+
+    test("signs a different token each minute (fresh expiry)", async () => {
+      const listing = await createTestListing({
+        maxAttendees: 10,
+        unitPrice: 500,
+      });
+      const first = await adminGet(
+        `/admin/listing/${listing.id}/qr.json?customer_name=Ada&value=5.00&quantity=1`,
+      );
+      await new Promise((r) => setTimeout(r, 1100));
+      const second = await adminGet(
+        `/admin/listing/${listing.id}/qr.json?customer_name=Ada&value=5.00&quantity=1`,
+      );
+      const a = (await first.json()) as { url: string };
+      const b = (await second.json()) as { url: string };
+      expect(a.url).not.toBe(b.url);
+    });
+  });
+});

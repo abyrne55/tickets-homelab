@@ -1,0 +1,44 @@
+/**
+ * Payment-flow responses, split from the boot-loaded `response.ts`. They pull
+ * the payment templates (and full page layout) into the graph. Only the
+ * lazily-loaded payment routes need them.
+ */
+
+import { getIframeMode } from "#shared/request-context.ts";
+import type { LabelledLine } from "#templates/components/labelled-para.tsx";
+import { checkoutPopupPage, paymentErrorPage } from "#templates/payment.tsx";
+import {
+  htmlResponse,
+  publicPageResponse,
+  redirectResponse,
+} from "./response.ts";
+
+/** Owner-facing facts a payment failure page carries beside its refusal. */
+export interface StaffDiagnostics {
+  /** Static, known reasons a payment can sit unconfirmed. */
+  reasons: string[];
+  /** Labelled checkout facts the refusing branch knew. */
+  rows: LabelledLine[];
+}
+
+/**
+ * Create payment error response. Diagnostics render only for the failure
+ * paths that had a browser request to inspect. Callers without one omit them.
+ */
+export const paymentErrorResponse = (
+  message: string,
+  status = 400,
+  diagnostics?: StaffDiagnostics,
+): Promise<Response> =>
+  publicPageResponse(() => paymentErrorPage(message, diagnostics), status);
+
+/**
+ * Respond with checkout: popup page in iframe mode, 302 redirect otherwise.
+ * Stripe Checkout cannot run inside iframes, so we show a page that opens
+ * the checkout URL in a popup window instead.
+ * Reads iframe mode from the per-request store (set by detectIframeMode).
+ */
+export const checkoutResponse = (checkoutUrl: string): Response =>
+  getIframeMode()
+    ? htmlResponse(checkoutPopupPage(checkoutUrl))
+    : redirectResponse(checkoutUrl);

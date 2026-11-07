@@ -1,0 +1,103 @@
+name: Deploy to Production
+
+on:
+  workflow_dispatch:
+    inputs:
+      script_id:
+        description: "Override Bunny production script ID (defaults to BUNNY_SCRIPT_ID secret)"
+        required: false
+        type: string
+      main_instance_key:
+        description: "MAIN_INSTANCE_KEY (paste per run, or fall back to the secret)"
+        required: false
+        type: string
+      run_backup:
+        description: "Back up the database before deploying (uncheck only if the backup is broken)"
+        required: false
+        default: true
+        type: boolean
+
+permissions:
+  contents: write
+
+jobs:
+  deploy:
+    runs-on: ubicloud-standard-4
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: Build Bunny edge script
+        id: build
+        uses: ./.github/actions/build-bunny-script
+        with:
+          build_commit: ${{ github.sha }}
+          cdn_url: ${{ secrets.CDN_URL }}
+          cdn_bunny_storage_zone_name: ${{ secrets.CDN_BUNNY_STORAGE_ZONE_NAME }}
+          cdn_bunny_storage_zone_key: ${{ secrets.CDN_BUNNY_STORAGE_ZONE_KEY }}
+          cdn_bunny_storage_host: ${{ secrets.CDN_BUNNY_STORAGE_HOST }}
+          cdn_bunny_pull_zone_id: ${{ secrets.CDN_BUNNY_PULL_ZONE_ID }}
+          bunny_access_key: ${{ secrets.BUNNY_ACCESS_KEY }}
+
+      # Back up the production site's database before deploying (it migrates on
+      # its next request). Fails unless exactly one site matches the script id.
+      # Uncheck run_backup to deploy without a backup (e.g. if backups break).
+      - name: Back up the production site
+        if: ${{ inputs.run_backup }}
+        uses: ./.github/actions/backup-site
+        with:
+          main_instance: ${{ secrets.MAIN_INSTANCE }}
+          main_instance_key: ${{ inputs.main_instance_key || secrets.MAIN_INSTANCE_KEY }}
+          script_id: ${{ inputs.script_id || secrets.BUNNY_SCRIPT_ID }}
+          storage_zone_name: ${{ secrets.STORAGE_ZONE_NAME }}
+          storage_zone_key: ${{ secrets.STORAGE_ZONE_KEY }}
+
+      # Inject Sentry debug IDs into the bundle before deploy (no-op without a
+      # SENTRY_AUTH_TOKEN secret). Must run before the deploy below.
+      - name: Inject Sentry debug IDs
+        uses: ./.github/actions/sentry-sourcemaps
+        with:
+          command: inject
+          auth_token: ${{ secrets.SENTRY_AUTH_TOKEN }}
+          release: chobble-tickets@${{ github.sha }}
+
+      # The update-mode wait must poll the deployed site, never the main
+      # instance that serves the fleet's credentials. The default site's URL
+      # is the MAIN_SITE_URL secret, the same way its script id is
+      # BUNNY_SCRIPT_ID: a main instance that runs a build older than #2572
+      # returns no siteUrl, so the lookup cannot find it. An overridden
+      # script id is looked up on the main instance.
+      - name: Resolve the production site's URL
+        id: resolve-site
+        if: ${{ inputs.script_id != '' }}
+        uses: ./.github/actions/resolve-site-credentials
+        with:
+          main_instance: ${{ secrets.MAIN_INSTANCE }}
+          main_instance_key: ${{ inputs.main_instance_key || secrets.MAIN_INSTANCE_KEY }}
+          script_id: ${{ inputs.script_id || secrets.BUNNY_SCRIPT_ID }}
+
+      - name: Deploy to production
+        uses: ./.github/actions/deploy-bunny-script
+        with:
+          script_id: ${{ inputs.script_id || secrets.BUNNY_SCRIPT_ID }}
+          api_key: ${{ secrets.BUNNY_ACCESS_KEY }}
+          site_url: ${{ inputs.script_id == '' && secrets.MAIN_SITE_URL || steps.resolve-site.outputs.site_url }}
+          build_tag: ${{ steps.build.outputs.build_tag }}
+
+      # Upload source maps for this release after deploy (no-op without secrets).
+      - name: Upload Sentry source maps
+        uses: ./.github/actions/sentry-sourcemaps
+        with:
+          command: upload
+          auth_token: ${{ secrets.SENTRY_AUTH_TOKEN }}
+          sentry_url: ${{ secrets.SENTRY_CLI_URL }}
+          org: ${{ secrets.SENTRY_ORG }}
+          project: ${{ secrets.SENTRY_PROJECT }}
+          release: chobble-tickets@${{ github.sha }}
+
+      - name: Tag production deployment
+        run: |
+          TAG="deploy-$(date -u +%Y-%m-%d-%H%M)"
+          git tag "$TAG"
+          git push origin "$TAG"

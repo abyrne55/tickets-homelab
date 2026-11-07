@@ -1,0 +1,137 @@
+import { expect } from "@std/expect";
+import { describe, it as test } from "@std/testing/bdd";
+import { FormParams } from "#shared/form-data.ts";
+
+describe("FormParams.getString", () => {
+  test("returns the trimmed value when the key is present", () => {
+    const form = new FormParams({ name: "  Alice  " });
+    expect(form.getString("name")).toBe("Alice");
+  });
+
+  test("returns empty string when the key is absent", () => {
+    const form = new FormParams();
+    expect(form.getString("missing")).toBe("");
+  });
+
+  test("returns empty string when the value is empty", () => {
+    const form = new FormParams({ name: "" });
+    expect(form.getString("name")).toBe("");
+  });
+
+  test("returns empty string when the value is whitespace only", () => {
+    const form = new FormParams({ name: "   " });
+    expect(form.getString("name")).toBe("");
+  });
+});
+
+describe("FormParams.getRaw", () => {
+  test("returns the value exactly as submitted, whitespace and all", () => {
+    const form = new FormParams({ name: "  Alice  " });
+    expect(form.getRaw("name")).toBe("  Alice  ");
+  });
+
+  test("throws when the key is absent", () => {
+    const form = new FormParams();
+    expect(() => form.getRaw("missing")).toThrow("Form field missing: missing");
+  });
+});
+
+describe("FormParams.getFlag", () => {
+  test('is true only when the value is exactly "1"', () => {
+    const form = new FormParams({ off: "0", on: "1", other: "true" });
+    expect(form.getFlag("on")).toBe(true);
+    expect(form.getFlag("off")).toBe(false);
+    expect(form.getFlag("other")).toBe(false);
+  });
+
+  test("is false when the key is absent", () => {
+    const form = new FormParams();
+    expect(form.getFlag("missing")).toBe(false);
+  });
+});
+
+describe("FormParams.getOptionalInt", () => {
+  test("parses trimmed non-negative decimal integers", () => {
+    const form = new FormParams({ blank: "", count: " 12 ", zero: "0" });
+    expect(form.getOptionalInt("count")).toBe(12);
+    expect(form.getOptionalInt("zero")).toBe(0);
+    expect(form.getOptionalInt("blank")).toBeNull();
+  });
+
+  test("rejects signs, fractions, exponents and trailing junk", () => {
+    for (const value of ["+1", "-1", "1.5", "1e2", "1abc", "2x"]) {
+      const form = new FormParams({ count: value });
+      expect(form.getOptionalInt("count")).toBeNull();
+    }
+  });
+});
+
+describe("FormParams.getNumberArray", () => {
+  test("parses all repeated values as integers", () => {
+    const form = new FormParams();
+    form.append("ids", "1");
+    form.append("ids", "2");
+    form.append("ids", "3");
+    expect(form.getNumberArray("ids")).toEqual([1, 2, 3]);
+  });
+
+  test("drops values that are not strict positive decimal ids", () => {
+    const form = new FormParams();
+    form.append("ids", "1");
+    form.append("ids", "abc");
+    form.append("ids", "0");
+    form.append("ids", "+2");
+    form.append("ids", "2x");
+    form.append("ids", "3.5");
+    form.append("ids", "4e1");
+    form.append("ids", "4");
+    expect(form.getNumberArray("ids")).toEqual([1, 4]);
+  });
+
+  test("returns empty array when the key is absent", () => {
+    const form = new FormParams();
+    expect(form.getNumberArray("ids")).toEqual([]);
+  });
+});
+
+describe("FormParams.getRepeatedPicklist", () => {
+  const allowed = ["Monday", "Tuesday", "Wednesday"] as const;
+  const read = (query: string) =>
+    new FormParams(query).getRepeatedPicklist("days", allowed);
+
+  test("returns no selections when the field is absent", () => {
+    expect(read("")).toEqual({ ok: true, value: [] });
+  });
+
+  test("returns the first invalid supplied token", () => {
+    expect(read("days=Monday&days=Funday&days=Someday")).toEqual({
+      error: "Funday",
+      ok: false,
+    });
+  });
+
+  test("returns unique values in declared order", () => {
+    expect(read("days=Wednesday&days=Monday&days=Wednesday")).toEqual({
+      ok: true,
+      value: ["Monday", "Wednesday"],
+    });
+  });
+
+  test("rejects empty and padded tokens", () => {
+    expect(read("days=")).toEqual({ error: "", ok: false });
+    expect(read("days=%20Monday%20")).toEqual({
+      error: " Monday ",
+      ok: false,
+    });
+  });
+});
+
+describe("FormParams.toRenderValues", () => {
+  test("joins repeated controls without changing single values", () => {
+    const form = new FormParams("days=Monday&name=Alice&days=Wednesday");
+    expect(form.toRenderValues()).toEqual({
+      days: "Monday,Wednesday",
+      name: "Alice",
+    });
+  });
+});

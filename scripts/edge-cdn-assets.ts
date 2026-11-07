@@ -1,0 +1,67 @@
+import { CSS, JS, SVG } from "#shared/content-types.ts";
+import { ASSETS, readAsset } from "#shared/images/wasm-assets.ts";
+import type { AssetDef } from "./edge-bundle-modules.ts";
+import { wasmFilename } from "./inline-jsquash-wasm.ts";
+import type { StaticCdnAsset } from "./static-cdn.ts";
+
+/** One schema drives embedded handlers, public paths, and CDN publication. */
+export const ASSET_DEFS: AssetDef[] = [
+  // robots.txt is not here: its body follows the site's public-site feature,
+  // so the app's own settings-reading handler ships in the bundle instead.
+  ["favicon.svg", "handleFavicon", SVG, ""],
+  ["icons.svg", "handleIcons", SVG, "ICONS_PATH"],
+  // The scanner worker precaches style.css and scanner.js same-origin, so
+  // the edge handler must answer 200 with the content: the CDN twin's 302
+  // makes the precache cross-origin, and an install without CORS headers
+  // rejects.
+  ["style.css", "handleStyleCss", CSS, "CSS_PATH"],
+  ["admin.js", "handleAdminJs", JS, "JS_PATH", true],
+  // The client loader derives these sibling URLs from admin.js.
+  ["markdown-editor.js", "handleMarkdownEditorJs", JS, "", true],
+  ["logistics-map.js", "handleLogisticsMapJs", JS, "", true],
+  ["logistics-map.css", "handleLogisticsMapCss", CSS, "", true],
+  ["scanner.js", "handleScannerJs", JS, "SCANNER_JS_PATH"],
+  // The scanner page registers this worker same-origin, so it never ships to
+  // the CDN origin: a service worker cannot register across origins.
+  ["scanner-sw.js", "handleScannerSwJs", JS, "", false, true],
+  [
+    "iframe-resizer-parent.js",
+    "handleIframeResizerParentJs",
+    JS,
+    "IFRAME_RESIZER_PARENT_JS_PATH",
+  ],
+  [
+    "iframe-resizer-child.js",
+    "handleIframeResizerChildJs",
+    JS,
+    "IFRAME_RESIZER_CHILD_JS_PATH",
+    true,
+  ],
+  ["embed.js", "handleEmbedJs", JS, "EMBED_JS_PATH"],
+  ["contact.js", "handleContactJs", JS, "CONTACT_JS_PATH", true],
+];
+
+export const CDN_ASSET_DEFS: AssetDef[] = ASSET_DEFS.filter(
+  ([, , , , publishToCdn]) => publishToCdn,
+);
+
+export const buildCdnAssets = (
+  staticAssets: Record<string, string>,
+): StaticCdnAsset[] => [
+  ...CDN_ASSET_DEFS.map(([filename, , contentType]) => {
+    const content = staticAssets[filename];
+    if (content === undefined) {
+      throw new Error(`Missing built static asset ${filename}`);
+    }
+    return {
+      bytes: new TextEncoder().encode(content),
+      contentType,
+      filename,
+    };
+  }),
+  ...ASSETS.map((asset) => ({
+    bytes: readAsset(asset),
+    contentType: "application/wasm",
+    filename: wasmFilename(asset),
+  })),
+];

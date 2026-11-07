@@ -1,0 +1,350 @@
+/**
+ * Privacy page routes (owner-only).
+ *
+ * Hosts the data-minimisation tools described in plain language on the page.
+ * The tools purge orphaned attendee records (records left with no listing
+ * booking). They toggle whether that purge runs automatically. They also
+ * perform a GDPR erasure of one contact's recognition record by email or
+ * phone.
+ */
+
+import { assert } from "@std/assert";
+import { logActivity } from "#db/activity-log.ts";
+import {
+  contactHash,
+  forgetContact,
+  isContactChannel,
+} from "#db/contact-preferences.ts";
+import {
+  countPurgeableOrphanedAttendees,
+  getOrphanPaymentWorkPage,
+  purgeOrphanedAttendees,
+} from "#db/orphan-attendees.ts";
+import {
+  type ProviderRefundOwnerChoice,
+  resolveProviderRefundCase,
+} from "#db/provider-refund-case-resolution.ts";
+import {
+  listProviderRefundCases,
+  loadProviderRefundCase,
+  type ProviderRefundCase,
+} from "#db/provider-refund-cases.ts";
+import { settings } from "#db/settings.ts";
+import { t } from "#i18n";
+import { refundEvidenceActionAllowed } from "#payment/refund-authority-lifecycle.ts";
+import { defineAdminRoutes } from "#routes/admin/route-tables.ts";
+import {
+  authResponsePage,
+  formPolicyFor,
+  pageGuardFor,
+  withAuth,
+} from "#routes/auth.ts";
+import { applyFlash } from "#routes/csrf.ts";
+import {
+  adminRedirect,
+  errorRedirect,
+  htmlResponse,
+  infoRedirect,
+  notFoundResponse,
+  redirect,
+} from "#routes/response.ts";
+import { getSearchParam } from "#routes/url.ts";
+import { adminDestinationAt, adminPattern } from "#shared/admin-surface.ts";
+import { formHandlerAt } from "#shared/app-forms.ts";
+import { nowIso, nowMs } from "#shared/now.ts";
+import {
+  isOrphanRetentionValue,
+  orphanRetentionCutoffIso,
+} from "#shared/orphan-retention.ts";
+import { readProviderRefundCursor } from "#shared/provider-refund-cursor.ts";
+import {
+  type OwnerRecoveryRefundTarget,
+  type ProviderRefundResult,
+  requestProviderRefund,
+} from "#shared/provider-refunds.ts";
+import { requireRequestPrivateKey } from "#shared/session-private-key.ts";
+import {
+  parseNonNegativeInt,
+  parsePositiveInt,
+} from "#shared/validation/number.ts";
+import { adminPrivacyPage } from "#templates/admin/privacy.tsx";
+import { adminProviderRefundCasePage } from "#templates/admin/provider-refund-cases.tsx";
+
+const PRIVACY_PATH = adminPattern("privacy");
+const refundCasePath = (id: number): string => `${PRIVACY_PATH}/refunds/${id}`;
+const refundCaseChanged = (id: number): Response =>
+  errorRedirect(refundCasePath(id), t("privacy.refunds.changed"));
+
+/** GET /admin/privacy — explainer plus the orphan-purge and erasure forms. */
+const paymentWorkCursor = (request: Request) => {
+  const after = parseNonNegativeInt(getSearchParam(request, "work_after"));
+  const before = parseNonNegativeInt(getSearchParam(request, "work_before"));
+  if (after !== null && before === null) return { after } as const;
+  if (before !== null && after === null) return { before } as const;
+  return {};
+};
+
+const handlePrivacyGet = authResponsePage(
+  pageGuardFor(adminDestinationAt("/admin/privacy")),
+)(async (session, request, flash) => {
+  const refundCursor = new URL(request.url).searchParams.get("refund_after");
+  const refundAfter =
+    refundCursor === null
+      ? undefined
+      : await readProviderRefundCursor(refundCursor);
+  if (refundAfter === null) {
+    return htmlResponse(t("privacy.refunds.invalid_cursor"), 400);
+  }
+  const [purgeableOrphanCount, paymentWorkPage, providerRefundCases] =
+    await Promise.all([
+      countPurgeableOrphanedAttendees(nowIso()),
+      getOrphanPaymentWorkPage(paymentWorkCursor(request)),
+      listProviderRefundCases(refundAfter),
+    ]);
+  return htmlResponse(
+    adminPrivacyPage(session, {
+      autoPurgeOrphans: settings.autoPurgeOrphans,
+      error: flash.error,
+      info: flash.info,
+      orphanRetention: settings.orphanPurgeRetention,
+      paymentWorkPage,
+      providerRefundCases,
+      purgeableOrphanCount,
+      success: flash.success,
+    }),
+  );
+});
+
+type RefundCaseRoute = (
+  request: Request,
+  params: { id: number },
+) => Promise<Response>;
+
+const handleRefundCaseGet: RefundCaseRoute = (request, { id }) =>
+  pageGuardFor(adminDestinationAt("/admin/privacy/refunds/:id"))(
+    request,
+    async (session) => {
+      const refundCase = await loadProviderRefundCase(
+        id,
+        await requireRequestPrivateKey(),
+      );
+      return refundCase === null
+        ? notFoundResponse()
+        : htmlResponse(
+            adminProviderRefundCasePage(
+              session,
+              refundCase,
+              applyFlash(request),
+            ),
+          );
+    },
+  );
+
+const OWNER_CHOICE_LOG = {
+  money_recorded: "privacy.refunds.log_money_recorded",
+  provider_confirmed_not_sent: "privacy.refunds.log_not_sent",
+  provider_confirmed_returned: "privacy.refunds.log_returned",
+} as const satisfies Record<ProviderRefundOwnerChoice, string>;
+
+const isOwnerChoice = (value: string): value is ProviderRefundOwnerChoice =>
+  Object.hasOwn(OWNER_CHOICE_LOG, value);
+
+type ExistingProviderRefundResult = Exclude<
+  ProviderRefundResult,
+  { kind: "changed" | "unchanged" }
+>;
+
+const mayCheckProvider = (refundCase: ProviderRefundCase): boolean =>
+  refundEvidenceActionAllowed(refundCase.state, "check_provider");
+
+const CHECK_STOP_COPY = {
+  needs_owner_choice: {
+    log: "privacy.refunds.log_choice_opened",
+    message: "privacy.refunds.choice_opened",
+  },
+  needs_provider_check: {
+    log: "privacy.refunds.log_recheck_needed",
+    message: "privacy.refunds.recheck_needed",
+  },
+  pending: null,
+  ready: null,
+  returned: null,
+  withheld: {
+    log: "privacy.refunds.log_unreadable",
+    message: "privacy.refunds.unreadable",
+  },
+} as const satisfies Record<
+  ExistingProviderRefundResult["kind"],
+  { readonly log: string; readonly message: string } | null
+>;
+
+const stoppedProviderCheck = (
+  result: ExistingProviderRefundResult,
+): { readonly log: string; readonly message: string } | null =>
+  CHECK_STOP_COPY[result.kind];
+
+const checkProviderAgain = async (
+  id: number,
+  revision: number,
+): Promise<Response> => {
+  const refundCase = await loadProviderRefundCase(
+    id,
+    await requireRequestPrivateKey(),
+  );
+  if (refundCase === null) return notFoundResponse();
+  if (!mayCheckProvider(refundCase)) {
+    return refundCaseChanged(id);
+  }
+  const sendsReadyRefund = refundCase.state === "ready";
+  if (!sendsReadyRefund && refundCase.revision !== revision) {
+    return refundCaseChanged(id);
+  }
+  const target = {
+    authority: { id, revision },
+    evidence: { kind: "read_provider" },
+    mode: "send",
+    reference: refundCase.reference,
+  } satisfies OwnerRecoveryRefundTarget;
+  const result = sendsReadyRefund
+    ? await requestProviderRefund(target)
+    : await requestProviderRefund({
+        evidence: { kind: "read_provider" },
+        mode: "observe_only",
+        reference: refundCase.reference,
+      });
+  if (result.kind === "changed") {
+    return refundCaseChanged(id);
+  }
+  assert(
+    result.kind !== "unchanged",
+    "Existing refund recovery lost its durable authority",
+  );
+  const stopped = stoppedProviderCheck(result);
+  if (stopped !== null) {
+    await logActivity(t(stopped.log, { id }));
+    return errorRedirect(refundCasePath(id), t(stopped.message));
+  }
+  await logActivity(
+    t(
+      sendsReadyRefund
+        ? "privacy.refunds.log_continued"
+        : "privacy.refunds.log_checked",
+      { id },
+    ),
+  );
+  return redirect(
+    refundCasePath(id),
+    t(
+      sendsReadyRefund
+        ? "privacy.refunds.continued"
+        : "privacy.refunds.checked",
+    ),
+    true,
+  );
+};
+
+const handleRefundCasePost: RefundCaseRoute = (request, { id }) =>
+  withAuth(
+    request,
+    formPolicyFor(adminDestinationAt("/admin/privacy/refunds/:id")),
+    async (_session, form) => {
+      const choice = form.getString("choice");
+      const revision = parsePositiveInt(form.getString("revision"));
+      if (
+        revision === null ||
+        (choice !== "check_again" && !isOwnerChoice(choice))
+      ) {
+        return errorRedirect(
+          refundCasePath(id),
+          t("privacy.refunds.error_choice"),
+        );
+      }
+      if (choice === "check_again") {
+        return await checkProviderAgain(id, revision);
+      }
+      const result = await resolveProviderRefundCase({
+        activityMessage: t(OWNER_CHOICE_LOG[choice], { id }),
+        choice,
+        id,
+        privateKey: await requireRequestPrivateKey(),
+        revision,
+      });
+      if (result === "missing") return notFoundResponse();
+      if (result === "changed") {
+        return refundCaseChanged(id);
+      }
+      return adminRedirect("privacy", {}, t("privacy.refunds.resolved"), true);
+    },
+  );
+
+/**
+ * POST /admin/privacy/orphans — save the retention age and auto-purge toggle.
+ * The "Delete now" button additionally purges matching records immediately.
+ * The "Save" button only stores the settings.
+ */
+const handleOrphansPost = formHandlerAt("/admin/privacy/orphans")(
+  async ({ form }) => {
+    const retention = form.getString("retention");
+    if (!isOrphanRetentionValue(retention)) {
+      return adminRedirect(
+        "privacy",
+        {},
+        t("privacy.orphans.error_retention"),
+        false,
+      );
+    }
+    await settings.update.orphanPurgeRetention(retention);
+    await settings.update.autoPurgeOrphans(form.has("auto_purge"));
+
+    if (form.getString("action") === "purge") {
+      const deleted = await purgeOrphanedAttendees(
+        orphanRetentionCutoffIso(retention, nowMs()),
+      );
+      await logActivity(t("privacy.orphans.log_purged", { count: deleted }));
+      return adminRedirect(
+        "privacy",
+        {},
+        t("privacy.orphans.flash_purged", { count: deleted }),
+        true,
+      );
+    }
+    return adminRedirect("privacy", {}, t("privacy.orphans.flash_saved"), true);
+  },
+);
+
+/**
+ * POST /admin/privacy/erase — delete one contact's recognition record, found
+ * by hashing the entered email or phone the same way bookings record it.
+ */
+const handleErasePost = formHandlerAt("/admin/privacy/erase")(
+  async ({ form }) => {
+    const channel = form.getString("contact_type");
+    const identifier = form.getString("identifier").trim();
+    if (!identifier) {
+      return adminRedirect(
+        "privacy",
+        {},
+        t("privacy.erase.error_identifier"),
+        false,
+      );
+    }
+    if (!isContactChannel(channel)) {
+      return adminRedirect("privacy", {}, t("privacy.erase.error_type"), false);
+    }
+    const deleted = await forgetContact(await contactHash(channel, identifier));
+    if (deleted === 0) {
+      return infoRedirect(PRIVACY_PATH, t("privacy.erase.flash_none"));
+    }
+    await logActivity(t("privacy.erase.log_done"));
+    return adminRedirect("privacy", {}, t("privacy.erase.flash_done"), true);
+  },
+);
+
+/** Privacy routes */
+export const adminHandlers = defineAdminRoutes({
+  "GET /admin/privacy": handlePrivacyGet,
+  "GET /admin/privacy/refunds/:id": handleRefundCaseGet,
+  "POST /admin/privacy/erase": handleErasePost,
+  "POST /admin/privacy/orphans": handleOrphansPost,
+  "POST /admin/privacy/refunds/:id": handleRefundCasePost,
+});

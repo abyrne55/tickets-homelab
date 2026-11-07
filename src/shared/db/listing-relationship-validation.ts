@@ -1,0 +1,209 @@
+import { inPlaceholders, resultRows, type TxScope } from "#db/client.ts";
+import type { DayPriceRow } from "#db/listing-prices.ts";
+import { rawListingsTable } from "#db/listings/table.ts";
+import { modifiersTable } from "#db/modifiers.ts";
+import { numberedStatement } from "#db/numbered-statement.ts";
+import { refusingTheWriteOn } from "#db/transaction.ts";
+import { requiredMapValue, unique } from "#fp";
+import {
+  childAddOnError,
+  type EdgeListing,
+  edgeFieldError,
+  type ParentChildEdge,
+  scopeIsChildDeadEnd,
+} from "#shared/listing-parents-rules.ts";
+import type { DayPrices } from "#types";
+
+type EdgeListingRow = Omit<EdgeListing, "assign_built_site" | "day_prices"> & {
+  assign_built_site: number;
+  bookable_alone: number;
+};
+
+type AddOnScopeRow = {
+  listing_id: number;
+  modifier_id: number;
+  name: string;
+};
+
+type CurrentEdgeListing = EdgeListing & { bookableAlone: boolean };
+
+const listingById = async (
+  rows: EdgeListingRow[],
+  prices: DayPriceRow[],
+): Promise<Map<number, CurrentEdgeListing>> => {
+  const dayPrices = new Map<number, DayPrices>();
+  for (const row of prices) {
+    const listingPrices = dayPrices.get(row.listing_id) ?? {};
+    listingPrices[Number(row.price_id)] = row.unit_price;
+    dayPrices.set(row.listing_id, listingPrices);
+  }
+  return new Map(
+    await Promise.all(
+      rows.map(
+        async ({ assign_built_site, bookable_alone, ...listing }) =>
+          [
+            listing.id,
+            {
+              ...listing,
+              assign_built_site: assign_built_site === 1,
+              bookableAlone: bookable_alone === 1,
+              day_prices: dayPrices.get(listing.id) ?? {},
+              name: await rawListingsTable.readColumn(
+                "name",
+                listing.name,
+                listing.id,
+              ),
+            },
+          ] as const,
+      ),
+    ),
+  );
+};
+
+const addOnScopes = async (
+  rows: AddOnScopeRow[],
+): Promise<Map<number, AddOnScopeRow[]>> =>
+  Map.groupBy(
+    await Promise.all(
+      rows.map(async (row) => ({
+        ...row,
+        name: await modifiersTable.readColumn(
+          "name",
+          row.name,
+          row.modifier_id,
+        ),
+      })),
+    ),
+    (row) => row.modifier_id,
+  );
+
+const relationshipError = (
+  edge: ParentChildEdge,
+  listings: Map<number, CurrentEdgeListing>,
+  scopes: Map<number, AddOnScopeRow[]>,
+): string | null => {
+  const parent = requiredMapValue(
+    listings,
+    edge.parentId,
+    `Listing ${edge.parentId} missing`,
+  );
+  const child = requiredMapValue(
+    listings,
+    edge.childId,
+    `Listing ${edge.childId} missing`,
+  );
+  const fieldError = edgeFieldError(parent, child);
+  if (fieldError || child.bookableAlone) return fieldError;
+  const blocked = [...scopes.values()].find((scope) =>
+    scopeIsChildDeadEnd(
+      scope.map((row) => row.listing_id),
+      new Set([child.id]),
+      new Set([parent.id]),
+    ),
+  );
+  return blocked ? childAddOnError(blocked[0]!.name, child.name) : null;
+};
+
+/** Check current relationship fields and add-on scopes on the writer's open
+ * transaction. The caller has already proved every endpoint exists. */
+const relationshipErrorTx = async (
+  tx: TxScope,
+  edges: readonly ParentChildEdge[],
+): Promise<string | null> => {
+  if (edges.length === 0) return null;
+  const listingIds = unique(
+    edges.flatMap(({ childId, parentId }) => [childId, parentId]),
+  );
+  const placeholders = inPlaceholders(listingIds);
+  const [listingResult, priceResult, scopeResult] = await tx.batch([
+    {
+      args: listingIds,
+      sql: `SELECT listing.id, listing.name, listing.listing_type,
+                   listing.months_per_unit, listing.customisable_days,
+                   listing.duration_days, listing.bookable_alone,
+                   listing.assign_built_site, listing.min_quantity
+              FROM listings AS listing
+             WHERE listing.id IN (${placeholders})`,
+    },
+    {
+      args: listingIds,
+      sql: `SELECT listingPrice.listing_id, listingPrice.price_id,
+                   listingPrice.unit_price
+              FROM listing_prices AS listingPrice
+             WHERE listingPrice.listing_id IN (${placeholders})
+               AND listingPrice.price_type = 'day_count'`,
+    },
+    numberedStatement((bind) => {
+      const scopeIds = listingIds.map((id) => bind(id));
+      return `WITH optionalModifier AS (
+              SELECT modifier.id, modifier.name, modifier.scope
+                FROM modifiers AS modifier
+               WHERE modifier.active = 1 AND modifier.trigger = 'optional'
+            )
+            SELECT modifier.id AS modifier_id, modifier.name,
+                   modifierListing.listing_id
+              FROM optionalModifier AS modifier
+              JOIN modifier_listings AS modifierListing
+                ON modifierListing.modifier_id = modifier.id
+             WHERE modifier.scope = 'listings'
+               AND modifierListing.listing_id IN (${scopeIds.join(", ")})
+            UNION
+            SELECT modifier.id AS modifier_id, modifier.name,
+                   groupListing.listing_id
+              FROM optionalModifier AS modifier
+              JOIN modifier_groups AS modifierGroup
+                ON modifierGroup.modifier_id = modifier.id
+              JOIN group_listings AS groupListing
+                ON groupListing.group_id = modifierGroup.group_id
+             WHERE modifier.scope = 'groups'
+               AND groupListing.listing_id IN (${scopeIds.join(", ")})`;
+    }),
+  ]);
+  const listings = await listingById(
+    resultRows<EdgeListingRow>(listingResult!),
+    resultRows<DayPriceRow>(priceResult!),
+  );
+  const scopes = await addOnScopes(resultRows<AddOnScopeRow>(scopeResult!));
+  for (const edge of edges) {
+    const error = relationshipError(edge, listings, scopes);
+    if (error) return error;
+  }
+  return null;
+};
+
+export const requireCurrentRelationshipRules =
+  refusingTheWriteOn(relationshipErrorTx);
+
+/** Recheck every current edge touching a saved listing through the writer's
+ * transaction, including edges another writer added after request validation. */
+export const requireTouchingRelationshipsTx = async (
+  tx: TxScope,
+  listingId: number,
+): Promise<void> => {
+  const [childResult, parentResult] = await tx.batch([
+    {
+      args: [listingId],
+      sql: `SELECT listingParent.child_listing_id AS id
+              FROM listing_parents AS listingParent
+             WHERE listingParent.parent_listing_id = ?
+             ORDER BY listingParent.child_listing_id`,
+    },
+    {
+      args: [listingId],
+      sql: `SELECT listingParent.parent_listing_id AS id
+              FROM listing_parents AS listingParent
+             WHERE listingParent.child_listing_id = ?
+             ORDER BY listingParent.parent_listing_id`,
+    },
+  ]);
+  await requireCurrentRelationshipRules(tx, [
+    ...resultRows<{ id: number }>(childResult!).map(({ id: childId }) => ({
+      childId,
+      parentId: listingId,
+    })),
+    ...resultRows<{ id: number }>(parentResult!).map(({ id: parentId }) => ({
+      childId: listingId,
+      parentId,
+    })),
+  ]);
+};

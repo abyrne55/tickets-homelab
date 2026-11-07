@@ -1,0 +1,313 @@
+/**
+ * Shared utilities for token-based routes (/t/:tokens and /checkin/:tokens)
+ */
+
+import type {
+  AttendeeWithBookings,
+  TokenBookingRow,
+} from "#db/attendee-types.ts";
+import { decryptAttendees } from "#db/attendees/pii.ts";
+import { getAttendeesByTokens } from "#db/attendees/tokens.ts";
+import { packageDisplaysForRows } from "#db/groups.ts";
+import { getListingWithCount } from "#db/listings/records.ts";
+import { settings } from "#db/settings.ts";
+import {
+  clearTokenAttempts,
+  isTokenRateLimited,
+  recordTokenFailure,
+} from "#db/token-attempts.ts";
+import { compact, unique } from "#fp";
+import { notFoundResponse, rateLimitedResponse } from "#routes/response.ts";
+import type { PathMethodRoute } from "#routes/types.ts";
+import type { WalletPassData } from "#shared/apple-wallet.ts";
+import { getEffectiveDomain } from "#shared/config.ts";
+import { listingDetails } from "#shared/listing-details.ts";
+import { addPendingWork } from "#shared/pending-work.ts";
+import { getRequestClientIp } from "#shared/request-context.ts";
+import type { ResponseHandler } from "#shared/response-steps.ts";
+import { splitParts } from "#shared/split.ts";
+import { buildCheckinUrl } from "#shared/ticket-url.ts";
+import {
+  type Attendee,
+  hasTicketQuantity,
+  type ListingWithCount,
+} from "#types";
+
+export type { WalletPassData };
+
+/** Attendee paired with its listing */
+export type TokenEntry = {
+  attendee: Attendee;
+  /** The booking order's ledger event group, or "" for a legacy row whose
+   * money records nothing. A modifier leg posts under it. */
+  ledgerEventGroup: string;
+  listing: ListingWithCount;
+  /** The booking row's `parent_listing_id` — the parent this row was folded
+   * under (0 for standalone bookings and parent rows themselves). Carries the
+   * last dimension of the `listing_attendees` unique slot identity alongside
+   * `attendee.id`, `listing.id`, `attendee.date`, and `attendee.package_group_id`,
+   * so callers can match a specific booking row, not just the (attendee,
+   * listing) pair that several rows can share. */
+  parentListingId: number;
+};
+
+/** Cache wallet responses for 1 hour on CDN, 5 minutes in browser */
+export const WALLET_CACHE_CONTROL = "public, max-age=300, s-maxage=3600";
+
+/** Build shared wallet pass data from a resolved token entry */
+export const buildWalletPassData = (
+  entry: TokenEntry,
+  token: string,
+): WalletPassData => {
+  const { listing, attendee } = entry;
+  const domain = getEffectiveDomain();
+  return {
+    ...listingDetails(listing),
+    attendeeDate: attendee.date,
+    checkinUrl: buildCheckinUrl(token),
+    currencyCode: settings.currency,
+    organizationName: domain,
+    pricePaid: Number(attendee.price_paid),
+    quantity: attendee.quantity,
+    serialNumber: token,
+  };
+};
+
+/** Result of looking up a single token's wallet pass data */
+export type SingleTokenResult =
+  | { ok: true; passData: WalletPassData }
+  | { ok: false; response: Response };
+
+/** Look up a single token and build wallet pass data, returning 404 on failure.
+ * For multi-listing attendees, returns the first listing's pass data. */
+export const lookupSingleTokenPassData = async (
+  tokens: string[],
+): Promise<SingleTokenResult> => {
+  const token = tokens[0];
+  if (!token || tokens.length > 1) {
+    return { ok: false, response: await notFoundResponse() };
+  }
+
+  const result = await lookupAttendees([token]);
+  if (!result.ok) return { ok: false, response: result.response };
+
+  const entries = await resolveEntries(result.attendees);
+  const entry = entries[0];
+  if (!entry) return { ok: false, response: await notFoundResponse() };
+  // A wallet pass is built from a single member listing, so for a package
+  // booking it would misrepresent the bundle as one member — and for a HIDDEN
+  // package it would leak that member's name/location to anyone with the token.
+  // The ticket page already omits wallet links for package cards; 404 the direct
+  // pass endpoints to match. Check EVERY booking under the token, not just the
+  // first: a merge can leave one token with both a standalone and a package row,
+  // and the pass QR's /checkin covers them all — so a single-listing pass is
+  // wrong whenever ANY row is a package member, even when it doesn't sort first.
+  const packageDisplays = await packageDisplaysForRows(entries);
+  if (packageDisplays.size > 0) {
+    return { ok: false, response: await notFoundResponse() };
+  }
+  return { ok: true, passData: buildWalletPassData(entry, token) };
+};
+
+/** Handler type for token-based route methods */
+export type TokenMethodHandler = ResponseHandler<
+  [request: Request, tokens: string[]]
+>;
+
+/** Map of HTTP method to handler */
+type TokenMethodMap = Record<string, TokenMethodHandler>;
+
+/** Extract the token segment from a path like /prefix/tokens */
+export const extractTokenSegment = (
+  prefix: string,
+  path: string,
+): string | null => {
+  const pattern = new RegExp(`^/${prefix}/(.+)$`);
+  const match = path.match(pattern);
+  return match?.[1] ?? null;
+};
+
+/** Parse +-separated tokens from a combined string, removing duplicates */
+export const parseTokens = (tokensStr: string): string[] =>
+  unique(splitParts("+")(tokensStr));
+
+/** Build an Attendee object from base attendee data + one booking's per-listing data.
+ * The email badge asks about THIS booking's listing alone. The entry's row
+ * stands for one booking. The token read resolved the rule into the row's
+ * `email_owed`, so a listing that no longer collects an email never borrows
+ * another booking's notice. */
+const buildAttendeeView = (
+  base: AttendeeWithBookings,
+  booking: TokenBookingRow,
+): Attendee => ({
+  address: "",
+  attachment_downloads: booking.attachment_downloads,
+  checked_in: booking.checked_in,
+  created: base.created,
+  date: booking.start_at ? booking.start_at.slice(0, 10) : null,
+  email: "",
+  email_owed: booking.email_owed,
+  email_pending: base.email_pending,
+  end_date: booking.end_at ? booking.end_at.slice(0, 10) : null,
+  id: base.id,
+  kind: base.kind,
+  lat: "",
+  listing_id: booking.listing_id,
+  lng: "",
+  name: "",
+  package_group_id: booking.package_group_id,
+  payment_id: "",
+  phone: "",
+  pii_blob: base.pii_blob,
+  price_paid: String(booking.price_paid),
+  quantity: booking.quantity,
+  refunded: booking.refunded === 1,
+  remaining_balance: base.remaining_balance,
+  special_instructions: "",
+  split_logistics_agents: false,
+  status_id: base.status_id,
+  ticket_token: base.ticket_token,
+  ticket_token_index: base.ticket_token_index,
+  webhooks_pending: base.webhooks_pending,
+});
+
+/**
+ * Resolve attendees with bookings to token entries.
+ * Expands each attendee × booking into a separate TokenEntry.
+ * Listings are batch-fetched via cache (getListingWithCount).
+ */
+export const resolveEntries = async (
+  attendeesWithBookings: AttendeeWithBookings[],
+): Promise<TokenEntry[]> => {
+  // Collect all listing IDs and batch-fetch (getListingWithCount is cached)
+  const allListingIds = unique(
+    attendeesWithBookings.flatMap((a) => a.bookings.map((b) => b.listing_id)),
+  );
+  const listings = new Map<number, ListingWithCount>();
+  await Promise.all(
+    allListingIds.map(async (id) => {
+      const listing = await getListingWithCount(id);
+      if (listing) listings.set(id, listing);
+    }),
+  );
+
+  // Expand each attendee × booking into a TokenEntry, dropping no-quantity
+  // sentinel lines (quantity 0) — they must not render, produce a wallet pass, or
+  // be checkable. Filtering here (not in the shared getAttendeesByTokens, which
+  // the webhook/merge flows also use) keeps entries[0] a real line, never a ghost.
+  const entries: TokenEntry[] = [];
+  for (const awb of attendeesWithBookings) {
+    for (const booking of awb.bookings) {
+      const listing = listings.get(booking.listing_id);
+      if (listing && hasTicketQuantity(booking)) {
+        entries.push({
+          attendee: buildAttendeeView(awb, booking),
+          ledgerEventGroup: booking.ledger_event_group,
+          listing,
+          parentListingId: booking.parent_listing_id,
+        });
+      }
+    }
+  }
+  return entries;
+};
+
+/** Decrypt PII in token entries' attendees using the given private key */
+export const decryptTokenEntries = async (
+  entries: TokenEntry[],
+  privateKey: CryptoKey,
+): Promise<TokenEntry[]> => {
+  const decrypted = await decryptAttendees(
+    entries.map((e) => e.attendee),
+    privateKey,
+  );
+  return entries.map((e, i) => ({ ...e, attendee: decrypted[i]! }));
+};
+
+/** Result of looking up attendees by tokens - either valid data or a 404 response */
+export type TokenLookupResult =
+  | { ok: true; attendees: AttendeeWithBookings[] }
+  | { ok: false; response: Response };
+
+/**
+ * Keep only the tokens whose attendee has at least one real (quantity > 0) line,
+ * plus those lines' listing and package IDs. A token resolving solely to
+ * no-quantity sentinel lines is dropped, so the success pages never build a
+ * `/t` CTA that would 404.
+ */
+export const verifyTokensWithRealLine = async (
+  tokens: string[],
+): Promise<{
+  verifiedTokens: string[];
+  listingIds: number[];
+  /** Group 0 retains the evidence of a standalone booking. */
+  bookingGroupIds: number[];
+}> => {
+  const attendees = tokens.length > 0 ? await getAttendeesByTokens(tokens) : [];
+  const verified = tokens
+    .map((token, i) => ({
+      realBookings: (attendees[i]?.bookings ?? []).filter(hasTicketQuantity),
+      token,
+    }))
+    .filter((entry) => entry.realBookings.length > 0);
+  return {
+    bookingGroupIds: verified.flatMap((e) =>
+      e.realBookings.map((booking) => booking.package_group_id),
+    ),
+    listingIds: verified.flatMap((e) =>
+      e.realBookings.map((b) => b.listing_id),
+    ),
+    verifiedTokens: verified.map((e) => e.token),
+  };
+};
+
+/** Look up attendees by tokens, returning 404 if none found */
+export const lookupAttendees = async (
+  tokens: string[],
+): Promise<TokenLookupResult> => {
+  const results = await getAttendeesByTokens(tokens);
+  const valid = compact(results);
+  return valid.length === 0
+    ? { ok: false, response: await notFoundResponse() }
+    : { attendees: valid, ok: true };
+};
+
+/**
+ * Run a token handler under rate-limit protection: returns 429 if the IP is
+ * currently locked out, otherwise runs the handler, recording a failure on
+ * 404 or clearing prior failure state on 2xx (successful token lookups don't
+ * contribute to the limit and also wipe the IP's fat-finger history).
+ */
+export const withTokenRateLimit = async (
+  tokens: string[],
+  run: ResponseHandler,
+): Promise<Response> => {
+  const ip = getRequestClientIp();
+  if (await isTokenRateLimited(ip)) return rateLimitedResponse();
+
+  const response = await run();
+  if (response.status === 404 && tokens.length > 0) {
+    addPendingWork(recordTokenFailure(ip, tokens));
+  } else if (response.ok) {
+    addPendingWork(clearTokenAttempts(ip));
+  }
+  return response;
+};
+
+/**
+ * Create a token-based route handler for a given URL prefix.
+ * Extracts tokens from the path, dispatches to method handlers, and applies
+ * 404-based rate limiting per client IP.
+ */
+export const createTokenRoute =
+  (prefix: string, methods: TokenMethodMap): PathMethodRoute =>
+  (request, path, method) => {
+    const tokensStr = extractTokenSegment(prefix, path);
+    if (!tokensStr) return Promise.resolve(null);
+
+    const handler = methods[method];
+    if (!handler) return Promise.resolve(null);
+
+    const tokens = parseTokens(tokensStr);
+    return withTokenRateLimit(tokens, () => handler(request, tokens));
+  };

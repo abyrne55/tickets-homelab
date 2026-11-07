@@ -1,0 +1,59 @@
+/**
+ * Every dispatcher is an exhaustive `Record` over
+ * {@link AddressLookupProvider}. A new provider is therefore one picklist entry
+ * plus one definition. A missing definition is a compile error, not a silent
+ * fallthrough.
+ *
+ * This module is pure: definitions carry i18n keys, not rendered copy, and the
+ * fetch functions receive their API key as an argument.
+ */
+
+import * as v from "valibot";
+import type { Result } from "#shared/result.ts";
+import { guardFor } from "#shared/validation/guard.ts";
+
+/** Schema for the stored provider setting ("none" disables lookups). */
+export const AddressLookupSettingSchema = v.picklist(["none", "easypostcodes"]);
+
+/** The stored provider setting. */
+export type AddressLookupSetting = v.InferOutput<
+  typeof AddressLookupSettingSchema
+>;
+
+/** All valid provider-setting values (runtime array matching the union). */
+export const ADDRESS_LOOKUP_SETTINGS = AddressLookupSettingSchema.options;
+
+/** Type guard: check if an arbitrary string is a valid provider setting. */
+export const isAddressLookupSetting = guardFor(AddressLookupSettingSchema);
+
+/** A provider that can actually search — every setting except "none". */
+export type AddressLookupProvider = Exclude<AddressLookupSetting, "none">;
+
+/** One matching address: its ready-to-display line, plus the provider's
+ * latitude/longitude when it knows them ("" when it does not). */
+export const AddressMatchSchema = v.strictObject({
+  lat: v.string(),
+  line: v.string(),
+  lng: v.string(),
+});
+export type AddressMatch = v.InferOutput<typeof AddressMatchSchema>;
+
+/** Everything one lookup provider knows how to do. */
+export type AddressLookupProviderDefinition = {
+  /** Provider name shown in the settings picklist (a brand, not translated). */
+  label: string;
+  /** i18n key for the search box label (for example, "Postcode"). */
+  searchLabelKey: string;
+  /**
+   * Normalise a raw search to the provider's canonical form for its locale
+   * (for example, UK postcodes: uppercase, one space before the last three
+   * characters). Returns null when the search can never match, so the caller
+   * can report that without spending a provider request.
+   */
+  normaliseSearch: (raw: string) => string | null;
+  /** Fetch the addresses for a normalised search from the provider's API. */
+  fetchAddresses: (
+    search: string,
+    apiKey: string,
+  ) => Promise<Result<AddressMatch[]>>;
+};

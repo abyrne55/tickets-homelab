@@ -1,0 +1,191 @@
+/**
+ * Scan handler for signed booking QR links.
+ *
+ * Verifies a signed token. On success, either skips straight to Stripe
+ * checkout, or renders the normal booking page with the token's values
+ * pre-filled. The skip needs a token with a name + value, and a listing
+ * that requires no extra fields or questions.
+ */
+
+import { buildTicketListing, quantityBelowMin } from "#booking/model.ts";
+import { getGroupRemainingForListing } from "#db/attendees/capacity/groups.ts";
+import { getActiveHolidays } from "#db/holidays.ts";
+import { anyNonStandaloneChild, listingChildren } from "#db/listing-parents.ts";
+import { getListingWithCountBySlug } from "#db/listings/records.ts";
+import { isRegistrationClosed } from "#routes/format.ts";
+import { publicPageResponse } from "#routes/response.ts";
+import { getSearchParam } from "#routes/url.ts";
+import { capacityDateFor } from "#shared/capacity-rules.ts";
+import { getBookableStartDates } from "#shared/dates.ts";
+import { type CheckoutIntent, checkoutItem } from "#shared/payments.ts";
+import { listingSupportsDirectCheckout } from "#shared/qr.ts";
+import { type QrBookPayload, verifyQrBookToken } from "#shared/qr-token.ts";
+import {
+  qrBookCheckoutErrorPage,
+  qrBookErrorPage,
+} from "#templates/public/errors.tsx";
+import type {
+  BookingPrefill,
+  TicketPrefill,
+} from "#templates/public/reservations/types.ts";
+import type { ListingWithCount } from "#types";
+import { getTicketContext, runCheckoutFlow } from "./ticket-payment.ts";
+import { handleTicket } from "./ticket-submit.ts";
+
+const errorResponse = (slug: string, status: number): Promise<Response> =>
+  publicPageResponse(() => qrBookErrorPage(slug), status);
+
+/** QR error with no fallback booking link for a child that cannot be booked
+ * alone. */
+const noPageErrorResponse = (status: number): Promise<Response> =>
+  publicPageResponse(() => qrBookErrorPage(null), status);
+
+/** Build per-listing prefill entries from a QR payload */
+const buildListingPrefills = (
+  listingId: number,
+  payload: QrBookPayload,
+): Map<number, TicketPrefill> =>
+  new Map([[listingId, { customPriceMinor: payload.v, quantity: payload.q }]]);
+
+/** Build the booking prefill context for the ticket page */
+const buildPrefill = (
+  listing: ListingWithCount,
+  payload: QrBookPayload,
+  token: string,
+): BookingPrefill => ({
+  date: payload.d,
+  listings: buildListingPrefills(listing.id, payload),
+  name: payload.n,
+  token,
+});
+
+/** Check whether the scan should skip straight to Stripe checkout.
+ * Pre-requisites enforced by the caller: listing is loaded, and for daily
+ * listings the payload date has been validated against bookable dates. */
+const canSkipToCheckout = async (
+  listing: ListingWithCount,
+  payload: QrBookPayload,
+): Promise<boolean> => {
+  if (!payload.n || payload.v < 0) return false;
+  // A token minted before an owner raised the minimum carries a quantity the
+  // listing no longer sells. Never skip to a fixed-price checkout with it —
+  // the booking form re-derives the valid choices and lets the buyer pick.
+  if (quantityBelowMin(payload.q, listing.min_quantity)) return false;
+  // The same staleness runs the other way: the owner can lower the maximum,
+  // and an older token then carries a quantity the listing no longer sells.
+  if (payload.q > listing.max_quantity) return false;
+  // Customisable listings are priced by a chosen day count, so the visitor must
+  // pass through the booking form to select it — never skip to a fixed price.
+  if (listing.customisable_days) return false;
+  return await listingSupportsDirectCheckout(listing);
+};
+
+/** Validate a daily-listing booking date against available dates (minus holidays).
+ * Customisable listings use single-day availability — the chosen span is picked
+ * on the booking form — so an individually-bookable start isn't over-restricted. */
+const isDailyDateBookable = async (
+  listing: ListingWithCount,
+  date: string,
+): Promise<boolean> => {
+  if (!date) return false;
+  const holidays = await getActiveHolidays();
+  return getBookableStartDates(listing, holidays).includes(date);
+};
+
+/** Construct a CheckoutIntent for a single-listing direct-to-Stripe booking */
+const buildCheckoutIntent = (
+  listing: ListingWithCount,
+  payload: QrBookPayload,
+): CheckoutIntent => ({
+  address: "",
+  date: capacityDateFor(listing.listing_type, payload.d),
+  email: "",
+  items: [checkoutItem(listing, payload.q, payload.v)],
+  name: payload.n,
+  phone: "",
+  special_instructions: "",
+});
+
+/** Redirect directly to Stripe checkout using the signed values. The payment
+ * flow's error (a provider validation refusal at 400, or a null/failed session
+ * at 500 with a generic message) is passed straight through to the page rather
+ * than replaced with a generic 500, so the visitor sees why it failed. */
+const skipToCheckout = (
+  request: Request,
+  listing: ListingWithCount,
+  payload: QrBookPayload,
+): Promise<Response> => {
+  const intent = buildCheckoutIntent(listing, payload);
+  return runCheckoutFlow(
+    `qr-book listing=${listing.id}`,
+    request,
+    intent,
+    (msg, status) =>
+      publicPageResponse(
+        () => qrBookCheckoutErrorPage(listing.slug, msg),
+        status,
+      ),
+  );
+};
+
+/** Whether the scanned parent has any required child, so its QR must NOT skip
+ * straight to checkout (which would build parent-only metadata that omits the
+ * required child). Falling back to the form runs `prepareOrder`, which folds the
+ * child in. */
+const parentHasChildren = async (listing: ListingWithCount): Promise<boolean> =>
+  (await listingChildren.getIds(listing.id)).length > 0;
+
+/** Once the token is verified and the listing loaded, render or redirect */
+const dispatchVerified = async (
+  request: Request,
+  slug: string,
+  token: string,
+  payload: QrBookPayload,
+  listing: ListingWithCount,
+): Promise<Response> => {
+  if (
+    listing.listing_type === "daily" &&
+    !(await isDailyDateBookable(listing, payload.d))
+  ) {
+    return errorResponse(slug, 400);
+  }
+  if (
+    !(await parentHasChildren(listing)) &&
+    (await canSkipToCheckout(listing, payload))
+  ) {
+    return skipToCheckout(request, listing, payload);
+  }
+  const ticketListing = buildTicketListing(
+    listing,
+    isRegistrationClosed(listing),
+    await getGroupRemainingForListing(listing),
+  );
+  const prefill = buildPrefill(listing, payload, token);
+  return handleTicket({
+    getContext: getTicketContext,
+    listings: [ticketListing],
+    prefill,
+    request,
+    slugs: [slug],
+  });
+};
+
+/** GET /ticket/:slug/qr-book */
+export const handleQrBookGet = async (
+  request: Request,
+  params: { slug: string },
+): Promise<Response> => {
+  const { slug } = params;
+  const token = getSearchParam(request, "t");
+  if (!token) return errorResponse(slug, 400);
+  const payload = await verifyQrBookToken(slug, token);
+  if (!payload) return errorResponse(slug, 400);
+  const listing = await getListingWithCountBySlug(slug);
+  if (!listing?.active) return errorResponse(slug, 404);
+  // A booking can never start from a non-standalone child. A signed QR for one
+  // would otherwise skip straight to checkout for it alone.
+  if (await anyNonStandaloneChild([listing.id])) {
+    return noPageErrorResponse(404);
+  }
+  return dispatchVerified(request, slug, token, payload, listing);
+};

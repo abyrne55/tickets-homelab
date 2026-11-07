@@ -1,0 +1,70 @@
+import { Then, When } from "@cucumber/cucumber";
+import { expect } from "@std/expect";
+import { CUSTOMER, ORGANISER } from "#test/specs/support/browser.ts";
+import {
+  customerLooksAtEverything,
+  expectNoChoiceOfKind,
+  listOffers,
+  organiserNarrowsList,
+  organiserOpensList,
+  whatTheCustomerSees,
+} from "#test/specs/support/list-narrowing.ts";
+import type { TicketsWorld } from "#test/specs/support/world.ts";
+import { expectIncludesAll } from "#test-utils/assertions.ts";
+
+When(
+  "the organiser opens their list",
+  async function (this: TicketsWorld): Promise<void> {
+    await organiserOpensList(this);
+  },
+);
+
+When(
+  "the organiser narrows the list to {string}",
+  function (this: TicketsWorld, to: string): Promise<void> {
+    return organiserNarrowsList(this, to);
+  },
+);
+
+Then(
+  "the organiser's list offers the {word}",
+  function (this: TicketsWorld, name: string): void {
+    expect(listOffers(this, name)).toBe(true);
+  },
+);
+
+Then(
+  "the organiser's list does not offer the {word}",
+  function (this: TicketsWorld, name: string): void {
+    expect(listOffers(this, name)).toBe(false);
+  },
+);
+
+Then(
+  "the organiser is offered no way to narrow the list by kind",
+  function (this: TicketsWorld): void {
+    expectNoChoiceOfKind(this, ORGANISER);
+  },
+);
+
+When(
+  "a customer looks at everything on sale",
+  function (this: TicketsWorld): Promise<void> {
+    return customerLooksAtEverything(this);
+  },
+);
+
+Then(
+  "the customer is shown both the {word} and the {word}",
+  function (this: TicketsWorld, first: string, second: string): void {
+    const shown = whatTheCustomerSees(this);
+    expectIncludesAll(shown, [first, second]);
+  },
+);
+
+Then(
+  "the customer is offered no way to narrow the list by kind",
+  function (this: TicketsWorld): void {
+    expectNoChoiceOfKind(this, CUSTOMER);
+  },
+);

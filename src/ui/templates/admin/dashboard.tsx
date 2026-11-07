@@ -1,0 +1,415 @@
+/**
+ * Admin dashboard page template
+ */
+
+import type { ActiveListingStats } from "#db/attendee-types.ts";
+import type { ServicingEventSummary } from "#db/attendees/servicing.ts";
+import type { Holiday } from "#db/holidays.ts";
+import { filter, joinStrings, map, pipe, unique } from "#fp";
+import { t } from "#i18n";
+import { Raw } from "#jsx/jsx-runtime.ts";
+import { groupAttendeeRows } from "#shared/attendee-table-rows.ts";
+import { getEffectiveDomain } from "#shared/config.ts";
+import { formatCurrency } from "#shared/currency.ts";
+import { isReadOnly } from "#shared/env.ts";
+import { filterListingsByAttributes } from "#shared/listing-attribute-filter.ts";
+import {
+  filterListingsByType,
+  type ListingFilter,
+  listingCategory,
+  renderGroupFilter,
+  renderTypeFilter,
+} from "#shared/listing-filter.ts";
+import {
+  emptyGroupFilterView,
+  type ListingGroupFilterView,
+} from "#shared/listing-group-view.ts";
+import type { ListingColumnKey } from "#shared/tables/configurable.ts";
+import type { TableLayout } from "#shared/tables/layout.ts";
+import { renderAdminPageSpec } from "#templates/admin/admin-page-spec.tsx";
+import { AttendeeTableBlock } from "#templates/admin/attendee-table-block.tsx";
+import { HolidayTable } from "#templates/admin/holidays.tsx";
+import {
+  attributeFilterHref,
+  csvExportHref,
+  emptyAttributeFilterView,
+  groupFilterHref,
+  type ListingAttributeFilterView,
+  renderAttributeFilterBars,
+  typeFilterHref,
+} from "#templates/admin/listing-attribute-filters.ts";
+import {
+  ListingsTableBlock,
+  listingTable,
+  renderListingsTableSection,
+} from "#templates/admin/listing-table.tsx";
+import { upcomingServicingSection } from "#templates/admin/servicing-events.tsx";
+import { WelcomeBanner } from "#templates/admin/welcome-banner.tsx";
+import { ActionButton, GuideFooter } from "#templates/components/actions.tsx";
+import { openSection } from "#templates/components/open-section.tsx";
+import type { AdminSession, DisplayAttendee, ListingWithCount } from "#types";
+
+/** Keeps only the listings that are still active. */
+const activeOnly = filter((e: ListingWithCount) => e.active);
+
+/** The dashboard's quick-create actions — shortcuts to add a listing or an
+ *  attendee straight from the home page (each section's own sub-nav reaches the
+ *  same create flows once you're inside it). */
+const DashboardQuickActions = (): JSX.Element => (
+  <p class="actions">
+    <ActionButton href="/admin/listing/new" icon="plus">
+      {t("admin.dashboard.add_listing")}
+    </ActionButton>
+    <ActionButton href="/admin/attendees/new" icon="user-plus">
+      {t("admin.listings.add_attendee")}
+    </ActionButton>
+  </p>
+);
+
+/** Checkbox item for multi-booking link builder */
+const MultiBookingCheckbox = ({ e }: { e: ListingWithCount }): string =>
+  String(
+    <li>
+      <label>
+        <input
+          data-fields={e.fields}
+          data-multi-booking-slug={e.slug}
+          type="checkbox"
+        />
+        {` ${e.name}`}
+      </label>
+    </li>,
+  );
+
+/** One read-only, click-to-select field in the multi-booking box: its label,
+ * then an input the client script fills in. `marker` is the data attribute the
+ * script finds the input by; only the URL field also carries the site domain. */
+const MultiBookingField = ({
+  id,
+  label,
+  marker,
+  domain,
+}: {
+  id: string;
+  label: string;
+  marker: string;
+  domain?: string;
+}): JSX.Element => (
+  <>
+    <label for={id}>{label}</label>
+    <input
+      data-domain={domain}
+      {...{ [marker]: true }}
+      data-select-on-click
+      id={id}
+      placeholder={t("admin.listings.select_two_or_more")}
+      readonly
+      type="text"
+    />
+  </>
+);
+
+/** Multi-booking link builder section. The caller excludes listings with no
+ * standalone page, so every generated booking link works. */
+const multiBookingSection = (
+  selectableListings: ListingWithCount[],
+): string => {
+  const checkboxes = pipe(
+    map((e: ListingWithCount) => MultiBookingCheckbox({ e })),
+    joinStrings,
+  )(selectableListings);
+
+  return String(
+    <details>
+      <summary>{t("admin.listings.multi_booking_link")}</summary>
+      <p>{t("admin.listings.multi_booking_desc")}</p>
+      <ul class="multi-booking-list">
+        <Raw html={checkboxes} />
+      </ul>
+      <MultiBookingField
+        domain={getEffectiveDomain()}
+        id="multi-booking-url"
+        label={t("admin.listings.booking_link")}
+        marker="data-multi-booking-url"
+      />
+      <MultiBookingField
+        id="multi-booking-embed-script"
+        label={t("common.embed_script")}
+        marker="data-multi-booking-embed-script"
+      />
+      <MultiBookingField
+        id="multi-booking-embed-iframe"
+        label={t("common.embed_iframe")}
+        marker="data-multi-booking-embed-iframe"
+      />
+    </details>,
+  );
+};
+
+/** Active listing statistics section */
+export const activeListingStatsSection = (stats: ActiveListingStats): string =>
+  String(
+    <details>
+      <summary>{t("admin.dashboard.stats_heading")}</summary>
+      <ul>
+        <li>
+          <strong>{t("admin.dashboard.income")}</strong>{" "}
+          {formatCurrency(stats.income)}
+        </li>
+        <li>
+          <strong>{t("admin.dashboard.tickets")}</strong> {stats.tickets}
+        </li>
+        <li>
+          <strong>{t("admin.dashboard.attendees")}</strong> {stats.attendees}
+        </li>
+      </ul>
+    </details>,
+  );
+
+/** Build the newest attendees section with a details/summary wrapper.
+ * One row per attendee: `listings` arrives in display order, so each grouped
+ * row's Listings cell follows the listings page ordering. */
+const newestAttendeesSection = (
+  attendees: DisplayAttendee[],
+  listings: ListingWithCount[],
+): string => {
+  const tableRows = groupAttendeeRows(attendees, listings);
+
+  if (tableRows.length === 0) return "";
+
+  const count = tableRows.length;
+
+  return openSection(
+    t("admin.dashboard.newest_attendees", { count }),
+    <AttendeeTableBlock
+      options={{
+        allowedDomain: getEffectiveDomain(),
+        presorted: true,
+        rows: tableRows,
+        showCheckin: false,
+        showDate: false,
+        showListing: true,
+      }}
+    />,
+  );
+};
+
+/** Upcoming holidays section shown on the admin dashboard. */
+const upcomingHolidaysSection = (holidays: Holiday[]): string =>
+  openSection(
+    t("holidays.upcoming_heading"),
+    <Raw
+      html={HolidayTable({
+        holidays,
+        scrollClass: "dashboard-holidays-scroll",
+      })}
+    />,
+  );
+
+/** The attendees still owed a notification send, shown when the count is above
+ * zero. Links to the attendees browser, where each attendee's badges name what
+ * never went out. */
+const pendingNotificationsSection = (count: number): string =>
+  String(
+    <p class="prose">
+      <a href="/admin/attendees">
+        {t("admin.dashboard.pending_notifications", { count })}
+      </a>
+    </p>,
+  );
+
+/**
+ * Admin dashboard page
+ */
+export const adminDashboardPage = (
+  listings: ListingWithCount[],
+  session: AdminSession,
+  imageError?: string,
+  newestAttendees: DisplayAttendee[] = [],
+  successMessage?: string,
+  stats?: ActiveListingStats | null,
+  listingColumnLayout?: TableLayout<ListingColumnKey>,
+  activeType: ListingFilter = "all",
+  upcomingHolidays: Holiday[] = [],
+  upcomingServicingEvents: ServicingEventSummary[] = [],
+  attributeFilterView: ListingAttributeFilterView = emptyAttributeFilterView(),
+  showWelcome = false,
+  pendingNotifications = 0,
+): string => {
+  const { columnKeys, filters } =
+    listingColumnLayout ?? listingTable.layout.defaultLayout;
+
+  // Type filter narrows the listing table only; the stats and
+  // newest-attendee sections below stay based on the full set. Offer the bar
+  // (same control as the public/attendee filters) only when more than one
+  // listing type is present.
+  const activeListings = activeOnly(listings);
+  const categories = unique(listings.map(listingCategory));
+  const { activeAttributeFilters, attributeFilters, attributesByListing } =
+    attributeFilterView;
+  const shownListings = filterListingsByAttributes(
+    activeAttributeFilters,
+    attributesByListing,
+  )(filterListingsByType(activeType)(activeListings));
+  const typeFilterHtml =
+    categories.length > 1
+      ? renderTypeFilter(activeType, categories, (f) =>
+          typeFilterHref("/admin/", {
+            activeAttributes: activeAttributeFilters,
+            groupId: null,
+          })(f),
+        )
+      : "";
+  const attributeFilterHtml = renderAttributeFilterBars(
+    attributeFilters,
+    activeAttributeFilters,
+    attributeFilterHref("/admin/", {
+      activeAttributes: activeAttributeFilters,
+      groupId: null,
+      type: activeType,
+    }),
+  );
+  const filterHtml = `${typeFilterHtml}${attributeFilterHtml}`;
+
+  return renderAdminPageSpec({
+    active: "/admin/",
+    body: (
+      <>
+        {showWelcome && !isReadOnly() && <WelcomeBanner />}
+
+        {!isReadOnly() && <DashboardQuickActions />}
+
+        <ListingsTableBlock
+          columnKeys={columnKeys}
+          filters={filters}
+          headerHtml={filterHtml}
+          listings={shownListings}
+        />
+
+        {stats && <Raw html={activeListingStatsSection(stats)} />}
+
+        {pendingNotifications > 0 && (
+          <Raw html={pendingNotificationsSection(pendingNotifications)} />
+        )}
+
+        {upcomingHolidays.length > 0 && (
+          <Raw html={upcomingHolidaysSection(upcomingHolidays)} />
+        )}
+
+        {upcomingServicingEvents.length > 0 && (
+          <Raw html={upcomingServicingSection(upcomingServicingEvents)} />
+        )}
+
+        {newestAttendees.length > 0 && (
+          <Raw html={newestAttendeesSection(newestAttendees, listings)} />
+        )}
+
+        <GuideFooter href="/admin/guide#dashboard">
+          {t("admin.dashboard.guide_link")}
+        </GuideFooter>
+      </>
+    ),
+    flash: { error: imageError, success: successMessage },
+    session,
+    title: t("terms.listings"),
+  });
+};
+
+/** Admin listings index page with active and deactivated listings split. */
+export const adminListingsPage = (
+  listings: ListingWithCount[],
+  session: AdminSession,
+  listingColumnLayout?: TableLayout<ListingColumnKey>,
+  attributeFilterView: ListingAttributeFilterView = emptyAttributeFilterView(),
+  unbookableIds: ReadonlySet<number> = new Set(),
+  groupFilter: ListingGroupFilterView = emptyGroupFilterView(),
+): string => {
+  // Editors see a money-free, edit-linked table on a fixed order (their saved
+  // column template is irrelevant and never references the omitted columns), and
+  // no CSV export (that route stays staff-only and exports ledger revenue).
+  const isEditor = session.adminLevel === "editor";
+  const layout = listingColumnLayout ?? listingTable.layout.defaultLayout;
+  const tableOptions = isEditor
+    ? ({ table: "editor" } as const)
+    : {
+        columnKeys: layout.columnKeys,
+        filters: layout.filters,
+        table: "staff" as const,
+      };
+  const activeListings = activeOnly(listings);
+  const deactivatedListings = filter((e: ListingWithCount) => !e.active)(
+    listings,
+  );
+  // The multi-booking builder offers only active listings with a standalone
+  // page, and the attribute filters narrow the tables above, not the builder.
+  const multiBookingListings = filter(
+    (e: ListingWithCount) => !unbookableIds.has(e.id),
+  )(activeListings);
+  const { activeAttributeFilters, attributeFilters, attributesByListing } =
+    attributeFilterView;
+  const activeGroupId = groupFilter.activeGroupId;
+  const filterByAttribute = filterListingsByAttributes(
+    activeAttributeFilters,
+    attributesByListing,
+  );
+  const groupFilterHtml = renderGroupFilter(
+    activeGroupId,
+    groupFilter.groups,
+    groupFilterHref("/admin/listings", {
+      activeAttributes: activeAttributeFilters,
+      type: "all",
+    }),
+  );
+  const attributeFilterHtml = renderAttributeFilterBars(
+    attributeFilters,
+    activeAttributeFilters,
+    attributeFilterHref("/admin/listings", {
+      activeAttributes: activeAttributeFilters,
+      groupId: activeGroupId,
+      type: "all",
+    }),
+  );
+
+  return renderAdminPageSpec({
+    active: "/admin/listings",
+    body: (
+      <>
+        <ListingsTableBlock
+          {...tableOptions}
+          csvExport={!isEditor}
+          csvHref={csvExportHref({
+            activeAttributes: activeAttributeFilters,
+            groupId: activeGroupId,
+            type: "all",
+          })}
+          headerHtml={`${groupFilterHtml}${attributeFilterHtml}`}
+          listings={filterByAttribute(activeListings)}
+        />
+
+        {deactivatedListings.length > 0 && (
+          <>
+            <h2>{t("admin.dashboard.deactivated")}</h2>
+            {renderListingsTableSection({
+              ...tableOptions,
+              emptyText: t("admin.dashboard.no_listings"),
+              listings: filterByAttribute(deactivatedListings),
+            })}
+          </>
+        )}
+
+        {multiBookingListings.length >= 2 && (
+          <Raw html={multiBookingSection(multiBookingListings)} />
+        )}
+
+        <GuideFooter
+          adminLevel={session.adminLevel}
+          href="/admin/guide#listings"
+        >
+          {t("admin.listings.guide_link")}
+        </GuideFooter>
+      </>
+    ),
+    session,
+    title: t("terms.listings"),
+  });
+};

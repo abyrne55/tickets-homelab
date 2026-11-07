@@ -1,0 +1,13 @@
+{
+  "availability.free": "Free",
+  "availability.from_prefix": "From ",
+  "availability.select_listing": "Select {name}",
+  "availability.check": "Check availability",
+  "availability.no_bookable_listings": "No bookable listings.",
+  "availability.select": "Select",
+  "availability.listing": "Listing",
+  "availability.remaining": "Remaining",
+  "availability.price": "Price",
+  "availability.create_attendee": "Create Attendee",
+  "availability.create_service_event": "Create Service Event"
+}

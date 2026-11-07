@@ -1,0 +1,37 @@
+import type { ErrorPageFn } from "#routes/admin/settings-helpers.ts";
+import type { AuthSession } from "#routes/auth.ts";
+import { FormParams } from "#shared/form-data.ts";
+import type { ResponseHandler } from "#shared/response-steps.ts";
+import { getAllActivityLog } from "#test-utils/activity-log.ts";
+import type { MockOf } from "#test-utils/mock-fn.ts";
+import { mockFn } from "./mock-fn.ts";
+
+/** Build FormParams from a plain record of form fields. */
+export const formFrom = (data: Record<string, string>): FormParams =>
+  new FormParams(new URLSearchParams(data));
+
+/** A null AuthSession for handlers that never read the session. */
+export const nullSession = null as any as AuthSession;
+
+/** The most recent activity-log message, or "" when the log is empty. */
+export const lastLogMessage = async (): Promise<string> => {
+  const logs = await getAllActivityLog(10);
+  return logs[0]?.message ?? "";
+};
+
+/** A fresh spy ErrorPageFn that renders `error: <msg>` as a bad request. */
+export const makeMockErrorPage = (): MockOf<ErrorPageFn> =>
+  mockFn(
+    (error: string, _formId?: string) =>
+      new Response(`error: ${error}`, { status: 400 }),
+  );
+
+/** Invoke a settings handler with form `data` + `errorPage` and a null session. */
+export const runHandler = (
+  handler: ResponseHandler<
+    [form: FormParams, errorPage: ErrorPageFn, session: AuthSession]
+  >,
+  data: Record<string, string>,
+  errorPage: ErrorPageFn,
+): Promise<Response> =>
+  Promise.resolve(handler(formFrom(data), errorPage, nullSession));

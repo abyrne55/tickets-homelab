@@ -1,0 +1,276 @@
+/**
+ * Settle a reserved attendee's outstanding balance.
+ *
+ * Money is read from the transfers ledger (the outstanding balance projects as
+ * −balanceOf(attendee); amounts paid from the booking's sale legs), and the
+ * settle posts its own balance-payment leg — no PII and no decryption, so it can
+ * run in the keyless payment-webhook context. Idempotent: a second call once the
+ * balance is cleared is a no-op.
+ */
+
+import type { InValue } from "@libsql/client";
+import { attendeeAccount, WORLD } from "#accounting/accounts.ts";
+import { KIND } from "#accounting/kinds.ts";
+import {
+  attendeeOwedSubquery,
+  externalCashBalanceSubquery,
+  orderTotalSubquery,
+  reservationSubtotalSubquery,
+} from "#accounting/projection-sql.ts";
+import { eventGroup, legReference } from "#accounting/refs.ts";
+import { guardedInsertStatement } from "#accounting/rows.ts";
+import { decrypt } from "#crypto/encryption.ts";
+import type { EnvKeyEncrypted } from "#crypto/sealed.ts";
+import { logActivity } from "#db/activity-log.ts";
+import { requirePaidDefaultStatus } from "#db/attendee-statuses.ts";
+import { ATTENDEE_KIND } from "#db/attendees/kind.ts";
+import { remainingBalanceFromLedger } from "#db/attendees/select.ts";
+import {
+  executeBatchWithResults,
+  queryBatch,
+  queryOne,
+  resultRows,
+  type SqlStatement,
+} from "#db/client.ts";
+import { markOpenInvoicesPaidStatement } from "#db/invoices.ts";
+import { compact, mapParallel, sumOf } from "#fp";
+import { formatCurrency } from "#shared/currency.ts";
+import { nowIso } from "#shared/now.ts";
+
+/**
+ * The event group a balance settlement's payment leg posts under, keyed on the
+ * paying checkout's session id. The single place this key is built, so a ledger
+ * preflight can ask whether a balance session was already settled (its leg is
+ * stored) and replay rather than re-settle or refund an already-paid balance.
+ */
+export const balanceEventGroup = (sessionId: string): Promise<string> =>
+  eventGroup(["balance", sessionId]);
+
+/** Plaintext reservation state for an attendee. */
+export type AttendeeBalanceState = {
+  statusId: number | null;
+  remainingBalance: number;
+};
+
+/** Read an attendee's status and outstanding balance (no decryption). */
+export const getAttendeeBalanceState = async (
+  attendeeId: number,
+): Promise<AttendeeBalanceState | null> => {
+  const row = await queryOne<{
+    status_id: number | null;
+    remaining_balance: number;
+  }>(
+    `SELECT status_id, ${remainingBalanceFromLedger(
+      "attendees.id",
+    )} FROM attendees WHERE id = ? AND kind = ?`,
+    [attendeeId, ATTENDEE_KIND],
+  );
+  return row
+    ? {
+        remainingBalance: Number(row.remaining_balance),
+        statusId: row.status_id,
+      }
+    : null;
+};
+
+/** One product line of an attendee's order (no PII). */
+export type OrderLine = {
+  listingId: number;
+  name: string;
+  /** The package this line was booked through (0 = standalone or unknown). */
+  packageGroupId: number;
+  quantity: number;
+};
+
+/** A PII-free recap of an attendee's order. */
+export type OrderSummary = {
+  lines: OrderLine[];
+  fullPrice: number;
+  reservationSubtotal: number;
+  totalQuantity: number;
+  depositPaid: number;
+};
+
+/**
+ * Build a PII-free recap of an attendee's booked products: line names, the
+ * original order price, the quantity and what's been paid
+ * so far. Used by the admin balance panel and the public balance page.
+ */
+type OrderRow = {
+  listing_id: number;
+  package_group_id: number;
+  quantity: number;
+  listing_name: EnvKeyEncrypted | null;
+};
+
+const attendeeOrderRowsStatement = (attendeeId: number): SqlStatement => ({
+  args: [attendeeId],
+  sql:
+    // quantity > 0: a no-quantity sentinel line is not an order line — exclude it
+    // so the pay page shows (and checks out against) a real product, never a
+    // lower-id ghost.
+    `SELECT listingAttendee.listing_id,
+            listingAttendee.package_group_id,
+            listingAttendee.quantity,
+            listing.name AS listing_name
+       FROM listing_attendees AS listingAttendee
+       LEFT JOIN listings AS listing ON listing.id = listingAttendee.listing_id
+      WHERE listingAttendee.attendee_id = ? AND listingAttendee.quantity > 0
+      ORDER BY listingAttendee.id`,
+});
+
+const attendeeOrderMoneyStatement = (attendeeId: number): SqlStatement => {
+  const sql = `SELECT ${externalCashBalanceSubquery("attendee", "?")} AS amount_paid,
+               ${orderTotalSubquery("attendee", "?")} AS full_price,
+               ${reservationSubtotalSubquery("attendee", "?")} AS reservation_subtotal`;
+  return {
+    args: Array.from(sql.matchAll(/\?/g), () => String(attendeeId)),
+    sql,
+  };
+};
+
+const orderLineFromRow = async (row: OrderRow): Promise<OrderLine | null> =>
+  row.listing_name === null
+    ? null
+    : {
+        listingId: row.listing_id,
+        name: await decrypt(row.listing_name),
+        packageGroupId: Number(row.package_group_id),
+        quantity: row.quantity,
+      };
+
+export const getAttendeeOrderSummary = async (
+  attendeeId: number,
+): Promise<OrderSummary> => {
+  const [orderResult, paidResult] = await queryBatch([
+    attendeeOrderRowsStatement(attendeeId),
+    attendeeOrderMoneyStatement(attendeeId),
+  ]);
+  const rows = resultRows<OrderRow>(orderResult!);
+  // The scalar SELECT has no FROM clause, so SQLite always returns one row.
+  const paidRow = resultRows<{
+    amount_paid: number;
+    full_price: number;
+    reservation_subtotal: number;
+  }>(paidResult!)[0]!;
+  const depositPaid = Number(paidRow.amount_paid);
+
+  // The LEFT JOIN keeps dangling booking rows visible so we can preserve the
+  // previous behavior of dropping lines whose listing has since been deleted.
+  const lines = compact(await mapParallel(orderLineFromRow)(rows));
+
+  return {
+    depositPaid,
+    fullPrice: Number(paidRow.full_price),
+    lines,
+    reservationSubtotal: Number(paidRow.reservation_subtotal),
+    totalQuantity: sumOf((l: OrderLine) => l.quantity)(lines),
+  };
+};
+
+/** Result of attempting to settle a balance. */
+export type SettleBalanceResult =
+  | { settled: true; amount: number; listingId: number | null }
+  | {
+      settled: false;
+      reason: "not_found" | "nothing_owed" | "amount_mismatch";
+    };
+
+/**
+ * The settle only clears the receivable. A booking row's amount paid projects
+ * from its ledger sale leg, and the checkout posts its own payment leg.
+ *
+ * Every write is guarded on the projected balance still equalling
+ * `expectedAmount`, so a balance the owner edited, or one a stale checkout
+ * already settled, is refused rather than cleared for the wrong figure.
+ *
+ * `extraStatements` commit in the SAME transaction, so a crash cannot leave a
+ * paid-but-unfinalized row. Each must carry its own balance guard.
+ */
+export const settleAttendeeBalance = async (
+  attendeeId: number,
+  expectedAmount: number,
+  settle: { id: string; occurredAt: string },
+  extraStatements: { sql: string; args: InValue[] }[] = [],
+): Promise<SettleBalanceResult> => {
+  const state = await getAttendeeBalanceState(attendeeId);
+  if (!state) return { reason: "not_found", settled: false };
+  if (state.remainingBalance <= 0) {
+    return { reason: "nothing_owed", settled: false };
+  }
+
+  const paid = await requirePaidDefaultStatus();
+  // The attendee's outstanding balance, projected from the ledger, used as an
+  // atomic guard: both writes below fire only while they still owe exactly
+  // `expectedAmount`. A concurrent settle whose payment leg already landed sees
+  // owed = 0 and no-ops, so the balance settles exactly once — no stored column.
+  const owed = attendeeOwedSubquery(String(attendeeId));
+  const results = await executeBatchWithResults([
+    {
+      // Verdict (first statement): a harmless self-update while they still owe
+      // the expected amount. A mismatched or already-settled balance matches 0
+      // rows, exactly like the old column guard.
+      args: [attendeeId, expectedAmount],
+      sql: `UPDATE attendees SET status_id = status_id WHERE id = ? AND ${owed} = ?`,
+    },
+    {
+      // Lifecycle move: only reservations advance to the paid default. Other
+      // statuses are operator-owned and stay put once their balance is cleared.
+      args: [paid.id, attendeeId, expectedAmount],
+      sql: `UPDATE attendees SET status_id = COALESCE(?, status_id)
+             WHERE id = ?
+               AND status_id IN (
+                 SELECT status.id FROM attendee_statuses AS status
+                  WHERE status.is_reservation = 1
+               )
+               AND ${owed} = ?`,
+    },
+    ...extraStatements,
+    // An invoice bills this attendee's outstanding balance. Clearing that
+    // balance closes the open invoice in the same transaction.
+    markOpenInvoicesPaidStatement(attendeeId, owed, expectedAmount),
+    // The balance payment: world funds the attendee, zeroing what they owed.
+    // INSERT OR IGNORE on a settle-stable reference plus the same owed guard
+    // makes a retried/raced webhook a no-op. Runs after the status move so its
+    // guard still sees the pre-payment balance.
+    guardedInsertStatement(
+      {
+        amount: expectedAmount,
+        destination: attendeeAccount(attendeeId),
+        eventGroup: await balanceEventGroup(settle.id),
+        kind: KIND.payment,
+        occurredAt: settle.occurredAt,
+        reference: await legReference(["balance", settle.id, KIND.payment]),
+        source: WORLD,
+      },
+      nowIso(),
+      `${owed} = ?`,
+      [expectedAmount],
+    ),
+  ]);
+
+  // The self-update is the verdict; 0 rows means a concurrent/stale callback
+  // changed the balance between our read and this write, or the amount differs.
+  if (results[0]!.rowsAffected === 0) {
+    return { reason: "amount_mismatch", settled: false };
+  }
+
+  // The logged-activity / returned listing is the attendee's first real line.
+  // A settle implies an owed balance, which implies a sale leg, which can only
+  // sit on a quantity > 0 line (a paid line can't be marked no-quantity), so a
+  // real line normally exists; the lookup stays nullable for a purely
+  // ledger-owed attendee with no booking row.
+  const firstListing = await queryOne<{ listing_id: number }>(
+    "SELECT listing_id FROM listing_attendees WHERE attendee_id = ? AND quantity > 0 ORDER BY id LIMIT 1",
+    [attendeeId],
+  );
+  const listingId = firstListing ? firstListing.listing_id : null;
+
+  await logActivity(
+    `Reservation balance paid: ${formatCurrency(expectedAmount)}`,
+    listingId,
+    attendeeId,
+  );
+
+  return { amount: expectedAmount, listingId, settled: true };
+};

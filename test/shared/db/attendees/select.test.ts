@@ -1,0 +1,384 @@
+/**
+ * Unit tests for the attendee SELECT builder (`src/shared/db/attendees/select.ts`).
+ *
+ * `attendeeColumns` and the statement builder are pure — no DB —
+ * so they are tested directly here. This pins the field-selection contract (the
+ * expensive ledger subqueries appear only when their field is requested) and
+ * the filter/order SQL that every attendee-listing read now shares, so a mutant
+ * that drops a clause, flips a join, or mis-orders the bound args is caught.
+ */
+
+import { assert, assertStringIncludes } from "@std/assert";
+import { expect } from "@std/expect";
+import { describe, it as test } from "@std/testing/bdd";
+import { ATTENDEE_KIND, SERVICING_KIND } from "#db/attendees/kind.ts";
+import {
+  ATTENDEE_FIELDS,
+  type AttendeeField,
+  type AttendeeJoin,
+  type AttendeeOrder,
+  type AttendeeWhere,
+  attendeeBatchStatement,
+  attendeeColumns,
+} from "#db/attendees/select.ts";
+import { expectIncludesAll } from "#test-utils/assertions.ts";
+
+/** The filter and order half of an attendee read — everything from `FROM`
+ * onwards — plus its bound values. Field selection is covered separately, so
+ * these ask for no fields and drop the column list. The seam anchors on the
+ * read's own `FROM attendees AS`, because a column's SQL can carry an inner
+ * `FROM` of its own (the owed-email EXISTS). */
+const attendeeFromWhere = (
+  join: AttendeeJoin,
+  where: AttendeeWhere,
+  order?: AttendeeOrder,
+): { from: string; args: unknown[] } => {
+  const { sql, args } = attendeeBatchStatement({
+    fields: [],
+    join,
+    owedScope: "attendee",
+    where,
+    ...(order === undefined ? {} : { order }),
+  });
+  return { args, from: sql.slice(sql.indexOf("FROM attendees AS")) };
+};
+
+const CORE_ALIASES = [
+  "attendee.id",
+  "attendee.created",
+  "attendee.kind",
+  "attendee.ticket_token_index",
+  "attendee.pii_blob",
+  "attendee.status_id",
+  "attendee.split_logistics_agents",
+  "SUBSTR(listingAttendee.start_at, 1, 10) as date",
+];
+
+/** Each opt-in field and the SQL marker that proves it was projected. */
+const FIELD_MARKER: Record<AttendeeField, string> = {
+  attachment_downloads: "attachment_downloads",
+  end_date: "SUBSTR(listingAttendee.end_at, 1, 10) as end_date",
+  package_group_id: "package_group_id",
+  price_paid: "AS price_paid",
+  refunded: "AS refunded",
+  remaining_balance: "AS remaining_balance",
+};
+
+describe("attendeeColumns", () => {
+  test("always emits every core column, for either join", () => {
+    for (const join of ["inner", "left"] as const) {
+      const cols = attendeeColumns(join, [], "attendee");
+      for (const alias of CORE_ALIASES) assertStringIncludes(cols, alias);
+    }
+  });
+
+  test("an empty field set projects no opt-in field", () => {
+    const cols = attendeeColumns("inner", [], "attendee");
+    for (const marker of Object.values(FIELD_MARKER)) {
+      assert(!cols.includes(marker));
+    }
+  });
+
+  test("each field is projected only when requested", () => {
+    for (const field of ATTENDEE_FIELDS) {
+      const withField = attendeeColumns("inner", [field], "attendee");
+      const without = attendeeColumns("inner", [], "attendee");
+      assertStringIncludes(withField, FIELD_MARKER[field]);
+      assert(!without.includes(FIELD_MARKER[field]));
+    }
+  });
+
+  test("the full field set projects all six opt-in fields", () => {
+    const cols = attendeeColumns("inner", ATTENDEE_FIELDS, "attendee");
+    for (const marker of Object.values(FIELD_MARKER)) {
+      assertStringIncludes(cols, marker);
+    }
+  });
+
+  test("a LEFT join COALESCEs the cheap per-listing columns; an INNER join does not", () => {
+    const left = attendeeColumns("left", ["attachment_downloads"], "attendee");
+    expectIncludesAll(left, [
+      "COALESCE(listingAttendee.listing_id, 0) as listing_id",
+      "COALESCE(listingAttendee.quantity, 0) as quantity",
+      "COALESCE(listingAttendee.checked_in, 0) as checked_in",
+      "COALESCE(listingAttendee.attachment_downloads, 0) as attachment_downloads",
+    ]);
+
+    const inner = attendeeColumns(
+      "inner",
+      ["attachment_downloads"],
+      "attendee",
+    );
+    assert(!inner.includes("COALESCE(listingAttendee.listing_id"));
+    expectIncludesAll(inner, [
+      "listingAttendee.listing_id",
+      "listingAttendee.attachment_downloads",
+    ]);
+  });
+
+  test("omitting the money fields makes the column list strictly shorter", () => {
+    expect(attendeeColumns("inner", [], "attendee").length).toBeLessThan(
+      attendeeColumns("inner", ATTENDEE_FIELDS, "attendee").length,
+    );
+  });
+
+  // These are correlated, so each runs per row of the outer query — the cost is
+  // database work, not subrequests, the whole SELECT being one round-trip either
+  // way. Pinning them keeps the count in the module header true.
+  test("each ledger field emits a fixed number of subqueries", () => {
+    const subqueries = (field: AttendeeField): number =>
+      (attendeeColumns("inner", [field], "attendee").match(/\(SELECT/g) ?? [])
+        .length;
+    expect(subqueries("price_paid")).toBe(8);
+    expect(subqueries("refunded")).toBe(11);
+    expect(subqueries("remaining_balance")).toBe(1);
+  });
+
+  test("the cheap fields add no subquery at all", () => {
+    for (const field of [
+      "end_date",
+      "attachment_downloads",
+      "package_group_id",
+    ] as const) {
+      assert(
+        !attendeeColumns("inner", [field], "attendee").includes("(SELECT"),
+      );
+    }
+  });
+});
+
+describe("attendee filter and order SQL", () => {
+  test("uses the requested join keyword", () => {
+    assertStringIncludes(
+      attendeeFromWhere("inner", { attendeeIds: [1] }).from,
+      "FROM attendees AS attendee JOIN listing_attendees AS listingAttendee",
+    );
+    assertStringIncludes(
+      attendeeFromWhere("left", { attendeeIds: [1] }).from,
+      "FROM attendees AS attendee LEFT JOIN listing_attendees AS listingAttendee",
+    );
+  });
+
+  test("defaults to the regular-attendee kind filter", () => {
+    assertStringIncludes(
+      attendeeFromWhere("inner", {}).from,
+      `attendee.kind = '${ATTENDEE_KIND}'`,
+    );
+  });
+
+  test("each kind filter emits the matching predicate", () => {
+    assertStringIncludes(
+      attendeeFromWhere("inner", { kind: "servicing" }).from,
+      `attendee.kind = '${SERVICING_KIND}'`,
+    );
+    assertStringIncludes(
+      attendeeFromWhere("inner", { kind: "attendee-or-servicing" }).from,
+      `attendee.kind IN ('${ATTENDEE_KIND}', '${SERVICING_KIND}')`,
+    );
+  });
+
+  test("a single id is a one-element IN list — one path for one or many", () => {
+    const one = attendeeFromWhere("left", { attendeeIds: [9] });
+    assertStringIncludes(one.from, "attendee.id IN (?)");
+    expect(one.args).toEqual([9]);
+
+    const oneListing = attendeeFromWhere("inner", { listingIds: [5] });
+    assertStringIncludes(oneListing.from, "listingAttendee.listing_id IN (?)");
+    expect(oneListing.args).toEqual([5]);
+  });
+
+  test("an empty id list matches nothing via IN (NULL), never invalid IN ()", () => {
+    const attendees = attendeeFromWhere("inner", { attendeeIds: [] });
+    assertStringIncludes(attendees.from, "attendee.id IN (NULL)");
+    assert(!attendees.from.includes("IN ()"));
+    expect(attendees.args).toEqual([]);
+
+    const listings = attendeeFromWhere("inner", { listingIds: [] });
+    assertStringIncludes(listings.from, "listingAttendee.listing_id IN (NULL)");
+    assert(!listings.from.includes("IN ()"));
+    expect(listings.args).toEqual([]);
+  });
+
+  test("an id list expands to one placeholder each, in order", () => {
+    const ids = attendeeFromWhere("inner", { attendeeIds: [3, 1, 2] });
+    assertStringIncludes(ids.from, "attendee.id IN (?, ?, ?)");
+    expect(ids.args).toEqual([3, 1, 2]);
+
+    const listings = attendeeFromWhere("inner", { listingIds: [7, 8] });
+    assertStringIncludes(listings.from, "listingAttendee.listing_id IN (?, ?)");
+    expect(listings.args).toEqual([7, 8]);
+  });
+
+  test("realLinesOnly adds the quantity guard only when true", () => {
+    assertStringIncludes(
+      attendeeFromWhere("inner", { realLinesOnly: true }).from,
+      "listingAttendee.quantity > 0",
+    );
+    assert(
+      !attendeeFromWhere("inner", { realLinesOnly: false }).from.includes(
+        "listingAttendee.quantity > 0",
+      ),
+    );
+  });
+
+  test("upcomingFrom keeps undated rows and binds the date", () => {
+    const { from, args } = attendeeFromWhere("inner", {
+      upcomingFrom: "2026-07-12",
+    });
+    assertStringIncludes(
+      from,
+      "(listingAttendee.start_at IS NULL OR DATE(listingAttendee.start_at) >= ?)",
+    );
+    expect(args).toEqual(["2026-07-12"]);
+  });
+
+  test("dailyRange adds the listings join and binds before, then after", () => {
+    const { from, args } = attendeeFromWhere("inner", {
+      dailyRange: {
+        after: "2026-07-12T00:00:00Z",
+        before: "2026-07-13T00:00:00Z",
+      },
+    });
+    expectIncludesAll(from, [
+      "JOIN listings AS listing ON listingAttendee.listing_id = listing.id",
+      "listing.listing_type = 'daily'",
+      "listingAttendee.start_at < ?",
+      "listingAttendee.end_at > ?",
+    ]);
+    // before fills the `< ?` bound, after the `> ?` bound.
+    expect(args).toEqual(["2026-07-13T00:00:00Z", "2026-07-12T00:00:00Z"]);
+  });
+
+  test("an attendee-id subquery is inlined with its own args", () => {
+    const { from, args } = attendeeFromWhere("left", {
+      attendeeIdsSubquery: {
+        args: [10],
+        sql: "SELECT newest.id FROM attendees AS newest LIMIT ?",
+      },
+    });
+    assertStringIncludes(
+      from,
+      "attendee.id IN (SELECT newest.id FROM attendees AS newest LIMIT ?)",
+    );
+    expect(args).toEqual([10]);
+  });
+
+  test("mixed filters bind their args in clause order", () => {
+    const { args } = attendeeFromWhere("inner", {
+      listingIds: [1, 2],
+      realLinesOnly: true,
+      upcomingFrom: "2026-07-12",
+    });
+    // kind (no arg), attendeeIds (none), listingIds [1,2], realLinesOnly (none),
+    // upcomingFrom ["2026-07-12"].
+    expect(args).toEqual([1, 2, "2026-07-12"]);
+  });
+
+  test("each named order maps to its ORDER BY, and omitting order omits the clause", () => {
+    const cases: [AttendeeOrder, string][] = [
+      ["created_desc", "ORDER BY attendee.created DESC"],
+      ["id_asc", "ORDER BY attendee.id ASC, listingAttendee.listing_id ASC"],
+      ["id_desc", "ORDER BY attendee.id DESC, listingAttendee.listing_id ASC"],
+      ["listing_asc", "ORDER BY listingAttendee.listing_id ASC"],
+      [
+        "start_then_listing",
+        "ORDER BY listingAttendee.start_at, listingAttendee.listing_id",
+      ],
+      [
+        "upcoming",
+        "ORDER BY COALESCE(listingAttendee.start_at, attendee.created), attendee.id",
+      ],
+    ];
+    for (const [order, sql] of cases) {
+      assertStringIncludes(
+        attendeeFromWhere("inner", { attendeeIds: [1] }, order).from,
+        sql,
+      );
+    }
+    assert(
+      !attendeeFromWhere("inner", { attendeeIds: [1] }).from.includes(
+        "ORDER BY",
+      ),
+    );
+  });
+});
+
+describe("attendee SELECT — exact generated SQL", () => {
+  // These pin the whole generated string, not a fragment. The test catches
+  // any change to a column, separator, COALESCE wrapper, ledger subquery,
+  // WHERE clause, join keyword, or ORDER BY. A fragment match cannot see a
+  // dropped separator or an inserted token.
+
+  test("the full field set produces the exact column list (all three ledger subqueries inline)", () => {
+    const chainReturned =
+      "NOT EXISTS(SELECT 1 FROM booking_tax_assessments AS assessment JOIN transfers AS chain ON chain.event_group = assessment.event_group WHERE assessment.booking_group = listingAttendee.ledger_event_group AND chain.kind NOT GLOB 'refund_*' AND NOT EXISTS(SELECT 1 FROM transfers AS returned WHERE returned.kind GLOB 'refund_*' AND returned.reverses_group = chain.event_group AND returned.amount = chain.amount AND returned.source_type = chain.dest_type AND returned.source_id = chain.dest_id AND returned.dest_type = chain.source_type AND returned.dest_id = chain.source_id))";
+    const saleTotal =
+      "(SELECT COALESCE(SUM(CASE WHEN source_type = 'attendee' AND source_id = CAST(listingAttendee.attendee_id AS TEXT) AND dest_type = 'revenue' AND dest_id = CAST(listingAttendee.listing_id AS TEXT) THEN amount WHEN dest_type = 'attendee' AND dest_id = CAST(listingAttendee.attendee_id AS TEXT) AND source_type = 'revenue' AND source_id = CAST(listingAttendee.listing_id AS TEXT) THEN -amount ELSE 0 END), 0) FROM transfers WHERE (kind = 'sale' AND source_type = 'attendee' AND source_id = CAST(listingAttendee.attendee_id AS TEXT) AND dest_type = 'revenue' AND dest_id = CAST(listingAttendee.listing_id AS TEXT) AND event_group = listingAttendee.ledger_event_group) OR (kind = 'tax_sale' AND event_group IN (SELECT assessment.event_group FROM booking_tax_assessments AS assessment WHERE assessment.booking_group = listingAttendee.ledger_event_group) AND ((source_type = 'attendee' AND source_id = CAST(listingAttendee.attendee_id AS TEXT) AND dest_type = 'revenue' AND dest_id = CAST(listingAttendee.listing_id AS TEXT)) OR (dest_type = 'attendee' AND dest_id = CAST(listingAttendee.attendee_id AS TEXT) AND source_type = 'revenue' AND source_id = CAST(listingAttendee.listing_id AS TEXT)))))";
+    expect(attendeeColumns("inner", ATTENDEE_FIELDS, "attendee")).toBe(
+      "attendee.id, attendee.created, attendee.kind, attendee.ticket_token_index, attendee.pii_blob, attendee.status_id, attendee.split_logistics_agents, attendee.email_pending, attendee.webhooks_pending, (CASE WHEN attendee.email_pending > 0 THEN EXISTS (\n  SELECT 1 FROM listing_attendees AS owed_line\n  JOIN listings AS owed_listing ON owed_listing.id = owed_line.listing_id\n  WHERE owed_line.attendee_id = attendee.id\n    AND owed_line.quantity > 0\n    AND EXISTS (\n      WITH RECURSIVE owed_field(rest, field) AS (\n        SELECT owed_listing.fields || ',', ''\n        UNION ALL\n        SELECT substr(rest, instr(rest, ',') + 1),\n               trim(substr(rest, 1, instr(rest, ',') - 1), ' ' || CHAR(160))\n        FROM owed_field\n        WHERE instr(rest, ',') > 0\n      )\n      SELECT 1 FROM owed_field WHERE field = 'email'\n    )\n) ELSE 0 END) as email_owed, " +
+        `listingAttendee.listing_id, SUBSTR(listingAttendee.start_at, 1, 10) as date, listingAttendee.quantity, listingAttendee.checked_in, -(SELECT COALESCE(SUM(CASE WHEN dest_type = 'attendee' AND dest_id = CAST(attendee.id AS TEXT) THEN amount WHEN source_type = 'attendee' AND source_id = CAST(attendee.id AS TEXT) THEN -amount ELSE 0 END), 0) FROM transfers WHERE dest_type = 'attendee' AND dest_id = CAST(attendee.id AS TEXT) OR source_type = 'attendee' AND source_id = CAST(attendee.id AS TEXT)) AS remaining_balance, (SELECT CASE WHEN EXISTS(SELECT 1 FROM transfers WHERE kind = 'sale' AND source_type = 'attendee' AND source_id = CAST(listingAttendee.attendee_id AS TEXT) AND dest_type = 'revenue' AND dest_id = CAST(listingAttendee.listing_id AS TEXT) AND event_group = listingAttendee.ledger_event_group) THEN EXISTS(SELECT 1 FROM transfers WHERE kind = 'refund_sale' AND source_type = 'revenue' AND source_id = CAST(listingAttendee.listing_id AS TEXT) AND dest_type = 'attendee' AND dest_id = CAST(listingAttendee.attendee_id AS TEXT) AND reverses_group = listingAttendee.ledger_event_group) AND ${chainReturned} WHEN listingAttendee.quantity = 0 THEN EXISTS(SELECT 1 FROM transfers WHERE kind = 'refund_cash' AND source_type = 'attendee' AND source_id = CAST(listingAttendee.attendee_id AS TEXT)) WHEN listingAttendee.ledger_event_group = '' THEN 0 ELSE EXISTS(SELECT 1 FROM transfers WHERE kind GLOB 'refund_*' AND reverses_group = listingAttendee.ledger_event_group) AND NOT EXISTS(SELECT 1 FROM transfers AS unreturned WHERE kind = 'sale' AND source_type = 'attendee' AND source_id = CAST(listingAttendee.attendee_id AS TEXT) AND unreturned.dest_type = 'revenue' AND unreturned.event_group = listingAttendee.ledger_event_group AND NOT EXISTS(SELECT 1 FROM transfers AS returned WHERE returned.kind = 'refund_sale' AND source_type = 'revenue' AND source_id = CAST(unreturned.dest_id AS TEXT) AND dest_type = 'attendee' AND dest_id = CAST(listingAttendee.attendee_id AS TEXT) AND returned.reverses_group = listingAttendee.ledger_event_group)) AND ${chainReturned} END) AS refunded, COALESCE(CAST(${saleTotal} * (SELECT COALESCE(SUM(sibling.quantity), 0) FROM listing_attendees AS sibling WHERE sibling.attendee_id = listingAttendee.attendee_id AND sibling.listing_id = listingAttendee.listing_id AND sibling.ledger_event_group = listingAttendee.ledger_event_group AND sibling.id <= listingAttendee.id) / NULLIF((SELECT COALESCE(SUM(sibling.quantity), 0) FROM listing_attendees AS sibling WHERE sibling.attendee_id = listingAttendee.attendee_id AND sibling.listing_id = listingAttendee.listing_id AND sibling.ledger_event_group = listingAttendee.ledger_event_group), 0) AS INTEGER) - CAST(${saleTotal} * (SELECT COALESCE(SUM(sibling.quantity), 0) FROM listing_attendees AS sibling WHERE sibling.attendee_id = listingAttendee.attendee_id AND sibling.listing_id = listingAttendee.listing_id AND sibling.ledger_event_group = listingAttendee.ledger_event_group AND sibling.id < listingAttendee.id) / NULLIF((SELECT COALESCE(SUM(sibling.quantity), 0) FROM listing_attendees AS sibling WHERE sibling.attendee_id = listingAttendee.attendee_id AND sibling.listing_id = listingAttendee.listing_id AND sibling.ledger_event_group = listingAttendee.ledger_event_group), 0) AS INTEGER), 0) AS price_paid, SUBSTR(listingAttendee.end_at, 1, 10) as end_date, listingAttendee.attachment_downloads, listingAttendee.package_group_id`,
+    );
+  });
+
+  test("an empty field set under a LEFT join produces the exact core columns", () => {
+    expect(attendeeColumns("left", [], "attendee")).toBe(
+      "attendee.id, attendee.created, attendee.kind, attendee.ticket_token_index, attendee.pii_blob, attendee.status_id, attendee.split_logistics_agents, attendee.email_pending, attendee.webhooks_pending, (CASE WHEN attendee.email_pending > 0 THEN EXISTS (\n  SELECT 1 FROM listing_attendees AS owed_line\n  JOIN listings AS owed_listing ON owed_listing.id = owed_line.listing_id\n  WHERE owed_line.attendee_id = attendee.id\n    AND owed_line.quantity > 0\n    AND EXISTS (\n      WITH RECURSIVE owed_field(rest, field) AS (\n        SELECT owed_listing.fields || ',', ''\n        UNION ALL\n        SELECT substr(rest, instr(rest, ',') + 1),\n               trim(substr(rest, 1, instr(rest, ',') - 1), ' ' || CHAR(160))\n        FROM owed_field\n        WHERE instr(rest, ',') > 0\n      )\n      SELECT 1 FROM owed_field WHERE field = 'email'\n    )\n) ELSE 0 END) as email_owed, " +
+        "COALESCE(listingAttendee.listing_id, 0) as listing_id, SUBSTR(listingAttendee.start_at, 1, 10) as date, COALESCE(listingAttendee.quantity, 0) as quantity, COALESCE(listingAttendee.checked_in, 0) as checked_in",
+    );
+  });
+  test("a multi-filter read builds the exact FROM/WHERE/ORDER, AND-joined", () => {
+    expect(
+      attendeeFromWhere(
+        "inner",
+        { listingIds: [1, 2], realLinesOnly: true, upcomingFrom: "2026-07-12" },
+        "created_desc",
+      ).from,
+    ).toBe(
+      "FROM attendees AS attendee JOIN listing_attendees AS listingAttendee ON listingAttendee.attendee_id = attendee.id WHERE attendee.kind = 'attendee' AND listingAttendee.listing_id IN (?, ?) AND listingAttendee.quantity > 0 AND (listingAttendee.start_at IS NULL OR DATE(listingAttendee.start_at) >= ?) ORDER BY attendee.created DESC",
+    );
+  });
+
+  test("a single-attendee LEFT read omits ORDER BY entirely", () => {
+    expect(attendeeFromWhere("left", { attendeeIds: [1] }).from).toBe(
+      "FROM attendees AS attendee LEFT JOIN listing_attendees AS listingAttendee ON listingAttendee.attendee_id = attendee.id WHERE attendee.kind = 'attendee' AND attendee.id IN (?)",
+    );
+  });
+
+  test("a daily-range read adds the listings join and the daily guard", () => {
+    expect(
+      attendeeFromWhere(
+        "inner",
+        {
+          dailyRange: { after: "A", before: "B" },
+          kind: "attendee-or-servicing",
+          realLinesOnly: true,
+        },
+        "upcoming",
+      ).from,
+    ).toBe(
+      "FROM attendees AS attendee JOIN listing_attendees AS listingAttendee ON listingAttendee.attendee_id = attendee.id JOIN listings AS listing ON listingAttendee.listing_id = listing.id WHERE attendee.kind IN ('attendee', 'servicing') AND listingAttendee.quantity > 0 AND listing.listing_type = 'daily' AND listingAttendee.start_at < ? AND listingAttendee.end_at > ? ORDER BY COALESCE(listingAttendee.start_at, attendee.created), attendee.id",
+    );
+  });
+});
+
+describe("attendeeColumns owed scope", () => {
+  // A booking-scoped read constrains the owed-email rule to the row's own
+  // booking listing, after the ghost-line filter and before the fields
+  // match. An attendee-wide read carries no listing constraint.
+  test("a booking scope asks about the row's own listing", () => {
+    assertStringIncludes(
+      attendeeColumns("inner", [], "booking"),
+      "AND owed_line.quantity > 0\n" +
+        "    AND owed_line.listing_id = listingAttendee.listing_id\n" +
+        "    AND EXISTS (\n      WITH RECURSIVE owed_field(rest, field) AS (",
+    );
+  });
+
+  test("an attendee scope carries no listing constraint", () => {
+    assert(
+      !attendeeColumns("inner", [], "attendee").includes(
+        "owed_line.listing_id =",
+      ),
+    );
+  });
+});

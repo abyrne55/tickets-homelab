@@ -1,0 +1,159 @@
+import { join } from "node:path";
+import {
+  type IRunConfiguration,
+  loadConfiguration,
+  runCucumber,
+} from "@cucumber/cucumber/api";
+import type { Envelope } from "@cucumber/messages";
+import {
+  environmentTasks,
+  processEnvironment,
+} from "#scripts/environment-values.ts";
+import { projectRoot } from "#scripts/project-root.ts";
+import { readSpecCatalog } from "./catalog.ts";
+import { messageIssues } from "./messages.ts";
+import { shouldCheckUnusedSteps } from "./options.ts";
+import { specWorkerCount } from "./parallel.ts";
+import { SPEC_REPORT_DIR, SPEC_SUPPORT_GLOBS } from "./paths.ts";
+import { selectSpecCases } from "./selection.ts";
+import type { SpecCatalog } from "./types.ts";
+
+export interface RunSpecsOptions {
+  paths?: string[];
+  reports?: boolean;
+  tags?: string;
+}
+
+export interface SpecRunSummary {
+  success: boolean;
+}
+
+export interface SpecRunEnvironment {
+  env?: Record<string, string>;
+  reportDir: string;
+  support: string[];
+}
+
+interface CompleteRunSpecsOptions {
+  enforceUnused: boolean;
+  parallel: number;
+  paths: string[];
+  reports: boolean;
+  tags: string;
+}
+
+interface SpecRunControls {
+  beforeRun?: (catalog: SpecCatalog) => void | Promise<void>;
+  env?: Record<string, string>;
+  onSuccess?: (
+    messages: Envelope[],
+    catalog: SpecCatalog,
+  ) => void | Promise<void>;
+  parallel?: number;
+}
+
+/** A tag no Feature carries, so asking for it selects nothing at all. */
+const NO_MATCHING_CASE_TAG = "@__tickets_no_matching_case__";
+
+const DEFAULT_ENVIRONMENT: SpecRunEnvironment = {
+  reportDir: SPEC_REPORT_DIR,
+  support: SPEC_SUPPORT_GLOBS,
+};
+const withProcessEnvironment = environmentTasks(processEnvironment);
+const reportFormats = (reports: boolean, reportDir: string): string[] =>
+  reports
+    ? [
+        "progress",
+        `message:${join(reportDir, "cucumber.ndjson")}`,
+        `html:${join(reportDir, "cucumber.html")}`,
+        `junit:${join(reportDir, "cucumber.junit.xml")}`,
+      ]
+    : ["progress"];
+
+const cucumberConfiguration = async (
+  options: CompleteRunSpecsOptions,
+  environment: SpecRunEnvironment,
+): Promise<IRunConfiguration> => {
+  const { runConfiguration } = await loadConfiguration(
+    {
+      file: false,
+      provided: {
+        format: reportFormats(options.reports, environment.reportDir),
+        import: environment.support,
+        order: "defined",
+        parallel: options.parallel,
+        paths: options.paths,
+        publish: false,
+        retry: 0,
+        strict: true,
+        tags: options.tags,
+      },
+    },
+    { cwd: projectRoot },
+  );
+  return runConfiguration;
+};
+
+const prepareReports = async (reportDir: string): Promise<void> => {
+  try {
+    await Deno.remove(reportDir, { recursive: true });
+  } catch (error) {
+    if (!(error instanceof Deno.errors.NotFound)) throw error;
+  }
+  await Deno.mkdir(reportDir, { recursive: true });
+};
+
+const runEnvironment = (
+  environment: SpecRunEnvironment,
+  controls: SpecRunControls,
+): Record<string, string> | undefined => {
+  if (environment.env === undefined && controls.env === undefined) return;
+  return { ...environment.env, ...controls.env };
+};
+
+export const runSpecs = async (
+  options: RunSpecsOptions = {},
+  environment: SpecRunEnvironment = DEFAULT_ENVIRONMENT,
+  controls: SpecRunControls = {},
+): Promise<SpecRunSummary> => {
+  // Only a missing value takes the default, so an explicit one always wins.
+  const { paths = ["specs"], reports = true, tags = "" } = options;
+  if (reports) await prepareReports(environment.reportDir);
+  const catalog = await readSpecCatalog(paths);
+  await controls.beforeRun?.(catalog);
+  const selectedPaths = selectSpecCases(catalog, tags);
+  const {
+    parallel = specWorkerCount(
+      selectedPaths.length,
+      Deno.env.get("DENO_JOBS"),
+      navigator.hardwareConcurrency,
+    ),
+  } = controls;
+  const complete: CompleteRunSpecsOptions = {
+    enforceUnused: shouldCheckUnusedSteps(options),
+    parallel,
+    paths: selectedPaths.length > 0 ? selectedPaths : paths,
+    reports,
+    tags:
+      selectedPaths.length === 0 && options.tags !== undefined
+        ? NO_MATCHING_CASE_TAG
+        : "",
+  };
+  const messages: Envelope[] = [];
+  const result = await withProcessEnvironment(
+    runEnvironment(environment, controls),
+    async () =>
+      runCucumber(
+        await cucumberConfiguration(complete, environment),
+        { cwd: projectRoot },
+        (message) => messages.push(message),
+      ),
+  );
+  const issues = messageIssues(messages, complete.enforceUnused);
+  for (const issue of issues) console.error(issue);
+  const success = result.success && issues.length === 0;
+  if (success) await controls.onSuccess?.(messages, catalog);
+  return {
+    success,
+  };
+};

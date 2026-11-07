@@ -1,0 +1,220 @@
+import { expect } from "@std/expect";
+import { describe, it as test } from "@std/testing/bdd";
+import {
+  checkBookingRateLimit,
+  lockoutRetryAfter,
+  resolveCustomPrice,
+  resolvePositiveQuantity,
+  toFormParams,
+  withActiveListing,
+  withApiBody,
+  withSlugLoaded,
+} from "#routes/api/helpers.ts";
+import { FormParams } from "#shared/form-data.ts";
+import { MAX_BOOKING_ATTEMPTS } from "#shared/limits.ts";
+import { describeWithEnv } from "#test-utils/db.ts";
+import {
+  createTestListing,
+  deactivateTestListing,
+} from "#test-utils/db-helpers/listings.ts";
+import { withRequestContext } from "#test-utils/request-context.ts";
+
+const expectError = async (
+  result: unknown,
+  status: number,
+  error: string,
+): Promise<void> => {
+  expect(result).toBeInstanceOf(Response);
+  const response = result as Response;
+  expect(response.status).toBe(status);
+  expect(await response.json()).toEqual({ error });
+};
+
+describe("lockoutRetryAfter", () => {
+  test("rounds a partial second up to a whole Retry-After second", () => {
+    expect(lockoutRetryAfter(1500)).toBe("2");
+  });
+
+  test("keeps a lockout of exact seconds unchanged", () => {
+    expect(lockoutRetryAfter(1000)).toBe("1");
+  });
+
+  test("keeps the default ten-minute lockout at whole seconds", () => {
+    expect(lockoutRetryAfter(600_000)).toBe("600");
+  });
+});
+
+describe("resolvePositiveQuantity", () => {
+  test("requires the quantity field", async () => {
+    await expectError(resolvePositiveQuantity({}), 400, "Quantity is required");
+  });
+
+  test("rejects a malformed or fractional quantity", async () => {
+    for (const quantity of ["not-a-number", "abc", "2x", "2.5"]) {
+      await expectError(
+        resolvePositiveQuantity({ quantity }),
+        400,
+        "Quantity must be a whole number of 1 or more",
+      );
+    }
+  });
+
+  test("rejects a null or non-scalar quantity", async () => {
+    // A JSON null stringifies to "null" and an array to its first element,
+    // so neither may reach the numeric parse.
+    for (const quantity of [null, [3], { quantity: 3 }, true]) {
+      await expectError(
+        resolvePositiveQuantity({ quantity }),
+        400,
+        "Quantity must be a whole number of 1 or more",
+      );
+    }
+  });
+
+  test("returns a positive quantity", () => {
+    expect(resolvePositiveQuantity({ quantity: 3 })).toBe(3);
+  });
+
+  test("rejects an explicit zero", async () => {
+    await expectError(
+      resolvePositiveQuantity({ quantity: 0 }),
+      400,
+      "Quantity must be at least 1",
+    );
+  });
+});
+
+describeWithEnv("API booking helper inputs", { db: true }, () => {
+  test("loads only an active listing and returns the exact missing error", async () => {
+    const active = await createTestListing({ name: "Active listing" });
+    const inactive = await createTestListing({ name: "Inactive listing" });
+    await deactivateTestListing(inactive.id);
+    const wrapped = withActiveListing((_request, listing) =>
+      Promise.resolve(Response.json({ id: listing.id })),
+    );
+
+    const activeResponse = await wrapped(new Request("http://localhost"), {
+      slug: active.slug,
+    });
+    expect(await activeResponse.json()).toEqual({ id: active.id });
+    await expectError(
+      await wrapped(new Request("http://localhost"), { slug: inactive.slug }),
+      404,
+      "Listing not found",
+    );
+    await expectError(
+      await wrapped(new Request("http://localhost"), { slug: "missing" }),
+      404,
+      "Listing not found",
+    );
+  });
+
+  test("parses a custom price only for a pay-more listing", async () => {
+    const fixed = await createTestListing({ unitPrice: 1000 });
+    const flexible = await createTestListing({
+      canPayMore: true,
+      maxPrice: 2000,
+      unitPrice: 1000,
+    });
+    const form = new FormParams({ customPrice: "15.00" });
+
+    expect(resolveCustomPrice(fixed, form)).toBeUndefined();
+    expect(resolveCustomPrice(flexible, form)).toBe(1500);
+  });
+
+  test("returns the custom-price validation message", async () => {
+    const listing = await createTestListing({
+      canPayMore: true,
+      maxPrice: 2000,
+      unitPrice: 1000,
+    });
+    const result = resolveCustomPrice(
+      listing,
+      new FormParams({ customPrice: "9.99" }),
+    );
+
+    expect(result).toBeInstanceOf(Response);
+    expect(await (result as Response).json()).toEqual({
+      error: "Price must be at least the minimum ticket price",
+    });
+  });
+
+  test("records attempts per client IP and returns the exact rate-limit response", async () => {
+    await withRequestContext(
+      async () => {
+        for (let attempt = 0; attempt < MAX_BOOKING_ATTEMPTS; attempt++) {
+          expect(await checkBookingRateLimit()).toBeNull();
+        }
+      },
+      { clientIp: "192.0.2.25" },
+    );
+    expect(
+      await withRequestContext(() => checkBookingRateLimit(), {
+        clientIp: "192.0.2.26",
+      }),
+    ).toBeNull();
+    const limited = await withRequestContext(() => checkBookingRateLimit(), {
+      clientIp: "192.0.2.25",
+    });
+    expect(limited).toBeInstanceOf(Response);
+    expect((limited as Response).status).toBe(429);
+    expect((limited as Response).headers.get("retry-after")).toBe("600");
+    expect(await (limited as Response).json()).toEqual({
+      error: "Too many booking attempts. Please try again later.",
+    });
+  });
+});
+
+describe("API helper composition", () => {
+  test("passes a valid body to its handler", async () => {
+    const response = await withApiBody(
+      new Request("http://localhost/api", {
+        body: '{"quantity":2}',
+        method: "POST",
+      }),
+      (body) => Promise.resolve(Response.json({ body }, { status: 201 })),
+    );
+
+    expect(response.status).toBe(201);
+    expect(await response.json()).toEqual({ body: { quantity: 2 } });
+  });
+
+  test("passes a loader response through without calling the handler", async () => {
+    const failure = Response.json({ error: "Gone" }, { status: 404 });
+    let handled = false;
+    const wrapped = withSlugLoaded(() => Promise.resolve(failure))(() => {
+      handled = true;
+      return Promise.resolve(Response.json({ ok: true }));
+    });
+
+    expect(
+      await wrapped(new Request("http://localhost"), { slug: "gone" }),
+    ).toBe(failure);
+    expect(handled).toBe(false);
+  });
+
+  test("passes the loaded value to the handler", async () => {
+    const wrapped = withSlugLoaded((slug: string) =>
+      Promise.resolve({ slug: `${slug}-loaded` }),
+    )((_request, loaded) => Promise.resolve(Response.json({ loaded })));
+
+    const response = await wrapped(new Request("http://localhost"), {
+      slug: "item",
+    });
+    expect(await response.json()).toEqual({ loaded: { slug: "item-loaded" } });
+  });
+
+  test("converts present values to form strings", () => {
+    const params = toFormParams({
+      count: 2,
+      empty: null,
+      enabled: false,
+      missing: undefined,
+    });
+
+    expect([...params.entries()]).toEqual([
+      ["count", "2"],
+      ["enabled", "false"],
+    ]);
+  });
+});

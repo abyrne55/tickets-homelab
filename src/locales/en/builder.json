@@ -1,0 +1,15 @@
+{
+  "builder.create_new_site": "Create new site",
+  "builder.create_description": "This will create a new Tickets instance on your chosen hosting provider, copy host configuration, and configure the database.",
+  "builder.available_for_assignment": "Available for assignment",
+  "builder.available_for_assignment_help": "Make this site available for automatic assignment when a ticket is purchased",
+  "builder.build_site_button": "Build site",
+  "builder.no_sites_yet": "No sites have been built yet.",
+  "builder.table_url": "URL",
+  "builder.table_built": "Built",
+  "builder.site_builder_title": "Site builder",
+  "builder.built_sites_title": "Built sites",
+  "builder.db_connection_failed": "Database connection failed: {error}",
+  "builder.deno_deploy_not_configured": "Deno Deploy is not configured",
+  "builder.site_created": "Site \"{name}\" created successfully at {url}"
+}

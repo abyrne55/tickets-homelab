@@ -1,0 +1,491 @@
+import { logActivities } from "#db/activity-log.ts";
+import {
+  type ClaimedNotificationSide,
+  type PendingNotificationSide,
+  restoreClaimedNotificationFlags,
+} from "#db/attendees/notification-flags.ts";
+import type { WebhookBookingSource } from "#db/contact-tokens.ts";
+import { settings } from "#db/settings.ts";
+import { flatMap, mapNotNullish, unique } from "#fp";
+import type { FreeTextAnswers } from "#shared/email/answers.ts";
+import {
+  buyerConfirmationAttempted,
+  type RegistrationEmailResult,
+  registrationEmailDelivery,
+  sendRegistrationEmails,
+} from "#shared/email/registration.ts";
+import type { EmailEntry } from "#shared/email.ts";
+import { fetchText, ResponseBodyTooLargeError } from "#shared/fetch.ts";
+import { bestEffort, ErrorCode, logError } from "#shared/logger.ts";
+import { addPendingWork } from "#shared/pending-work.ts";
+import {
+  loadRegistrationPackageFacts,
+  RegistrationDeliveryError,
+  type RegistrationDeliveryResult,
+  type RegistrationNotification,
+  type RegistrationPackageFacts,
+  waitForRegistrationDeliveries,
+} from "#shared/registration-package-facts.ts";
+import { assignAndNotifyBuiltSites } from "#shared/site-assignment.ts";
+import { isSafeServerFetchUrl } from "#shared/url-safety.ts";
+import {
+  type ChosenSides,
+  selectedSides,
+  settleFlagOwningSend,
+} from "#shared/webhook/flag-settlement.ts";
+import {
+  recordRegistrationDeliveryFailure,
+  reportRegistrationDeliveryError,
+} from "#shared/webhook/report.ts";
+import {
+  applyRenewalsForEntries,
+  buildWebhookPayload,
+  type RegistrationEntry,
+  type WebhookPayload,
+} from "#shared/webhook.ts";
+
+export type WebhookDelivery =
+  | { delivered: true }
+  | {
+      delivered: false;
+      reason: "oversized_response" | "rejected" | "transport" | "unsafe_url";
+    };
+
+const MAX_REGISTRATION_WEBHOOK_URLS = 16;
+const MAX_REGISTRATION_WEBHOOK_RESPONSE_BYTES = 64 * 1024;
+const REGISTRATION_WEBHOOK_TIMEOUT_MS = 10_000;
+
+/** Send one direct webhook request without blocking registration on failure. */
+export const sendWebhook = async (
+  webhookUrl: string,
+  payload: WebhookPayload,
+): Promise<WebhookDelivery> => {
+  if (!isSafeServerFetchUrl(webhookUrl)) {
+    return { delivered: false, reason: "unsafe_url" };
+  }
+  try {
+    const { ok } = await fetchText(
+      webhookUrl,
+      {
+        body: JSON.stringify(payload),
+        headers: { "Content-Type": "application/json" },
+        method: "POST",
+        redirect: "manual",
+        signal: AbortSignal.timeout(REGISTRATION_WEBHOOK_TIMEOUT_MS),
+      },
+      MAX_REGISTRATION_WEBHOOK_RESPONSE_BYTES,
+    );
+    return ok ? { delivered: true } : { delivered: false, reason: "rejected" };
+  } catch (error) {
+    if (error instanceof ResponseBodyTooLargeError) {
+      return { delivered: false, reason: "oversized_response" };
+    }
+    if (
+      !(error instanceof TypeError) &&
+      !(error instanceof DOMException && error.name === "TimeoutError")
+    ) {
+      throw error;
+    }
+    return { delivered: false, reason: "transport" };
+  }
+};
+
+/** The distinct registration webhook addresses the entries' listings carry.
+ * This is the check that says a re-send has a webhook side to offer. */
+export const registrationWebhookUrls = (
+  entries: RegistrationEntry[],
+): string[] =>
+  unique(
+    mapNotNullish(
+      (entry: RegistrationEntry) => entry.listing.webhook_url || null,
+    )(entries),
+  );
+
+/** Send one consolidated payload to each distinct registration webhook. */
+export const sendRegistrationWebhooks: RegistrationNotification<
+  RegistrationEntry
+> = async (entries, currency, source, suppliedFacts) => {
+  const webhookUrls = registrationWebhookUrls(entries);
+  if (webhookUrls.length === 0) return { failed: false };
+  if (webhookUrls.length > MAX_REGISTRATION_WEBHOOK_URLS) {
+    return { failed: true };
+  }
+
+  const facts = suppliedFacts ?? (await loadRegistrationPackageFacts(entries));
+  const payload = buildWebhookPayload(
+    entries,
+    currency,
+    source,
+    facts.pricingByGroup,
+  );
+  return await waitForRegistrationDeliveries(
+    webhookUrls.map((url) => sendWebhook(url, payload)),
+  );
+};
+
+type CompletedRegistrationDelivery = RegistrationDeliveryResult & {
+  errors: readonly unknown[];
+};
+
+const completedRegistrationDelivery = (
+  result: PromiseSettledResult<RegistrationDeliveryResult>,
+): CompletedRegistrationDelivery => {
+  if (result.status === "fulfilled") {
+    return { ...result.value, errors: [] };
+  }
+  return result.reason instanceof RegistrationDeliveryError
+    ? { errors: result.reason.reasons, failed: result.reason.failed }
+    : { errors: [result.reason], failed: false };
+};
+
+/** Deliver the manual add's webhooks and report a failed send the same way the
+ * booking path does. Never throws: a failed webhook must not fail the save. */
+const deliverManualAddWebhooks = async (
+  entries: EmailEntry[],
+): Promise<void> => {
+  try {
+    const { failed } = await sendRegistrationWebhooks(
+      entries,
+      settings.currency,
+      "admin",
+    );
+    if (failed) await recordRegistrationDeliveryFailure();
+  } catch {
+    // A dead webhook endpoint is normal operation. The report is the
+    // documented behavior, and the save stands.
+    await reportRegistrationDeliveryError(true);
+  }
+};
+
+/** Queue only the registration webhooks for attendees an admin added by hand —
+ * no buyer email and no registration activity line. */
+export const queueManualAddWebhooks = (entries: EmailEntry[]): void => {
+  addPendingWork(deliverManualAddWebhooks(entries));
+};
+
+/** The attendees whose pending flags a send owns. */
+type FlagOwningAttendees = readonly number[] | undefined;
+
+/** The outstanding sides a recovery claimed. */
+type RecoveredSides = readonly ClaimedNotificationSide[] | undefined;
+
+/** One registration send the queue carries, and the flags its sends own. */
+type RegistrationSend = {
+  entries: EmailEntry[];
+  currency: string;
+  source: WebhookBookingSource;
+  packageFacts?: RegistrationPackageFacts | undefined;
+  freeTexts?: FreeTextAnswers | undefined;
+  clearPendingFlagsFor?: FlagOwningAttendees;
+  recoverSides?: RecoveredSides;
+  /** The sides a manual press chose. When set, it alone decides what this
+   * send attempts. The claimed sides it holds decide what settles. */
+  sides?: ChosenSides | undefined;
+};
+
+/** Which sides this send will attempt. Reading the email setup can reject
+ * (an unknown stored provider). The claim is a lease for sends that never
+ * run. A refusal here releases it and reports. The flags keep saying what
+ * is still owed. */
+const attemptedSides = async (
+  send: RegistrationSend,
+  sides: Record<PendingNotificationSide, boolean>,
+): Promise<{ email: boolean; webhooks: boolean }> => {
+  const webhooks =
+    Boolean(sides.webhooks) && registrationWebhookUrls(send.entries).length > 0;
+  try {
+    return {
+      email: Boolean(sides.email) && buyerConfirmationAttempted(send.entries),
+      webhooks,
+    };
+  } catch (error) {
+    if (
+      send.recoverSides !== undefined &&
+      send.clearPendingFlagsFor !== undefined
+    ) {
+      try {
+        await restoreClaimedNotificationFlags(
+          send.clearPendingFlagsFor[0]!,
+          send.recoverSides,
+        );
+      } catch (restoreError) {
+        // A restore that itself fails is logged with its name. The
+        // original refusal is still the error this boundary throws, so
+        // the release never masks what the sends died of.
+        await logError({
+          code: ErrorCode.DB_QUERY,
+          detail: `A recovery's flag restore failed while the delivery was already refused: ${String(restoreError)}`,
+        });
+      }
+    }
+    await reportRegistrationDeliveryError(
+      send.clearPendingFlagsFor === undefined,
+    );
+    throw error;
+  }
+};
+
+/** Report beside the settled claimed flags: the error report when the
+ * channels raised errors, and the failure activity when no flag
+ * represents a refusal. */
+const reportBesideClaimedFlags = async (
+  hasErrors: boolean,
+  ownerFailureUnrepresented: boolean,
+  forcedRefusalUnrepresented: boolean,
+): Promise<void> => {
+  if (hasErrors || ownerFailureUnrepresented) {
+    await reportRegistrationDeliveryError(
+      ownerFailureUnrepresented || forcedRefusalUnrepresented,
+    );
+  } else if (forcedRefusalUnrepresented) {
+    await recordRegistrationDeliveryFailure();
+  }
+};
+
+const sendRegistrationNotifications = async (
+  send: RegistrationSend,
+): Promise<void> => {
+  const { entries, currency } = send;
+  const sides = selectedSides(send.recoverSides, send.sides);
+  // A send that had nothing to attempt — no email config or buyer address,
+  // no webhook URL — reports `failed: false`. That is not an acceptance: the
+  // far side saw nothing, so it must not clear the flag that says a send is
+  // owed. The email flag is the buyer's confirmation. The owner's admin copy
+  // alone is a different message and never clears it.
+  const { email: emailAttempted, webhooks: webhooksAttempted } =
+    await attemptedSides(send, sides);
+  const skippedDelivery = (): RegistrationDeliveryResult => ({ failed: false });
+  // A skipped email side is a hard non-attempt: a recovery that did not
+  // claim the buyer's confirmation must never queue it.
+  const skippedEmailDelivery = (): RegistrationEmailResult => ({
+    buyerFailed: false,
+    failed: false,
+    ownerFailed: false,
+  });
+  const [webhookResult, emailResult] = await Promise.allSettled([
+    sides.webhooks
+      ? sendRegistrationWebhooks(
+          entries,
+          currency,
+          send.source,
+          send.packageFacts,
+        )
+      : Promise.resolve(skippedDelivery()),
+    sides.email
+      ? sendRegistrationEmails(
+          entries,
+          currency,
+          send.packageFacts,
+          send.freeTexts,
+        )
+      : Promise.resolve(skippedEmailDelivery()),
+  ]);
+  const webhookDelivery = completedRegistrationDelivery(webhookResult);
+  const emailDelivery = completedRegistrationDelivery(emailResult);
+  const deliveries = [webhookDelivery, emailDelivery];
+  const errors = flatMap((delivery: CompletedRegistrationDelivery) => [
+    ...delivery.errors,
+  ])(deliveries);
+  // A forced side the send's claim never held has no flag to represent its
+  // refusal. A claimed side's refusal raises its badge back. An unclaimed
+  // side's refusal is otherwise silent. The booking paths never choose
+  // sides, so they keep their own reporting.
+  const refusedWithoutClaim = (
+    delivery: CompletedRegistrationDelivery,
+    side: PendingNotificationSide,
+  ): boolean =>
+    delivery.failed &&
+    send.sides !== undefined &&
+    (send.recoverSides === undefined ||
+      !send.recoverSides.some((one) => one.side === side));
+  const forcedRefusalUnrepresented =
+    refusedWithoutClaim(webhookDelivery, "webhooks") ||
+    refusedWithoutClaim(emailDelivery, "email");
+  if (send.clearPendingFlagsFor !== undefined) {
+    const ownerFailureUnrepresented = await settleFlagOwningSend(
+      send.clearPendingFlagsFor,
+      { email: emailAttempted, webhooks: webhooksAttempted },
+      webhookResult,
+      emailResult,
+      send.recoverSides,
+    );
+    await reportBesideClaimedFlags(
+      errors.length > 0,
+      ownerFailureUnrepresented,
+      forcedRefusalUnrepresented,
+    );
+  } else if (errors.length > 0) {
+    await reportRegistrationDeliveryError(true);
+  } else if (deliveries.some(({ failed }) => failed)) {
+    await recordRegistrationDeliveryFailure();
+  }
+  if (errors.length > 0) throw errors[0];
+};
+
+const queueRegistrationNotifications = async (
+  entries: EmailEntry[],
+  currency: string,
+  source: WebhookBookingSource,
+  suppliedPackageFacts?: RegistrationPackageFacts,
+  freeTexts?: FreeTextAnswers,
+  clearPendingFlagsFor?: FlagOwningAttendees,
+  recoverSides?: RecoveredSides,
+  sides?: ChosenSides,
+): Promise<void> => {
+  let packageFacts: RegistrationPackageFacts | undefined;
+  try {
+    const needsPackageFacts =
+      registrationWebhookUrls(entries).length > 0 ||
+      registrationEmailDelivery(entries) !== null;
+    packageFacts = needsPackageFacts
+      ? (suppliedPackageFacts ?? (await loadRegistrationPackageFacts(entries)))
+      : suppliedPackageFacts;
+  } catch (error) {
+    // The claim is a lease for sends that never ran. A preparation failure
+    // before the send starts releases it, so the flags keep saying what is
+    // still owed. A recovery claims one attendee. A failed restore leaves
+    // the lease held and is logged, but it must not replace the preparation
+    // failure as the reason this press failed.
+    if (recoverSides !== undefined && clearPendingFlagsFor !== undefined) {
+      await bestEffort(
+        "Restoring a recovery's claimed flags failed",
+        async () => {
+          await restoreClaimedNotificationFlags(
+            clearPendingFlagsFor[0]!,
+            recoverSides,
+          );
+        },
+      );
+    }
+    await reportRegistrationDeliveryError(clearPendingFlagsFor === undefined);
+    throw error;
+  }
+  addPendingWork(
+    sendRegistrationNotifications({
+      clearPendingFlagsFor,
+      currency,
+      entries,
+      freeTexts,
+      packageFacts,
+      recoverSides,
+      sides,
+      source,
+    }),
+  );
+};
+
+/** The activity line a registration writes: one per booked listing. */
+export const registeredActivityMessage = (listingName: string): string =>
+  `Attendee registered for '${listingName}'`;
+
+/** Report background work that died after a booking was already paid for.
+ * The pending-work queue settles rejections silently. Without this, the
+ * buyer keeps the ticket. The operator never learns the site or its credit
+ * was lost. */
+const reportAfterBookingFailure =
+  (detail: string) =>
+  (error: unknown): void => {
+    logError({ code: ErrorCode.SITE_ASSIGNMENT, detail, error });
+  };
+
+/** What a booking passes to its notification queue. `source` is required, so
+ * every booking path states how the booking was made. Everything else is
+ * optional: the plaintext free-text answers only the caller can hold, preloaded
+ * package facts, the entries the site assignment sees, the renewal token's
+ * hash, and the attendees whose pending-notification flags each send clears. */
+export interface NotifyRegistrationOptions {
+  /** The attendees whose pending-notification flags this queue's sends own:
+   * the email send clears `email_pending` when its far side accepts, the
+   * webhook send clears `webhooks_pending` the same way. A failed send leaves
+   * its flag up, so the flags carry the failure and no failure activity line
+   * is written. Callers whose bookings carry no flags leave this unset, and a
+   * failed send keeps writing the failure line it always did. */
+  clearPendingFlagsFor?: FlagOwningAttendees;
+  /** The buyer's typed free-text answers. The strings table keeps them sealed
+   * to the owner key, which no notification path can spend, so the booking
+   * request hands the plaintext it already holds to the confirmation email. */
+  freeTexts?: FreeTextAnswers | undefined;
+  /** Package facts the caller already loaded, so the queue does not re-read
+   * them. */
+  packageFacts?: RegistrationPackageFacts | undefined;
+  /** The outstanding sides a recovery claimed for its attendee. Only these
+   * sides queue, and a selected side whose send was refused or never ran has
+   * its flag raised back up: the claim flipped it down, and the flag must
+   * keep saying a send is owed. Leave this unset outside a recovery. */
+  recoverSides?: RecoveredSides;
+  /** The sides a manual press chose on the re-send page. When set, it alone
+   * decides which sides queue, so a press whose choice is not owed sends
+   * anyway: the customer-service resend. `recoverSides` then only says
+   * which of the chosen sides this send owns for flag settlement. Leave
+   * unset outside the re-send, where every side queues. */
+  sides?: ChosenSides | undefined;
+  /** Entries only the site assignment sees, in place of `entries`. The resend
+   * passes its refunded plan rows here, so a claim recorded on a line refunded
+   * later still serves the buyer. Defaults to `entries`. */
+  siteAssignmentEntries?: EmailEntry[] | undefined;
+  /** The hashed renewal token, when this booking came from /renew. */
+  siteTokenIndex?: string | undefined;
+  /** How the booking was made. "public" is a booking the person made online,
+   * "admin" is a booking an admin added by hand. "unknown" means no stored
+   * contact history holds the answer, which a re-send reports. */
+  source: WebhookBookingSource;
+}
+
+/** The shape both registration entry points share: the entries to notify and
+ * the caller's options. */
+type NotifyRegistration = (
+  entries: EmailEntry[],
+  options: NotifyRegistrationOptions,
+) => Promise<void>;
+
+/** Queue a registration's external sends: the confirmation email and the
+ * registration webhooks, then built-site assignment and renewal processing.
+ * The caller owns the registration's activity line, so a caller whose batch
+ * already wrote it queues without a second copy. */
+export const queueRegistrationSends: NotifyRegistration = async (
+  entries,
+  options,
+) => {
+  const currency = settings.currency;
+  addPendingWork(
+    queueRegistrationNotifications(
+      entries,
+      currency,
+      options.source,
+      options.packageFacts,
+      options.freeTexts,
+      options.clearPendingFlagsFor,
+      options.recoverSides,
+      options.sides,
+    ),
+  );
+  addPendingWork(
+    assignAndNotifyBuiltSites(options.siteAssignmentEntries ?? entries).catch(
+      reportAfterBookingFailure(
+        "Site assignment failed after a completed booking",
+      ),
+    ),
+  );
+  addPendingWork(
+    applyRenewalsForEntries(entries, options.siteTokenIndex).catch(
+      reportAfterBookingFailure(
+        "Renewal was not applied after a completed booking",
+      ),
+    ),
+  );
+};
+
+/** Record a registration and queue its external notifications. */
+export const logAndNotifyRegistration: NotifyRegistration = async (
+  entries,
+  options,
+) => {
+  await logActivities(
+    entries.map(({ listing, attendee }) => ({
+      attendeeId: attendee.id,
+      listing,
+      message: registeredActivityMessage(listing.name),
+    })),
+  );
+  await queueRegistrationSends(entries, options);
+};

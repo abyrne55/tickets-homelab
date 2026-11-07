@@ -1,0 +1,261 @@
+/**
+ * `news_posts` table operations — operator-written news posts.
+ *
+ * Cold-start efficiency is deliberate here, mirroring site-pages: the public
+ * nav only needs to know whether ANY post exists (one indexed `LIMIT 1` read,
+ * no decryption), the /news list and RSS feed read a **narrow projection**
+ * (never the large `content`/`meta_*` blobs), and the full row is decrypted
+ * one at a time, only for a single `/news/:slug` (or admin edit) view. Images
+ * attach through the shared `image_uses` table with item_type 'news'.
+ */
+
+import { decrypt, encrypt } from "#crypto/encryption.ts";
+import { hmacHash } from "#crypto/hashing.ts";
+import type { BlindIndex, EnvKeyEncrypted } from "#crypto/sealed.ts";
+import type { StoredRowOf } from "#db/chosen-columns.ts";
+import {
+  executeBatch,
+  insertedRowId,
+  queryAll,
+  resultRows,
+  type SqlStatement,
+  type TxScope,
+  useTransaction,
+} from "#db/client.ts";
+import { encryptedSlugSchema, idAndCreatedSchema } from "#db/common-schema.ts";
+import { encryptedNameAndSeoSchema } from "#db/content-columns.ts";
+import { defineIdTable } from "#db/define-id-table.ts";
+import { decryptTextOrEmpty } from "#db/encrypted-text.ts";
+import type { FillableRead } from "#db/fill-together.ts";
+import {
+  clearImageUsesForItemStatement,
+  imageFilenameSubqueries,
+  imageUseTargets,
+} from "#db/images.ts";
+import { readRows } from "#db/read.ts";
+import {
+  freshSlugIndexWrites,
+  unclaimedSlugCondition,
+} from "#db/slug-registry.ts";
+import type { SluggedContentInput } from "#db/slugged-content-input.ts";
+import { col } from "#db/table.ts";
+import { readById, readBySlugIndex } from "#db/table-reader.ts";
+import { fieldById, mapParallel } from "#fp";
+import { registerTableInvalidation } from "#shared/cache-registry.ts";
+import { decryptImageFilenameOrEmpty } from "#shared/images/broken.ts";
+import { nowIso } from "#shared/now.ts";
+import { requestCache } from "#shared/request-cache.ts";
+import type { Result } from "#shared/result.ts";
+import { slugify, uniqueSlugFromBase } from "#shared/slug.ts";
+import { isInstant } from "#shared/validation/timestamp.ts";
+import type {
+  ItemImageColumns,
+  NewsPost,
+  NewsPostCard,
+  NewsPostSummary,
+} from "#types";
+
+/** Create/update input (camelCase keys → snake_case columns). `created`, `slug`,
+ * and `slugIndex` are computed in {@link createNewsPost}, never posted by the
+ * admin form (only restores and tests pin an explicit `created`). */
+export type NewsPostInput = SluggedContentInput & {
+  created?: string;
+  snippet?: string;
+};
+
+/** Table with CRUD — all free text (including the slug) encrypted; `created`
+ * and `slug_index` stay plaintext so ordering and slug lookups never
+ * scan-and-decrypt. */
+export const newsPostsTable = defineIdTable<NewsPost, NewsPostInput>(
+  "news_posts",
+  {
+    ...encryptedNameAndSeoSchema(encrypt, decrypt),
+    ...encryptedSlugSchema(encrypt, decrypt),
+    ...idAndCreatedSchema(nowIso),
+    snippet: col.encryptedText(encrypt, decrypt),
+  },
+);
+
+const newsSummaryColumns = newsPostsTable.read.pick([
+  "id",
+  "created",
+  "slug",
+  "name",
+  "snippet",
+]);
+
+const newsNameColumns = newsPostsTable.read.pick(["id", "name"]);
+
+/** What the admin form provides: every editable column. The permalink is
+ * derived on create, never entered, so `slug`/`slugIndex`/`created` are out. */
+export type NewsPostWriteInput = Required<
+  Omit<NewsPostInput, "created" | "slug" | "slugIndex">
+>;
+
+const unclaimedNewsSlugCondition = (
+  slugIndex: BlindIndex,
+  excludeId?: number,
+) =>
+  unclaimedSlugCondition(slugIndex, [
+    {
+      ...(excludeId === undefined ? {} : { excludeId }),
+      table: "news_posts",
+    },
+  ]);
+
+/** The permalink base for a post: its created date (yyyy-MM-dd) and name,
+ * sluggified — e.g. `2026-07-06-big-launch`. Two same-day posts with the same
+ * name get a `-2`, `-3`, … suffix from {@link uniqueSlugFromBase}. */
+export const newsSlugBase = (created: string, name: string): string =>
+  slugify(`${created.slice(0, 10)}-${name}`);
+
+// The existence probe every public page's nav runs: one indexed LIMIT 1 read,
+// nothing decrypted. Request-scoped and auto-cleared on any news_posts write.
+const existenceStatement: SqlStatement = {
+  args: [],
+  sql: "SELECT id FROM news_posts LIMIT 1",
+};
+const existenceCache = requestCache(() =>
+  queryAll<{ id: number }>(existenceStatement.sql),
+);
+registerTableInvalidation(["news_posts"], existenceCache.invalidate);
+
+/** The existence probe as a read the nav can batch with its other small ones. */
+export const newsExistenceRead: FillableRead = {
+  fill: (result) => existenceCache.prime(resultRows<{ id: number }>(result)),
+  statement: existenceStatement,
+};
+
+/** Does at least one news post exist? (Drives the public News nav link.) */
+export const hasNewsPosts = async (): Promise<boolean> =>
+  (await existenceCache.getAll()).length > 0;
+
+/** A card row as stored: the sealed summary plus sealed image projections. */
+type SealedCardRow = StoredRowOf<
+  NewsPost,
+  typeof newsSummaryColumns.columns
+> & {
+  [K in keyof ItemImageColumns]: EnvKeyEncrypted | "";
+};
+
+/** Load the summary projection for every post, newest first: id, created,
+ * slug, name, snippet — no image reads or decrypts. Feeds the RSS feed and the
+ * admin list, which render no images. */
+export const getNewsPostSummaries = (): Promise<NewsPostSummary[]> =>
+  newsSummaryColumns.many({}, { order: "created DESC, id DESC" });
+
+/** Load the card projection for every post, newest first: the summary plus
+ * the post's first linked image — for the public /news list, the one reader
+ * that shows pictures. */
+export const getNewsPostCards = async (): Promise<NewsPostCard[]> => {
+  const rows = await readRows<SealedCardRow>({
+    columns: `${newsSummaryColumns.columnsSql("news_post")}, ${imageFilenameSubqueries("news", "news_post.id")}`,
+    from: "news_posts AS news_post",
+    order: "news_post.created DESC, news_post.id DESC",
+  });
+  return mapParallel(async (row: SealedCardRow) => ({
+    ...(await newsSummaryColumns.read(row)),
+    image_alt_text: await decryptTextOrEmpty(row.image_alt_text),
+    image_thumb_url: await decryptImageFilenameOrEmpty(
+      row.image_thumb_url,
+      `news post ${row.id} thumbnail image`,
+    ),
+    image_url: await decryptImageFilenameOrEmpty(
+      row.image_url,
+      `news post ${row.id} image`,
+    ),
+  }))(rows);
+};
+
+/** id → decrypted name for every post, newest first — the image library's
+ * link-target labels (nothing but the name decrypted). */
+export const getNewsPostNames = async (): Promise<Map<number, string>> => {
+  const rows = await newsNameColumns.many(
+    {},
+    { order: "created DESC, id DESC" },
+  );
+  return fieldById("name")(rows);
+};
+
+/** One full post (fully decrypted) by id — the admin single-post views.
+ * Null when absent. */
+export const getNewsPostById = readById(newsPostsTable);
+
+/** One full post (fully decrypted) by blind-index slug lookup — the public
+ * `/news/:slug` read. Null when absent. */
+export const getNewsPostBySlugIndex = readBySlugIndex(newsPostsTable.read);
+
+/** Create a post, stamping `created` now (the admin flow) or at a pinned time
+ * (tests/restore), and deriving its immutable `/news` permalink from that date
+ * and the name (unique within news_posts). */
+export const createNewsPost = async (
+  input: NewsPostWriteInput & { created?: string },
+  transaction?: TxScope,
+): Promise<NewsPost> => {
+  const created = input.created ?? nowIso();
+  // The permalink is built from this date and can never be rebuilt, so a caller
+  // that pins a date it made up gets an error rather than a broken /news link.
+  if (!isInstant(created)) {
+    throw new Error(`News post created is not a real timestamp: "${created}"`);
+  }
+  return useTransaction(transaction, async (tx) => {
+    const { slug, slugIndex } = await uniqueSlugFromBase({
+      base: newsSlugBase(created, input.name),
+      computeIndex: hmacHash,
+      isTaken: async (slug) => {
+        const condition = unclaimedNewsSlugCondition(await hmacHash(slug));
+        return (
+          resultRows(
+            await tx.execute({
+              args: condition.args,
+              sql: `SELECT 1 WHERE NOT (${condition.sql})`,
+            }),
+          ).length > 0
+        );
+      },
+    });
+    const result = await tx.execute(
+      await newsPostsTable.insertStatement({
+        ...input,
+        created,
+        slug,
+        slugIndex,
+      }),
+    );
+    return {
+      content: input.content,
+      created,
+      id: insertedRowId(result),
+      meta_description: input.metaDescription,
+      meta_title: input.metaTitle,
+      name: input.name,
+      slug,
+      slug_index: slugIndex,
+      snippet: input.snippet,
+    };
+  });
+};
+
+/** Update a post's editable fields — every field, every time (the edit form
+ * posts them all), including the (now editable) slug. `created` never changes.
+ * The blind index is computed here and its uniqueness condition is part of the
+ * UPDATE statement, so a concurrent rename returns `slugTaken`. */
+const newsPostWrites = freshSlugIndexWrites(
+  newsPostsTable,
+  unclaimedNewsSlugCondition,
+);
+
+export const updateNewsPost = async (
+  id: number,
+  input: NewsPostWriteInput & { slug: string },
+  transaction?: TxScope,
+): Promise<Result<NewsPost, "notFound" | "slugTaken">> =>
+  newsPostWrites.update(id, input, transaction);
+
+/** Delete a post and its image links in one batch (images themselves stay in
+ * the library — only the uses are pruned, as with listing/group deletion). */
+export const deleteNewsPostWithImages = (id: number): Promise<void> =>
+  executeBatch([
+    clearImageUsesForItemStatement(imageUseTargets.of("news")(id)),
+    { args: [id], sql: "DELETE FROM news_posts WHERE id = ?" },
+  ]);

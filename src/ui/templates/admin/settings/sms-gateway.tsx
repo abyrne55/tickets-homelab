@@ -1,0 +1,77 @@
+/**
+ * SMS Gateway form for advanced settings.
+ */
+
+import { MASK_SENTINEL } from "#db/settings/mask.ts";
+import { t } from "#i18n";
+import { Raw } from "#jsx/jsx-runtime.ts";
+import { settingsFormFieldAttributes } from "#shared/settings/forms.ts";
+import { SMS_PASSPHRASE_MIN_LENGTH } from "#shared/sms/e2e.ts";
+import type { AdvancedSettingsPageState } from "#templates/admin/settings-advanced.tsx";
+import { MaskedInput } from "#templates/components/masked-input.tsx";
+import { SettingsSection } from "#templates/components/settings-section.tsx";
+import { TextField } from "#templates/components/text-field.tsx";
+
+export const SmsGatewayForm = (s: AdvancedSettingsPageState): JSX.Element => (
+  <SettingsSection
+    action="/admin/settings/sms-gateway"
+    description={<Raw html={t("sms.settings.description")} />}
+    submitLabel={t("sms.settings.save")}
+    title={t("sms.settings.title")}
+  >
+    <TextField
+      label={t("sms.settings.username")}
+      {...settingsFormFieldAttributes(
+        "settings-sms-gateway",
+        "sms_gateway_username",
+      )}
+      placeholder={t("sms.settings.username_placeholder")}
+      type="text"
+      value={s.smsGatewayUsername}
+    />
+    <MaskedInput
+      configured={s.smsGatewayPasswordConfigured}
+      label={t("sms.settings.password")}
+      {...settingsFormFieldAttributes(
+        "settings-sms-gateway",
+        "sms_gateway_password",
+      )}
+      placeholder={t("sms.settings.password_placeholder")}
+    />
+    <label>
+      {t("sms.settings.passphrase")}
+      <input
+        autocomplete="off"
+        minlength={SMS_PASSPHRASE_MIN_LENGTH}
+        {...settingsFormFieldAttributes(
+          "settings-sms-gateway",
+          "sms_gateway_passphrase",
+        )}
+        placeholder={t("sms.settings.passphrase_placeholder")}
+        type="password"
+        value={s.smsGatewayPassphraseConfigured ? MASK_SENTINEL : undefined}
+      />
+      <Raw html={t("sms.settings.passphrase_help")} />
+    </label>
+    <TextField
+      label={t("sms.settings.base_url")}
+      {...settingsFormFieldAttributes(
+        "settings-sms-gateway",
+        "sms_gateway_base_url",
+      )}
+      placeholder={t("sms.settings.base_url_placeholder")}
+      type="url"
+      value={s.smsGatewayBaseUrl}
+    />
+    <MaskedInput
+      configured={s.smsGatewayWebhookConfigured}
+      label={t("sms.settings.webhook_secret")}
+      {...settingsFormFieldAttributes(
+        "settings-sms-gateway",
+        "sms_gateway_webhook_secret",
+      )}
+      placeholder={t("sms.settings.webhook_secret_placeholder")}
+    />
+    <Raw html={t("sms.settings.webhook_note")} />
+  </SettingsSection>
+);

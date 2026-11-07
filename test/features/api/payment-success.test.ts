@@ -1,0 +1,62 @@
+import { expect } from "@std/expect";
+import { it as test } from "@std/testing/bdd";
+import { handlePaymentSuccess } from "#routes/api/payment-success.ts";
+import { expectIncludesAll } from "#test-utils/assertions.ts";
+import { describeWithEnv } from "#test-utils/db.ts";
+import {
+  paidSession,
+  stubSessionRetrieval,
+} from "#test-utils/payment-session.ts";
+import { withRequestContext } from "#test-utils/request-context.ts";
+import { getTestSession, requestAsSession } from "#test-utils/session.ts";
+import { setupStripe } from "#test-utils/settings.ts";
+
+/** Makes the provider answer every retrieval with this still-unpaid checkout,
+ *  the TICKETS-84 shape, for as long as the test runs. */
+const unpaidAnswers = (): Promise<Disposable> =>
+  stubSessionRetrieval(
+    paidSession("cs_route_unpaid", {
+      paymentReference: "",
+      paymentStatus: "unpaid",
+    }),
+  );
+
+describeWithEnv("the payment success redirect route", { db: true }, () => {
+  test("hands an owner the diagnostics when the checkout is unpaid", async () => {
+    await setupStripe();
+    using _provider = await unpaidAnswers();
+
+    const response = await withRequestContext(async () =>
+      handlePaymentSuccess(
+        await requestAsSession(
+          "/payment/success?session_id=cs_route_unpaid",
+          await getTestSession(),
+        ),
+      ),
+    );
+
+    expect(response.status).toBe(200);
+    const page = await response.text();
+    expectIncludesAll(page, [
+      "We have not received your payment yet",
+      "Staff diagnostics",
+      "cs_route_unpaid",
+      // The row markup (label, then value) cannot pass because the session id
+      // carries the word, so this reads the status itself, not the id.
+      "Payment status</strong> unpaid",
+    ]);
+  });
+
+  test("names the callback's facts to an owner when nothing readable arrived", async () => {
+    await setupStripe();
+
+    const response = await withRequestContext(async () =>
+      handlePaymentSuccess(
+        await requestAsSession("/payment/success", await getTestSession()),
+      ),
+    );
+
+    const page = await response.text();
+    expectIncludesAll(page, ["Invalid payment callback", "Staff diagnostics"]);
+  });
+});

@@ -1,0 +1,202 @@
+import { assertStringIncludes } from "@std/assert";
+import { expect } from "@std/expect";
+import { afterEach, beforeEach, describe, it as test } from "@std/testing/bdd";
+import { ALL_SETTINGS_KEYS, settings } from "#db/settings.ts";
+import {
+  formatCurrency,
+  formatSignedCurrency,
+  getDecimalPlaces,
+  toMajorUnits,
+  toMinorUnits,
+} from "#shared/currency.ts";
+import { expectIncludesAll } from "#test-utils/assertions.ts";
+import { createTestDbWithSetup, resetDb } from "#test-utils/db.ts";
+import { setupTestEncryptionKey } from "#test-utils/env.ts";
+import { testWithSetting } from "#test-utils/settings.ts";
+
+describe("currency", () => {
+  describe("getDecimalPlaces", () => {
+    test("returns 2 for GBP", () => {
+      expect(getDecimalPlaces("GBP")).toBe(2);
+    });
+
+    test("returns 2 for USD", () => {
+      expect(getDecimalPlaces("USD")).toBe(2);
+    });
+
+    test("returns 2 for EUR", () => {
+      expect(getDecimalPlaces("EUR")).toBe(2);
+    });
+
+    test("returns 0 for JPY", () => {
+      expect(getDecimalPlaces("JPY")).toBe(0);
+    });
+
+    test("returns 3 for KWD", () => {
+      expect(getDecimalPlaces("KWD")).toBe(3);
+    });
+
+    test("throws when Intl omits its guaranteed decimal places", () => {
+      const original = Intl.NumberFormat.prototype.resolvedOptions;
+      Intl.NumberFormat.prototype.resolvedOptions = function () {
+        return {
+          ...original.call(this),
+          minimumFractionDigits: undefined as unknown as number,
+        };
+      };
+      try {
+        expect(() => getDecimalPlaces("CAD")).toThrow(
+          "Intl omitted currency decimal places for CAD",
+        );
+      } finally {
+        Intl.NumberFormat.prototype.resolvedOptions = original;
+      }
+    });
+  });
+
+  describe("formatCurrency", () => {
+    testWithSetting(
+      "formats GBP with pound symbol",
+      { currency: "GBP" },
+      () => {
+        expect(formatCurrency(1050)).toBe("£10.50");
+      },
+    );
+
+    testWithSetting("formats GBP zero amount", { currency: "GBP" }, () => {
+      expect(formatCurrency(0)).toBe("£0");
+    });
+
+    testWithSetting(
+      "does not sign a negative zero",
+      { currency: "GBP" },
+      () => {
+        expect(formatCurrency(-0)).toBe("£0");
+      },
+    );
+
+    testWithSetting(
+      "formats USD with dollar symbol",
+      { currency: "USD" },
+      () => {
+        expect(formatCurrency(1050)).toBe("$10.50");
+      },
+    );
+
+    testWithSetting("formats EUR with euro symbol", { currency: "EUR" }, () => {
+      const result = formatCurrency(1050);
+      expectIncludesAll(result, ["10.50", "€"]);
+    });
+
+    testWithSetting(
+      "formats JPY without decimal places",
+      { currency: "JPY" },
+      () => {
+        expect(formatCurrency(1050)).toBe("¥1,050");
+      },
+    );
+
+    testWithSetting(
+      "formats KWD with 3 decimal places",
+      { currency: "KWD" },
+      () => {
+        const result = formatCurrency(1050);
+        assertStringIncludes(result, "1.050");
+      },
+    );
+
+    testWithSetting("accepts string input", { currency: "GBP" }, () => {
+      expect(formatCurrency("1050")).toBe("£10.50");
+    });
+
+    test("falls back to GBP when no currency loaded", () => {
+      expect(formatCurrency(1050)).toBe("£10.50");
+    });
+  });
+
+  describe("formatSignedCurrency", () => {
+    testWithSetting(
+      "uses one sign style and leaves zero unsigned",
+      { currency: "GBP" },
+      () => {
+        expect(formatSignedCurrency(1250)).toBe("+£12.50");
+        expect(formatSignedCurrency(-1250)).toBe("−£12.50");
+        expect(formatSignedCurrency(0)).toBe("£0");
+        // The sign follows the value's own sign, not whether it reaches a
+        // whole minor unit, so a sliver still reads as added or removed.
+        expect(formatSignedCurrency(0.5)).toBe("+£0.01");
+        expect(formatSignedCurrency(-0.5)).toBe("−£0.01");
+        expect(formatSignedCurrency(1250, false)).toBe("£12.50");
+        expect(formatSignedCurrency(-1250, false)).toBe("−£12.50");
+      },
+    );
+  });
+
+  describe("toMinorUnits", () => {
+    testWithSetting(
+      "converts GBP major to minor units",
+      { currency: "GBP" },
+      () => {
+        expect(toMinorUnits(10.5)).toBe(1050);
+      },
+    );
+
+    testWithSetting("converts whole number", { currency: "GBP" }, () => {
+      expect(toMinorUnits(25)).toBe(2500);
+    });
+
+    testWithSetting("rounds to nearest integer", { currency: "GBP" }, () => {
+      expect(toMinorUnits(10.999)).toBe(1100);
+    });
+
+    testWithSetting("converts JPY (no decimals)", { currency: "JPY" }, () => {
+      expect(toMinorUnits(1050)).toBe(1050);
+    });
+
+    testWithSetting("converts KWD (3 decimals)", { currency: "KWD" }, () => {
+      expect(toMinorUnits(1.05)).toBe(1050);
+    });
+  });
+
+  describe("toMajorUnits", () => {
+    testWithSetting(
+      "converts GBP minor to major units string",
+      { currency: "GBP" },
+      () => {
+        expect(toMajorUnits(1050)).toBe("10.50");
+      },
+    );
+
+    testWithSetting("converts zero", { currency: "GBP" }, () => {
+      expect(toMajorUnits(0)).toBe("0.00");
+    });
+
+    testWithSetting("converts JPY (no decimals)", { currency: "JPY" }, () => {
+      expect(toMajorUnits(1050)).toBe("1050");
+    });
+
+    testWithSetting("converts KWD (3 decimals)", { currency: "KWD" }, () => {
+      expect(toMajorUnits(1050)).toBe("1.050");
+    });
+  });
+
+  describe("settings.currency integration", () => {
+    beforeEach(async () => {
+      setupTestEncryptionKey();
+      await createTestDbWithSetup("US");
+      await settings.loadKeys(ALL_SETTINGS_KEYS);
+    });
+
+    afterEach(() => {
+      resetDb();
+    });
+
+    test("reads currency from settings", () => {
+      expect(settings.currency).toBe("USD");
+    });
+
+    test("uses settings currency for formatting", () => {
+      expect(formatCurrency(1050)).toBe("$10.50");
+    });
+  });
+});

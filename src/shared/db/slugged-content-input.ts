@@ -1,0 +1,14 @@
+import type { BlindIndex } from "#crypto/sealed.ts";
+
+/** The create/update fields shared by every slugged content record: its slug
+ * and slug blind-index, its name, and the optional SEO meta and main content.
+ * Site pages and news posts both use it. Each table adds its own extra fields
+ * on top. */
+export type SluggedContentInput = {
+  slug: string;
+  slugIndex: BlindIndex;
+  name: string;
+  metaTitle?: string;
+  metaDescription?: string;
+  content?: string;
+};

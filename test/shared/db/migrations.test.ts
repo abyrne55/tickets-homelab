@@ -1,0 +1,632 @@
+import {
+  type Client,
+  createClient,
+  type Replicated,
+  type ResultSet,
+  type TransactionMode,
+} from "@libsql/client";
+import { assert, assertArrayIncludes, assertStringIncludes } from "@std/assert";
+import { expect } from "@std/expect";
+import { describe, it as test } from "@std/testing/bdd";
+import { stub } from "@std/testing/mock";
+import { ACTIVITY_LOG_BACKFILL_COMPLETE } from "#db/activity-log-backfill.ts";
+import { getDb, insert, setDb } from "#db/client.ts";
+import { getAllListings } from "#db/listings/records.ts";
+import { loadMigrations } from "#db/migrations/context.ts";
+import { MissingSettingsTableError } from "#db/migrations/errors.ts";
+import { MIGRATION_IDS } from "#db/migrations/registry.ts";
+import {
+  initDb,
+  invalidateInitDbCache,
+  LATEST_UPDATE,
+  resetDatabase,
+  SCHEMA_HASH,
+} from "#db/migrations.ts";
+import { insertBrokenImage } from "#test-utils/admin-images.ts";
+import {
+  markCurrentSchemaMigrationPending,
+  markMigrationsForRerun,
+} from "#test-utils/db/migration-test-helpers.ts";
+import { describeWithEnv } from "#test-utils/db.ts";
+import {
+  stubClient,
+  stubResultSet,
+} from "#test-utils/db-helpers/result-set.ts";
+import {
+  appliedMigrationIds,
+  assertSchemaEmpty,
+  schemaMarkerKeys,
+  settingsTableExists,
+  settingsValueOrNull,
+  tableExists,
+} from "#test-utils/migrations.ts";
+import { stubNtfyFetch } from "#test-utils/mocks.ts";
+import { recordQueries } from "#test-utils/record-queries.ts";
+import { saveAModifier, settingValue } from "#test-utils/settings.ts";
+import { invalidateTestDbCache } from "#test-utils/test-state.ts";
+
+const MIGRATIONS = await loadMigrations();
+describeWithEnv("db > migrations", { db: true }, () => {
+  describe("initDb version check", () => {
+    const mockClient = (execute: Client["execute"]): Client =>
+      stubClient({
+        batch: (_statements: never[], _mode?: TransactionMode) =>
+          Promise.reject(new Error("unexpected batch")),
+        close: () => undefined,
+        execute,
+        executeMultiple: () =>
+          Promise.reject(new Error("unexpected executeMultiple")),
+        migrate: () => Promise.reject(new Error("unexpected migrate")),
+        protocol: "file",
+        sync: () => Promise.resolve({} as Replicated),
+        transaction: () => Promise.reject(new Error("unexpected transaction")),
+      });
+
+    const mockMigrationClient = (
+      route: (sql: string) => Promise<ResultSet> | undefined,
+    ): Client =>
+      mockClient((statement) => {
+        const sql = typeof statement === "string" ? statement : statement.sql;
+        return (
+          route(sql) ??
+          Promise.reject(new Error(`unexpected migration query: ${sql}`))
+        );
+      });
+
+    const rejectSettingsRead =
+      (message: string): ((sql: string) => Promise<ResultSet> | undefined) =>
+      (sql) =>
+        sql.includes("FROM settings")
+          ? Promise.reject(new Error(message))
+          : undefined;
+
+    const expectNtfySilent = async (
+      client: Client,
+      body: () => Promise<void>,
+    ): Promise<void> => {
+      const { fetchStub, restore } = stubNtfyFetch();
+      using _env = restore;
+      using _fetch = fetchStub;
+      setDb(client);
+      try {
+        await body();
+        expect(fetchStub.calls.map((call) => call.args[0])).not.toContain(
+          "https://ntfy.sh/test-topic",
+        );
+      } finally {
+        setDb(null);
+      }
+    };
+
+    const createEmptySettingsTable = () =>
+      getDb().execute(
+        "CREATE TABLE settings (key TEXT PRIMARY KEY, value TEXT NOT NULL)",
+      );
+
+    /** "Site upgrading from an older release": the stored marker is that
+     * release's, `migrationId` has not run, and both differ from current. */
+    const simulateUpgradeFromRelease = async (
+      previousMarker: string,
+      migrationId: string,
+    ): Promise<void> => {
+      expect(previousMarker).not.toBe(LATEST_UPDATE);
+      await getDb().execute({
+        args: [previousMarker],
+        sql: "UPDATE settings SET value = ? WHERE key = 'latest_db_update'",
+      });
+      await getDb().execute({
+        args: [migrationId],
+        sql: "DELETE FROM schema_migrations WHERE id = ?",
+      });
+      invalidateInitDbCache();
+    };
+
+    /** The migration id is recorded in schema_migrations. */
+    const assertMigrationApplied = async (id: string): Promise<void> => {
+      assertArrayIncludes(await appliedMigrationIds(), [id]);
+    };
+
+    const bootstrapSettingsTable = async (
+      preInit?: () => Promise<unknown>,
+    ): Promise<void> => {
+      await resetDatabase();
+      invalidateTestDbCache();
+      await preInit?.();
+      await initDb({ allowMissingSettings: true });
+
+      expect(await settingsTableExists()).toBe(true);
+      expect(await schemaMarkerKeys()).toEqual([
+        "db_schema_hash",
+        "latest_db_update",
+      ]);
+      expect(await appliedMigrationIds()).toEqual([...MIGRATION_IDS].sort());
+    };
+
+    test("initDb stores latest_db_update in settings", async () => {
+      expect(await settingsValueOrNull("latest_db_update")).toBe(LATEST_UPDATE);
+    });
+
+    test("initDb stores db_schema_hash in settings", async () => {
+      expect(await settingsValueOrNull("db_schema_hash")).toBe(SCHEMA_HASH);
+    });
+
+    test("initDb stores named migration history", async () => {
+      expect(await appliedMigrationIds()).toEqual([...MIGRATION_IDS].sort());
+    });
+
+    test("initDb baselines current databases without schema_migrations", async () => {
+      await getDb().execute("DROP TABLE schema_migrations");
+      invalidateInitDbCache();
+
+      await initDb();
+
+      expect(await tableExists("schema_migrations")).toBe(true);
+      expect(await appliedMigrationIds()).toEqual([...MIGRATION_IDS].sort());
+    });
+
+    test("initDb does not re-baseline over an orphaned history row", async () => {
+      // A restored backup may carry a row for a renamed migration id;
+      // counting it would send every cold boot down the baseline reconcile.
+      await getDb().execute({
+        args: ["2020-01-01_renamed_away_long_ago", "orphan", "2020-01-01"],
+        sql: "INSERT INTO schema_migrations (id, description, applied_at) VALUES (?, ?, ?)",
+      });
+      invalidateInitDbCache();
+
+      const seen: string[] = [];
+      const restore = recordQueries(seen);
+      try {
+        await initDb();
+      } finally {
+        restore();
+        await getDb().execute({
+          args: ["2020-01-01_renamed_away_long_ago"],
+          sql: "DELETE FROM schema_migrations WHERE id = ?",
+        });
+      }
+
+      // The one probe answers everything; the baseline reconcile's
+      // CREATE TABLE + SELECT id pair must not run.
+      expect(
+        seen.filter((sql) => sql.includes("applied_migrations")).length,
+      ).toBe(1);
+      expect(
+        seen.filter(
+          (sql) =>
+            sql.includes("CREATE TABLE") ||
+            sql.includes("SELECT id FROM schema_migrations"),
+        ),
+      ).toEqual([]);
+    });
+
+    test("runs a schema-hash-neutral data migration on a site upgrading from the previous release", async () => {
+      // A data-only migration leaves SCHEMA_HASH unchanged. Without a
+      // LATEST_UPDATE bump beside it, a site last migrated at the previous
+      // release reads up_to_date and baselines the migration id WITHOUT
+      // running its up(); the bump flips the state to needs_migration.
+      await getDb().execute({
+        args: ["{{name}}, {{listing}}, {{email}}"],
+        sql: "INSERT OR REPLACE INTO settings (key, value) VALUES ('attendee_column_order', ?)",
+      });
+      await simulateUpgradeFromRelease(
+        "Migrate listings.day_prices into the listing_prices 'day_count' dimension and drop the column.",
+        "2026-07-03_attendee_listings_tag",
+      );
+
+      await initDb();
+
+      // The migration ran: the stored template's tag is rewritten...
+      expect(await settingsValueOrNull("attendee_column_order")).toBe(
+        "{{name}}, {{listings}}, {{email}}",
+      );
+      // ...it is now recorded in schema_migrations...
+      await assertMigrationApplied("2026-07-03_attendee_listings_tag");
+      // ...and the markers are refreshed to the current release.
+      expect(await settingsValueOrNull("latest_db_update")).toBe(LATEST_UPDATE);
+    });
+
+    test("runs the broken-image cleanup on a site upgrading from the previous release", async () => {
+      // Same trap: without the bump beside remove_broken_image_records, an
+      // up-to-date site baselines the migration id WITHOUT the cleanup.
+      await insertBrokenImage();
+      await simulateUpgradeFromRelease(
+        "Index processed_payments by attendee for roster, export, and refund lookups.",
+        "2026-07-12_remove_broken_image_records",
+      );
+
+      await initDb();
+
+      // The cleanup ran: the broken record is gone, the migration is recorded,
+      // and the marker is the current release's.
+      const images = await getDb().execute("SELECT id FROM images");
+      expect(images.rows.map((row) => row.id)).toEqual([]);
+      await assertMigrationApplied("2026-07-12_remove_broken_image_records");
+      expect(await settingsValueOrNull("latest_db_update")).toBe(LATEST_UPDATE);
+    });
+
+    test("runs the holiday date padding on a site upgrading from the previous release", async () => {
+      // Without a LATEST_UPDATE bump beside holiday_date_padding, a site last
+      // migrated at the previous release reads up_to_date and baselines the
+      // migration id WITHOUT padding the stored holiday dates.
+      await getDb().execute({
+        args: ["Upgrade Party", "2027-6-1", "2027-6-2"],
+        sql: "INSERT INTO holidays (name, start_date, end_date) VALUES (?, ?, ?)",
+      });
+      await simulateUpgradeFromRelease(
+        "Store each listing's minimum purchasable quantity, so buyers can only book none or at least that many.",
+        "2026-10-07_holiday_date_padding",
+      );
+
+      await initDb();
+
+      const party = await getDb().execute(
+        "SELECT start_date, end_date FROM holidays WHERE name = 'Upgrade Party'",
+      );
+      expect(party.rows[0]).toMatchObject({
+        end_date: "2027-06-02",
+        start_date: "2027-06-01",
+      });
+      await assertMigrationApplied("2026-10-07_holiday_date_padding");
+      expect(await settingsValueOrNull("latest_db_update")).toBe(LATEST_UPDATE);
+    });
+
+    test("runs the completed activity backfill migration on an old completed site", async () => {
+      await getDb().execute(
+        "DELETE FROM maintenance_tasks WHERE name = 'activity_log_backfill'",
+      );
+      await simulateUpgradeFromRelease(
+        "Add secure local scheduled maintenance and durable task claims.",
+        "2026-07-21_activity_backfill_complete",
+      );
+
+      await initDb();
+
+      const task = await getDb().execute(
+        "SELECT checkpoint FROM maintenance_tasks WHERE name = 'activity_log_backfill'",
+      );
+      expect(task.rows).toEqual([
+        { checkpoint: ACTIVITY_LOG_BACKFILL_COMPLETE },
+      ]);
+      await assertMigrationApplied("2026-07-21_activity_backfill_complete");
+      expect(await settingsValueOrNull("latest_db_update")).toBe(LATEST_UPDATE);
+    });
+
+    test("moves feature visibility on a site upgrading from the previous release", async () => {
+      await getDb().execute(
+        "INSERT OR REPLACE INTO settings (key, value) VALUES ('has_logistics', 'true')",
+      );
+      await getDb().execute(
+        "INSERT OR REPLACE INTO settings (key, value) VALUES ('show_public_site', 'true')",
+      );
+      await saveAModifier();
+      await simulateUpgradeFromRelease(
+        "Delete image records whose stored filename is an encrypted empty string.",
+        "2026-07-15_enabled_features",
+      );
+
+      await initDb();
+
+      const stored = await settingValue("enabled_features");
+      expect(JSON.parse(stored)).toEqual({
+        apiKeys: false,
+        attributes: false,
+        invoices: false,
+        logistics: true,
+        modifiers: true,
+        money: false,
+        questions: false,
+        servicing: false,
+        site: true,
+      });
+      expect(await settingsValueOrNull("has_logistics")).toBeNull();
+      expect(await settingsValueOrNull("show_public_site")).toBeNull();
+      await assertMigrationApplied("2026-07-15_enabled_features");
+      expect(await settingsValueOrNull("latest_db_update")).toBe(LATEST_UPDATE);
+    });
+
+    test("initDb restores stale markers after a crash between recording migrations and writing markers", async () => {
+      // Crash state: all named migrations recorded in schema_migrations,
+      // but the isolate died before refreshing the settings markers.
+      await getDb().execute(
+        "UPDATE settings SET value = 'stale' WHERE key = 'db_schema_hash'",
+      );
+      await getDb().execute(
+        "UPDATE settings SET value = 'stale' WHERE key = 'latest_db_update'",
+      );
+      invalidateInitDbCache();
+
+      await initDb();
+
+      expect(await settingsValueOrNull("db_schema_hash")).toBe(SCHEMA_HASH);
+      expect(await settingsValueOrNull("latest_db_update")).toBe(LATEST_UPDATE);
+      expect(await settingsValueOrNull("migration_lock")).toBeNull();
+    });
+
+    test("recovers when the system errors partway through the pending migrations", async () => {
+      // Seed a row that must survive a crash mid-upgrade and the recovery boot.
+      const seeded = await getDb().execute(
+        insert("listings", {
+          created: "2024-01-01T00:00:00Z",
+          max_attendees: 5,
+          name: "crash-survivor",
+        }),
+      );
+      const listingId = Number(seeded.lastInsertRowid);
+
+      // Make every migration pending again, as if the DB were mid-upgrade.
+      await markMigrationsForRerun();
+
+      // Simulate a crash between migrations: a migration halfway through the
+      // sequence throws, so the ones before it are recorded but it and the
+      // ones after it never run.
+      const crashIndex = Math.floor(MIGRATIONS.length / 2);
+      const crashing = MIGRATIONS[crashIndex]!;
+      const upStub = stub(crashing, "up", () => {
+        throw new Error("simulated crash between migrations");
+      });
+
+      try {
+        await expect(initDb()).rejects.toThrow(
+          "simulated crash between migrations",
+        );
+
+        // Partial progress, markers still "not up to date", lock freed.
+        const partial = await appliedMigrationIds();
+        expect(partial.length).toBeGreaterThan(0);
+        expect(partial.length).toBeLessThan(MIGRATION_IDS.length);
+        assert(!partial.includes(crashing.id));
+        expect(await settingsValueOrNull("db_schema_hash")).toBe("stale");
+        expect(await settingsValueOrNull("migration_lock")).toBeNull();
+      } finally {
+        // Always un-stub: a leaked stub would break every later test's migrations.
+        upStub.restore();
+      }
+
+      // The next boot resumes and finishes the upgrade.
+      invalidateInitDbCache();
+      await initDb();
+
+      expect(await appliedMigrationIds()).toEqual([...MIGRATION_IDS].sort());
+      expect(await settingsValueOrNull("db_schema_hash")).toBe(SCHEMA_HASH);
+      expect(await settingsValueOrNull("latest_db_update")).toBe(LATEST_UPDATE);
+      // The pre-crash row survived the crash and the recovery re-run intact.
+      const survived = await getDb().execute({
+        args: [listingId],
+        sql: "SELECT 1 FROM listings WHERE id = ?",
+      });
+      expect(survived.rows.length).toBe(1);
+    });
+
+    test("initDb fails without rewriting markers when the schema does not match and no migration is pending", async () => {
+      await getDb().execute("DROP INDEX idx_listings_slug_index");
+      await getDb().execute(
+        "UPDATE settings SET value = 'stale' WHERE key = 'db_schema_hash'",
+      );
+      invalidateInitDbCache();
+
+      await expect(initDb()).rejects.toThrow(
+        "must ship with a new entry in MIGRATIONS",
+      );
+
+      expect(await settingsValueOrNull("db_schema_hash")).toBe("stale");
+      expect(await settingsValueOrNull("migration_lock")).toBeNull();
+    });
+
+    test("initDb can be called multiple times safely", async () => {
+      await initDb();
+
+      const listings = await getAllListings();
+      expect(listings).toEqual([]);
+    });
+
+    test("initDb bails early when database is up to date", async () => {
+      const startTime = performance.now();
+      await initDb();
+      const duration = performance.now() - startTime;
+
+      expect(duration).toBeLessThan(100);
+    });
+
+    test("initDb does not treat transient settings read failures as a new database", async () => {
+      await expectNtfySilent(
+        mockMigrationClient(
+          rejectSettingsRead("temporary libsql read failure"),
+        ),
+        async () => {
+          await expect(initDb()).rejects.toThrow(
+            "temporary libsql read failure",
+          );
+        },
+      );
+    });
+
+    test("initDb does not treat transient lock write failures as an acquired lock", async () => {
+      await expectNtfySilent(
+        mockMigrationClient((sql) => {
+          if (sql.includes("FROM settings")) {
+            return Promise.resolve(
+              stubResultSet([
+                { key: "latest_db_update", value: "stale" },
+                { key: "db_schema_hash", value: "stale" },
+              ]),
+            );
+          }
+          if (sql.includes("INSERT INTO settings")) {
+            return Promise.reject(new Error("temporary libsql write failure"));
+          }
+          return;
+        }),
+        async () => {
+          await expect(initDb()).rejects.toThrow(
+            "temporary libsql write failure",
+          );
+        },
+      );
+    });
+
+    test("initDb does not mistake another missing table for a missing settings table", async () => {
+      setDb(
+        mockMigrationClient(rejectSettingsRead("no such table: user_settings")),
+      );
+      try {
+        const error = await initDb().catch((e: unknown) => e);
+        expect(error).not.toBeInstanceOf(MissingSettingsTableError);
+        assertStringIncludes(String(error), "no such table: user_settings");
+      } finally {
+        setDb(null);
+      }
+    });
+
+    test("initDb recognizes a schema-qualified missing settings table error", async () => {
+      setDb(
+        mockMigrationClient(rejectSettingsRead("no such table: main.settings")),
+      );
+      try {
+        await expect(initDb()).rejects.toBeInstanceOf(
+          MissingSettingsTableError,
+        );
+      } finally {
+        setDb(null);
+      }
+    });
+
+    test("initDb refuses to bootstrap a fresh database by default", async () => {
+      await resetDatabase();
+      invalidateTestDbCache();
+
+      await expect(initDb()).rejects.toBeInstanceOf(MissingSettingsTableError);
+
+      expect(await settingsTableExists()).toBe(false);
+    });
+
+    test("initDb refuses to bootstrap an empty settings table by default", async () => {
+      await resetDatabase();
+      invalidateTestDbCache();
+      await createEmptySettingsTable();
+
+      await expect(initDb()).rejects.toThrow("settings table is uninitialized");
+
+      await assertSchemaEmpty();
+    });
+
+    test("initDb bootstraps a missing settings table when explicitly allowed", async () => {
+      await bootstrapSettingsTable();
+      expect(await settingsTableExists()).toBe(true);
+    });
+
+    test("initDb bootstraps an empty settings table when explicitly allowed", async () => {
+      await bootstrapSettingsTable(() => createEmptySettingsTable());
+      expect(await tableExists("listings")).toBe(true);
+    });
+
+    const assertLegacyObjectDropped = async (
+      type: string,
+      name: string,
+      createSql: string,
+    ): Promise<void> => {
+      await getDb().execute(createSql);
+      expect(
+        (
+          await getDb().execute({
+            args: [type, name],
+            sql: "SELECT name FROM sqlite_master WHERE type = ? AND name = ?",
+          })
+        ).rows.length,
+      ).toBe(1);
+      await getDb().execute(
+        "UPDATE settings SET value = 'stale' WHERE key = 'db_schema_hash'",
+      );
+      await markCurrentSchemaMigrationPending();
+      await initDb();
+      expect(
+        (
+          await getDb().execute({
+            args: [type, name],
+            sql: "SELECT name FROM sqlite_master WHERE type = ? AND name = ?",
+          })
+        ).rows.length,
+      ).toBe(0);
+    };
+
+    test("named legacy migration drops legacy indexes not in declarative schema", () =>
+      assertLegacyObjectDropped(
+        "index",
+        "idx_attendees_legacy_created",
+        "CREATE INDEX IF NOT EXISTS idx_attendees_legacy_created ON attendees(created)",
+      ));
+
+    test("named legacy migration drops legacy triggers not in declarative schema", () =>
+      assertLegacyObjectDropped(
+        "trigger",
+        "trg_legacy_noop",
+        `CREATE TRIGGER IF NOT EXISTS trg_legacy_noop
+         AFTER INSERT ON attendees
+         FOR EACH ROW BEGIN SELECT 1; END`,
+      ));
+  });
+
+  describe("initDb ready cache", () => {
+    test("initDb runs no queries once the client is confirmed ready", async () => {
+      await initDb();
+
+      const executeStub = stub(getDb(), "execute", () =>
+        Promise.reject(new Error("query after database confirmed ready")),
+      );
+      try {
+        await initDb();
+        expect(executeStub.calls.length).toBe(0);
+      } finally {
+        executeStub.restore();
+      }
+    });
+
+    test("initDb retries after a failed attempt instead of caching the failure", async () => {
+      invalidateInitDbCache();
+      const failingStub = stub(getDb(), "execute", () =>
+        Promise.reject(new Error("transient outage")),
+      );
+      try {
+        await expect(initDb()).rejects.toThrow("transient outage");
+      } finally {
+        failingStub.restore();
+      }
+
+      // Same client, no explicit invalidation: the failure must not have
+      // been cached, so this call re-checks and succeeds.
+      await initDb();
+
+      const readyStub = stub(getDb(), "execute", () =>
+        Promise.reject(new Error("query after database confirmed ready")),
+      );
+      try {
+        await initDb();
+        expect(readyStub.calls.length).toBe(0);
+      } finally {
+        readyStub.restore();
+      }
+    });
+
+    test("resetDatabase clears the ready cache so initDb re-checks", async () => {
+      await initDb();
+
+      await resetDatabase();
+      invalidateTestDbCache();
+
+      await expect(initDb()).rejects.toBeInstanceOf(MissingSettingsTableError);
+    });
+
+    test("a different client is not treated as ready", async () => {
+      await initDb();
+
+      const client = createClient({ url: ":memory:" });
+      setDb(client);
+      try {
+        await expect(initDb()).rejects.toBeInstanceOf(
+          MissingSettingsTableError,
+        );
+      } finally {
+        setDb(null);
+      }
+    });
+  });
+});

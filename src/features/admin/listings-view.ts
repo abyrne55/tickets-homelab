@@ -1,0 +1,204 @@
+/**
+ * Listing detail page (attendee list with optional date / check-in filters).
+ *
+ * Also owns the attendee helpers shared with the CSV export route: the
+ * date-filtered attendee handler and the question-answer loader. The export
+ * mirrors the on-screen attendee table.
+ */
+
+import { getGroupRemainingByGroupId } from "#db/attendees/capacity/groups.ts";
+import { listingGroups } from "#db/groups/table.ts";
+import { getGroupsByIds } from "#db/groups.ts";
+import { attendeesWithChangedAnswers } from "#db/questions/attendee-answers/at-booking.ts";
+import {
+  type AttendeeQuestionData,
+  getAttendeeAnswersBatch,
+} from "#db/questions/attendee-answers/reads.ts";
+import { getQuestionsForListing } from "#db/questions/queries.ts";
+import {
+  compact,
+  filter,
+  map,
+  pipe,
+  requiredMapValue,
+  sort,
+  unique,
+} from "#fp";
+import type { ListingAttendeesHandler } from "#routes/admin/actions.ts";
+import type { AuthSession } from "#routes/auth.ts";
+import {
+  type AttendeeFilter,
+  type AttendeeListSetup,
+  type AttendeeListState,
+  type AttendeeSort,
+  type DateOption,
+  readAttendeeListState,
+} from "#shared/attendee-list-controls.ts";
+import { formatDateLabel } from "#shared/date-labels.ts";
+import { coveredDays } from "#shared/dates.ts";
+import type { ResponseHandler } from "#shared/response-steps.ts";
+import { requireRequestPrivateKey } from "#shared/session-private-key.ts";
+import type { DateString } from "#shared/validation/date-string.ts";
+import type { GroupContext } from "#templates/admin/listings/types.ts";
+import type { Attendee, ListingWithCount } from "#types";
+
+/** Keep the attendees a chosen day belongs to. A booking counts for every day
+ * it covers, so day 2 of a three-day stay lists that stay. The caller's
+ * boundary brands the picked day. */
+export const filterByDate = (
+  attendees: Attendee[],
+  date: DateString | null,
+): Attendee[] =>
+  date
+    ? filter((a: Attendee) => coveredDays(a.date, a.end_date).includes(date))(
+        attendees,
+      )
+    : attendees;
+
+const getUniqueDates: (attendees: Attendee[]) => DateOption[] = pipe(
+  (attendees: Attendee[]) =>
+    attendees.flatMap((a: Attendee) => coveredDays(a.date, a.end_date)),
+  (dates) => compact(dates),
+  (dates) => unique(dates),
+  sort((a, b) => a.localeCompare(b)),
+  map((d: DateString) => ({ label: formatDateLabel(d), value: d })),
+);
+
+/** The roster's date-picker options. Empty for a listing not booked by the day. */
+export const dateOptionsFor = (
+  listing: ListingWithCount,
+  attendees: Attendee[],
+): DateOption[] =>
+  listing.listing_type === "daily" ? getUniqueDates(attendees) : [];
+
+/** The roster's controls: the day filter for a daily listing, the check-in
+ *  filter, sort, and its CSV download. The sort is the table's own
+ *  date-and-name order unless the address says otherwise. No listing
+ *  dropdown, types, or paging. */
+export const rosterListSetup = (
+  listing: { id: number; listing_type: string },
+  dates: DateOption[],
+): AttendeeListSetup<null> => ({
+  basePath: `/admin/listing/${listing.id}/attendees`,
+  csvPath: `/admin/listing/${listing.id}/export`,
+  dates,
+  defaultSort: null,
+  groups: [],
+  listings: [],
+  withCheckin: true,
+  withDates: listing.listing_type === "daily",
+  withPaging: false,
+  withTypes: false,
+});
+
+/** Context handed to a date-filtered attendee handler. */
+type FilteredAttendees = {
+  listing: ListingWithCount;
+  session: AuthSession;
+  /** Every attendee across all dates (before the date filter is applied). */
+  attendees: Attendee[];
+  dateFilter: string | null;
+  checkin: AttendeeFilter;
+  filteredByDate: Attendee[];
+  /** The sort chosen in the address bar, or null for the table's own order. */
+  sort: AttendeeSort | null;
+};
+
+/**
+ * Adapt the {@link listingAttendeesLoader} callback (listing, attendees,
+ * session) into a handler that receives the listing pre-filtered by the
+ * request's date filter, plus its check-in filter. Reads the request the same
+ * way the roster page does, so the CSV export mirrors the on-screen table. The
+ * full attendee list is still passed through for actions (for example, emailing)
+ * that target every date, not just the filtered view.
+ */
+export const filteredAttendeesHandler =
+  (
+    request: Request,
+    inner: ResponseHandler<[ctx: FilteredAttendees]>,
+  ): ListingAttendeesHandler =>
+  (listing, attendees, session) => {
+    const state: AttendeeListState<null> = readAttendeeListState(
+      rosterListSetup(listing, []),
+      new URL(request.url).searchParams,
+    );
+    return inner({
+      attendees,
+      checkin: state.checkin,
+      dateFilter: state.date,
+      filteredByDate: filterByDate(attendees, state.date),
+      listing,
+      session,
+      sort: state.sort,
+    });
+  };
+
+/**
+ * Load the questions for a listing together with each attendee's answers
+ * (including decrypted free text), shaped for the attendee table / CSV export.
+ * Returns undefined when the listing has no questions, so callers can skip the
+ * answers UI without an extra check.
+ */
+export const loadListingQuestionData = async (
+  listingId: number,
+  attendeeIds: number[],
+): Promise<AttendeeQuestionData | undefined> => {
+  const [questions, answers, changedAttendeeIds] = await Promise.all([
+    getQuestionsForListing(listingId),
+    getAttendeeAnswersBatch(attendeeIds, {
+      privateKey: await requireRequestPrivateKey(),
+      texts: true,
+    }),
+    attendeesWithChangedAnswers(attendeeIds),
+  ]);
+  return questions.length > 0
+    ? {
+        attendeeAnswerMap: answers.answerIds,
+        changedAttendeeIds,
+        questions,
+        textAnswerMap: answers.textAnswers,
+      }
+    : undefined;
+};
+
+/** Fetch group + current usage when the listing sits in a capped group, so the
+ *  detail page can render a row for the shared cap. Returns undefined for
+ *  ungrouped or uncapped groups. A listing can belong to several capped
+ *  groups. The one with the FEWEST remaining spots is the binding constraint
+ *  (a booking is blocked by the tightest group — see capacity.ts), so surface
+ *  that one. */
+export const loadGroupContext = async (
+  listing: ListingWithCount,
+  dateFilter: string | null,
+  getRemaining: typeof getGroupRemainingByGroupId = getGroupRemainingByGroupId,
+): Promise<GroupContext | undefined> => {
+  const groupIds = await listingGroups.getIds(listing.id);
+  const groupsById = await getGroupsByIds(groupIds);
+  const capped = groupIds.flatMap((groupId) => {
+    const group = groupsById.get(groupId);
+    return group && group.max_attendees > 0 ? [group] : [];
+  });
+  if (capped.length === 0) return;
+  const remainingMap = await getRemaining(
+    capped.map((group) => group.id),
+    dateFilter,
+  );
+  let tightest: { ctx: GroupContext; remaining: number } | undefined;
+  for (const group of capped) {
+    // A capped group read earlier must still be capped now. A missing entry
+    // means the two reads disagreed, and requiredMapValue surfaces that
+    // loudly.
+    const remaining = requiredMapValue(
+      remainingMap,
+      group.id,
+      "Missing group remaining",
+    );
+    if (tightest === undefined || remaining < tightest.remaining) {
+      tightest = {
+        ctx: { attendeeCount: group.max_attendees - remaining, group },
+        remaining,
+      };
+    }
+  }
+  return tightest?.ctx;
+};

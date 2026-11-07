@@ -1,0 +1,32 @@
+/**
+ * Asset paths with cache-busting support.
+ * In dev, paths are plain. At build time, the build script
+ * replaces this module to append a build timestamp.
+ */
+
+/** CSS stylesheet path, cache-busted at build time */
+export const CSS_PATH = "/style.css";
+
+/** Admin JS path, cache-busted at build time */
+export const JS_PATH = "/admin.js";
+
+/** Scanner JS path, cache-busted at build time */
+export const SCANNER_JS_PATH = "/scanner.js";
+
+/** iframe-resizer parent JS path, cache-busted at build time */
+export const IFRAME_RESIZER_PARENT_JS_PATH = "/iframe-resizer-parent.js";
+
+/** iframe-resizer child JS path, cache-busted at build time */
+export const IFRAME_RESIZER_CHILD_JS_PATH = "/iframe-resizer-child.js";
+
+/** Embed loader JS path, cache-busted at build time */
+export const EMBED_JS_PATH = "/embed.js";
+
+/** Contact form (Botpoison) JS path, cache-busted at build time */
+export const CONTACT_JS_PATH = "/contact.js";
+
+/** Icon sprite path, cache-busted at build time */
+export const ICONS_PATH = "/icons.svg";
+
+/** Build-time CDN origin, or null for a self-contained bundle/dev server. */
+export const ASSET_CDN_ORIGIN: string | null = null;

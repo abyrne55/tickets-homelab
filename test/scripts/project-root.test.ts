@@ -1,0 +1,57 @@
+import { expect } from "@std/expect";
+import { describe, it as test } from "@std/testing/bdd";
+import { projectRoot, rel, toDisplayPath } from "#scripts/project-root.ts";
+
+describe("projectRoot", () => {
+  test("points at the folder holding the project's own config", async () => {
+    const config = await Deno.readTextFile(`${projectRoot}/deno.json`);
+
+    expect(JSON.parse(config).tasks.precommit).toBe(
+      "deno run -A scripts/precommit.ts",
+    );
+  });
+});
+
+describe("toDisplayPath", () => {
+  test("strips a leading ./ from a relative path", () => {
+    expect(toDisplayPath("/base", "./src/index.ts")).toBe("src/index.ts");
+  });
+
+  test("leaves a bare relative path unchanged", () => {
+    expect(toDisplayPath("/base", "src/index.ts")).toBe("src/index.ts");
+  });
+
+  test("shows an absolute path inside the base as base-relative", () => {
+    expect(toDisplayPath("/base", "/base/src/index.ts")).toBe("src/index.ts");
+  });
+
+  test("renders the base itself as '.'", () => {
+    expect(toDisplayPath("/base", "/base")).toBe(".");
+  });
+
+  test("keeps an absolute path that escapes the base", () => {
+    expect(toDisplayPath("/base/sub", "/other/x.ts")).toBe("/other/x.ts");
+  });
+
+  test("keeps the parent directory itself (relative '..')", () => {
+    expect(toDisplayPath("/base/sub", "/base")).toBe("/base");
+  });
+
+  test("does not treat a '..'-prefixed filename as escaping", () => {
+    expect(toDisplayPath("/base", "/base/..cache.ts")).toBe("..cache.ts");
+  });
+});
+
+describe("rel", () => {
+  test("shows a file in the project as a project-relative path", () => {
+    expect(rel(`${projectRoot}/src/example.ts`)).toBe("src/example.ts");
+  });
+
+  test("keeps a relative path unchanged", () => {
+    expect(rel("src/example.ts")).toBe("src/example.ts");
+  });
+
+  test("keeps an absolute path from outside the project", () => {
+    expect(rel("/elsewhere/example.ts")).toBe("/elsewhere/example.ts");
+  });
+});

@@ -1,0 +1,444 @@
+import { assert, assertStringIncludes } from "@std/assert";
+import { expect } from "@std/expect";
+import { describe, it as test } from "@std/testing/bdd";
+import { settings } from "#db/settings.ts";
+import {
+  applySecurityHeaders,
+  buildCspHeader,
+  contentTypeRejectionResponse,
+  getCleanUrl,
+  getSecurityHeaders,
+  isEmbeddablePath,
+  isJsonApiPath,
+  isValidContentType,
+  isWebhookPath,
+  lowerContentType,
+} from "#routes/middleware.ts";
+import {
+  resetEffectiveDomain,
+  setEffectiveDomainForTest,
+} from "#shared/config.ts";
+import {
+  PAYMENT_PROVIDER_IDS,
+  providerCheckoutFormOrigins,
+} from "#shared/payment-providers.ts";
+import { expectIncludesAll } from "#test-utils/assertions.ts";
+import { describeWithEnv } from "#test-utils/db.ts";
+import { disablePublicSite, enablePublicSite } from "#test-utils/settings.ts";
+
+const BASE_CSP =
+  "default-src 'self'; img-src 'self' https://tile.openstreetmap.org; base-uri 'self'; object-src 'none'; form-action 'self'";
+
+const requestWithType = (method: string, contentType?: string): Request =>
+  new Request("http://localhost/test", {
+    ...(contentType === undefined
+      ? {}
+      : { headers: { "content-type": contentType } }),
+    method,
+  });
+
+describe("buildCspHeader", () => {
+  test("defaults to the self-only resource policy", () => {
+    expect(buildCspHeader(true)).toBe(BASE_CSP);
+  });
+
+  test("blocks framing for ordinary pages", () => {
+    expect(buildCspHeader(false)).toBe(`frame-ancestors 'none'; ${BASE_CSP}`);
+  });
+
+  test("allows Botpoison's exact connection endpoint", () => {
+    expect(buildCspHeader(true, undefined, true)).toBe(
+      "default-src 'self'; img-src 'self' https://tile.openstreetmap.org; base-uri 'self'; object-src 'none'; connect-src 'self' https://api.botpoison.com; form-action 'self'",
+    );
+  });
+
+  test("allows a baked CDN only for scripts and styles", () => {
+    expect(
+      buildCspHeader(false, undefined, false, "https://assets.example.com"),
+    ).toBe(
+      "frame-ancestors 'none'; default-src 'self'; img-src 'self' https://tile.openstreetmap.org; base-uri 'self'; object-src 'none'; script-src 'self' https://assets.example.com; style-src 'self' https://assets.example.com; form-action 'self'",
+    );
+  });
+
+  test("names the fonts origin for styles and fonts when the custom CSS uses it", () => {
+    expect(buildCspHeader(false, undefined, false, null, true)).toBe(
+      "frame-ancestors 'none'; default-src 'self'; img-src 'self' https://tile.openstreetmap.org; base-uri 'self'; object-src 'none'; style-src 'self' https://fonts.bunny.net; font-src 'self' https://fonts.bunny.net; form-action 'self'",
+    );
+  });
+
+  test("keeps the baked CDN origin beside the fonts origin", () => {
+    expect(
+      buildCspHeader(
+        false,
+        undefined,
+        false,
+        "https://assets.example.com",
+        true,
+      ),
+    ).toBe(
+      "frame-ancestors 'none'; default-src 'self'; img-src 'self' https://tile.openstreetmap.org; base-uri 'self'; object-src 'none'; script-src 'self' https://assets.example.com; style-src 'self' https://assets.example.com https://fonts.bunny.net; font-src 'self' https://fonts.bunny.net; form-action 'self'",
+    );
+  });
+
+  test("leaves the fonts origin out when the flag is off", () => {
+    const csp = buildCspHeader(
+      true,
+      undefined,
+      false,
+      "https://assets.example.com",
+      false,
+    );
+    assert(!csp.includes("fonts.bunny.net"));
+    assert(!csp.includes("font-src"));
+  });
+
+  test("allows Stripe's hosted checkout", () => {
+    assertStringIncludes(
+      buildCspHeader(true, { provider: "stripe" }),
+      "form-action 'self' https://checkout.stripe.com",
+    );
+  });
+
+  test("allows SumUp's hosted checkout domains", () => {
+    assertStringIncludes(
+      buildCspHeader(true, { provider: "sumup" }),
+      "form-action 'self' https://checkout.sumup.com https://pay.sumup.com",
+    );
+  });
+
+  test("uses Square production domains", () => {
+    const csp = buildCspHeader(true, { provider: "square", sandbox: false });
+    expectIncludesAll(csp, [
+      "https://connect.squareup.com",
+      "https://api.squareup.com",
+    ]);
+    assert(!csp.includes("squareupsandbox.com"));
+  });
+
+  test("uses Square sandbox domains", () => {
+    const csp = buildCspHeader(true, { provider: "square", sandbox: true });
+    expectIncludesAll(csp, [
+      "https://connect.squareupsandbox.com",
+      "https://api.squareupsandbox.com",
+    ]);
+    assert(!csp.includes("https://connect.squareup.com"));
+  });
+
+  // A provider the chain never learned about used to fall through to a bare
+  // `form-action 'self'`, and the browser then blocked every buyer's redirect
+  // to its hosted checkout. The policy now reads the registry, so this holds
+  // for whatever providers the registry declares.
+  for (const provider of PAYMENT_PROVIDER_IDS) {
+    for (const sandbox of [false, true]) {
+      test(`names every ${provider} checkout origin (sandbox: ${sandbox})`, () => {
+        const csp = buildCspHeader(true, { provider, sandbox });
+        const formAction = csp
+          .split("; ")
+          .find((directive) => directive.startsWith("form-action "));
+        expect(formAction).toBe(
+          [
+            "form-action 'self'",
+            ...providerCheckoutFormOrigins(provider, sandbox),
+          ].join(" "),
+        );
+      });
+    }
+  }
+});
+
+describe("JSON paths", () => {
+  for (const path of ["/payment/webhook", "/sms/webhook"]) {
+    test(`${path} is a webhook`, () => {
+      expect(isWebhookPath(path)).toBe(true);
+    });
+  }
+
+  test("near-miss webhook paths do not match", () => {
+    expect(isWebhookPath("/payment/webhooks")).toBe(false);
+    expect(isWebhookPath("/sms/webhooks")).toBe(false);
+  });
+
+  for (const path of [
+    "/admin/listing/12/scan",
+    "/api/listings",
+    "/v1/devices/one",
+  ]) {
+    test(`${path} is a JSON API path`, () => {
+      expect(isJsonApiPath(path)).toBe(true);
+    });
+  }
+
+  test("near-miss API paths do not match", () => {
+    expect(isJsonApiPath("/admin/listing/x/scan")).toBe(false);
+    expect(isJsonApiPath("/apis/listings")).toBe(false);
+    expect(isJsonApiPath("/v10/devices/one")).toBe(false);
+  });
+});
+
+describe("isEmbeddablePath", () => {
+  test("accepts one or more valid ticket slugs", () => {
+    expect(isEmbeddablePath("/ticket/one")).toBe(true);
+    expect(isEmbeddablePath("/ticket/one-two+three_4")).toBe(true);
+  });
+
+  test("rejects malformed ticket paths", () => {
+    expect(isEmbeddablePath("/ticket/UPPERCASE")).toBe(false);
+    expect(isEmbeddablePath("/ticket/two--hyphens")).toBe(false);
+  });
+});
+
+describe("isValidContentType", () => {
+  test("normalizes a missing content type to an empty string", () => {
+    expect(lowerContentType(requestWithType("POST"))).toBe("");
+  });
+
+  test("non-POST requests need no content type", () => {
+    expect(isValidContentType(requestWithType("PATCH"), "/admin/login")).toBe(
+      true,
+    );
+  });
+
+  test("normal middleware does not exempt the specialized scheduled route", () => {
+    expect(isValidContentType(requestWithType("POST"), "/scheduled")).toBe(
+      false,
+    );
+  });
+
+  test("/instance/site-credentials accepts a bodyless POST", () => {
+    expect(
+      isValidContentType(requestWithType("POST"), "/instance/site-credentials"),
+    ).toBe(true);
+  });
+
+  for (const path of [
+    "/payment/webhook",
+    "/sms/webhook",
+    "/admin/listing/12/scan",
+    "/api/listings",
+    "/v1/devices/one",
+  ]) {
+    test(`${path} accepts JSON case-insensitively`, () => {
+      expect(
+        isValidContentType(
+          requestWithType("POST", "Application/JSON; charset=utf-8"),
+          path,
+        ),
+      ).toBe(true);
+    });
+  }
+
+  test("JSON endpoints reject another content type", () => {
+    expect(
+      isValidContentType(
+        requestWithType("POST", "text/plain"),
+        "/payment/webhook",
+      ),
+    ).toBe(false);
+  });
+
+  test("ordinary forms accept URL-encoded content", () => {
+    expect(
+      isValidContentType(
+        requestWithType("POST", "application/x-www-form-urlencoded"),
+        "/admin/login",
+      ),
+    ).toBe(true);
+  });
+
+  test("ordinary forms accept multipart content", () => {
+    expect(
+      isValidContentType(
+        requestWithType("POST", "multipart/form-data; boundary=test"),
+        "/admin/login",
+      ),
+    ).toBe(true);
+  });
+
+  test("ordinary forms reject missing content", () => {
+    expect(isValidContentType(requestWithType("POST"), "/admin/login")).toBe(
+      false,
+    );
+  });
+});
+
+test("contentTypeRejectionResponse is an exact secured plain-text 400", async () => {
+  const response = contentTypeRejectionResponse();
+  expect(response.status).toBe(400);
+  expect(response.headers.get("content-type")).toBe("text/plain");
+  expect(response.headers.get("x-frame-options")).toBe("DENY");
+  expect(await response.text()).toBe("Bad Request: Invalid Content-Type");
+});
+
+describe("getCleanUrl", () => {
+  for (const parameter of [
+    "fbclid",
+    "gclid",
+    "gad_source",
+    "utm_source",
+    "utm_medium",
+    "utm_campaign",
+    "utm_term",
+    "utm_content",
+    "utm_id",
+  ]) {
+    test(`strips ${parameter}`, () => {
+      expect(
+        getCleanUrl(
+          new URL(`https://example.com/page?keep=yes&${parameter}=tracking`),
+        ),
+      ).toBe("/page?keep=yes");
+    });
+  }
+
+  test("returns the bare path when every query parameter is tracking", () => {
+    expect(
+      getCleanUrl(new URL("https://example.com/page?utm_source=tracking")),
+    ).toBe("/page");
+  });
+
+  test("returns null when there is nothing to remove", () => {
+    expect(
+      getCleanUrl(new URL("https://example.com/page?keep=yes")),
+    ).toBeNull();
+  });
+});
+
+describe("getSecurityHeaders", () => {
+  test("sets the exact base headers on ordinary pages", () => {
+    expect(getSecurityHeaders("/admin")).toMatchObject({
+      "referrer-policy": "strict-origin-when-cross-origin",
+      "x-content-type-options": "nosniff",
+      "x-frame-options": "DENY",
+      "x-robots-tag": "noindex, nofollow",
+    });
+  });
+
+  test("allows indexing and framing on embeddable pages", () => {
+    const headers = getSecurityHeaders("/ticket/example");
+    expect(headers["x-robots-tag"]).toBe("index, follow");
+    expect(headers["x-frame-options"]).toBe(undefined);
+  });
+
+  describeWithEnv("x-robots-tag on a public site page", { db: true }, () => {
+    const PUBLIC_PATHS = [
+      "/",
+      "/listings",
+      "/terms",
+      "/contact",
+      "/order",
+      "/news",
+      "/news/spring-fair",
+      "/page/about-us",
+    ] as const;
+
+    test("every public site page drops noindex once the feature is on", async () => {
+      await enablePublicSite();
+      try {
+        for (const path of PUBLIC_PATHS) {
+          expect(getSecurityHeaders(path)["x-robots-tag"]).toBe(
+            "index, follow",
+          );
+        }
+      } finally {
+        await disablePublicSite();
+      }
+    });
+
+    test("every public site page keeps noindex while the feature is off", async () => {
+      await disablePublicSite();
+      for (const path of PUBLIC_PATHS) {
+        expect(getSecurityHeaders(path)["x-robots-tag"]).toBe(
+          "noindex, nofollow",
+        );
+      }
+    });
+
+    test("a private page keeps noindex even with the feature on", async () => {
+      await enablePublicSite();
+      try {
+        for (const path of ["/admin", "/api/listings", "/pay/balance"]) {
+          expect(getSecurityHeaders(path)["x-robots-tag"]).toBe(
+            "noindex, nofollow",
+          );
+        }
+      } finally {
+        await disablePublicSite();
+      }
+    });
+  });
+
+  test("sets HSTS only for a resolved production host", () => {
+    setEffectiveDomainForTest("tickets.example.com");
+    try {
+      expect(getSecurityHeaders("/admin")["strict-transport-security"]).toBe(
+        "max-age=63072000; includeSubDomains; preload",
+      );
+    } finally {
+      resetEffectiveDomain();
+    }
+    expect(getSecurityHeaders("/admin")["strict-transport-security"]).toBe(
+      undefined,
+    );
+  });
+});
+
+describeWithEnv("applySecurityHeaders", { db: true }, () => {
+  test("turns the hidden-listing signal into the public noindex header", async () => {
+    const response = await applySecurityHeaders(
+      new Response("page", { headers: { "x-robots-noindex": "true" } }),
+      "/ticket/example",
+    );
+    expect(response.headers.get("x-robots-tag")).toBe("noindex, nofollow");
+    expect(response.headers.has("x-robots-noindex")).toBe(false);
+  });
+
+  test("keeps a non-2xx public page out of the index", async () => {
+    await enablePublicSite();
+    try {
+      const response = await applySecurityHeaders(
+        new Response("gone", { status: 404 }),
+        "/page/unknown-page",
+      );
+      expect(response.headers.get("x-robots-tag")).toBe("noindex, nofollow");
+    } finally {
+      await disablePublicSite();
+    }
+  });
+
+  test("prevents caching when the response has no explicit policy", async () => {
+    const response = await applySecurityHeaders(new Response("page"), "/admin");
+    expect(response.headers.get("cache-control")).toBe("private, no-store");
+  });
+
+  test("preserves an explicit cache policy", async () => {
+    const response = await applySecurityHeaders(
+      new Response("asset", {
+        headers: { "cache-control": "public, max-age=60" },
+      }),
+      "/admin",
+    );
+    expect(response.headers.get("cache-control")).toBe("public, max-age=60");
+  });
+
+  test("uses the configured Square sandbox policy", async () => {
+    await settings.update.paymentProvider("square");
+    await settings.update.square.sandbox(true);
+    const response = await applySecurityHeaders(new Response("page"), "/admin");
+    assertStringIncludes(
+      response.headers.get("content-security-policy") ?? "",
+      "https://connect.squareupsandbox.com",
+    );
+  });
+
+  test("adds configured frame ancestors only to embeddable pages", async () => {
+    await settings.update.embedHosts("example.com");
+    const response = await applySecurityHeaders(
+      new Response("page"),
+      "/ticket/example",
+    );
+    assertStringIncludes(
+      response.headers.get("content-security-policy") ?? "",
+      "frame-ancestors 'self' example.com",
+    );
+  });
+});

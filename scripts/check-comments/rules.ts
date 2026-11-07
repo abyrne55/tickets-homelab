@@ -1,0 +1,287 @@
+/**
+ * Length and width checks for source comments (see "Comments are short" in
+ * AGENTS.md). The IO shell that reads the files lives in `run.ts`.
+ *
+ * This module is pure: source text in, issues out. Both limits exist because
+ * neither alone bounds a comment — a one-line comment can still run to 200
+ * columns, and eighty short lines still make an essay. Alongside them sits the
+ * one correctness check a machine can make here: a `{@link}` naming something
+ * that no longer exists.
+ */
+
+import { commentSpans } from "#scripts/typescript-lex.ts";
+
+/** How much comment a file is allowed to carry in one place. */
+export interface CommentLimits {
+  maxColumns: number;
+  maxLines: number;
+}
+
+/** One comment that breaks a limit. */
+export interface CommentIssue {
+  fix: string;
+  line: number;
+  problem: string;
+  rule: string;
+}
+
+/**
+ * Comments a tool reads rather than a person. Deleting one changes what the
+ * build does, so no limit may apply to them.
+ */
+const DIRECTIVE =
+  /jscpd:ignore|<reference|biome-ignore|@ts-expect-error|@ts-ignore|@ts-nocheck|@ts-self-types|deno-fmt-ignore|test-groups:|sourceMappingURL/;
+
+/** How many newlines `content` holds between `from` and `to`. */
+const newlinesBetween = (content: string, from: number, to: number): number => {
+  let count = 0;
+  for (let index = from; index < to; index += 1) {
+    if (content.charAt(index) === "\n") count += 1;
+  }
+  return count;
+};
+
+/** One comment as written, with where on the page it opens and closes. */
+interface SourceComment {
+  /** How many characters precede it on its own line. */
+  column: number;
+  /** The offset just past the comment's last character. */
+  end: number;
+  line: number;
+  /** The offset of the comment's first character. */
+  start: number;
+  text: string;
+}
+
+/** How far `offset` sits from the start of its line. */
+const columnOf = (content: string, offset: number): number => {
+  let index = offset;
+  while (index > 0 && content.charAt(index - 1) !== "\n") index -= 1;
+  return offset - index;
+};
+
+/**
+ * The same directive tokens, anchored where the text a language check reads
+ * starts: a comment that only mentions a directive is prose.
+ */
+const DIRECTIVE_AT_START =
+  /^(?:\s|\*|\/\*)*(jscpd:ignore|<reference|biome-ignore|@ts-expect-error|@ts-ignore|@ts-nocheck|@ts-self-types|deno-fmt-ignore|test-groups:|sourceMappingURL)/;
+
+/** How a caller wants directive comments: dropped (the length checks) or
+ * kept (a check that reads the human explanation after the directive). */
+interface CommentOptions {
+  keepDirectives?: boolean;
+}
+
+/**
+ * Every comment in a file, directives dropped, in source order. Spans arrive in
+ * order, so the line number advances by counting newlines since the last one
+ * rather than re-scanning from the top for each.
+ */
+export const readComments = (
+  content: string,
+  { keepDirectives = false }: CommentOptions = {},
+): SourceComment[] => {
+  const comments: SourceComment[] = [];
+  let scanned = 0;
+  let line = 1;
+  for (const span of commentSpans(content)) {
+    line += newlinesBetween(content, scanned, span.start);
+    scanned = span.start;
+    const text = content.slice(span.start, span.end);
+    if (!keepDirectives && DIRECTIVE.test(text)) continue;
+    comments.push({
+      column: columnOf(content, span.start),
+      end: span.end,
+      line,
+      start: span.start,
+      text,
+    });
+  }
+  return comments;
+};
+
+/** The directives whose reason follows the token without punctuation: a
+ * TypeScript suppression states its human reason in the same words. */
+const TS_SUPPRESSION = /@(?:ts-expect-error|ts-ignore)$/;
+
+/** The text a language check reads from a directive comment: the directive
+ * and its target gone, so only the human explanation after it stays. A
+ * TypeScript suppression's reason follows the token whole, colon or not. Any
+ * other directive without a `:` separator carries no explanation. */
+export const blankDirective = (text: string): string => {
+  const match = DIRECTIVE_AT_START.exec(text);
+  if (match === null) return text;
+  const rest = text.slice(match.index + match[0].length);
+  if (TS_SUPPRESSION.test(match[0])) return rest;
+  const colon = rest.indexOf(":");
+  return colon === -1 ? "" : rest.slice(colon + 1);
+};
+
+const tooLong = (
+  comment: SourceComment,
+  limits: CommentLimits,
+): CommentIssue | null => {
+  const lines = comment.text.split("\n").length;
+  if (lines <= limits.maxLines) return null;
+  return {
+    fix: "Say only what the code cannot, or give the confusing part a name that carries the explanation.",
+    line: comment.line,
+    problem: `comment runs ${lines} lines (limit ${limits.maxLines})`,
+    rule: "comment-length",
+  };
+};
+
+/**
+ * The widest line of a comment, with its offset from the comment's own start,
+ * so a wide line deep inside a block reports its own line rather than line one.
+ */
+const widestLine = (text: string): { offset: number; width: number } => {
+  const lines = text.split("\n");
+  let offset = 0;
+  let width = 0;
+  lines.forEach((line, index) => {
+    if (line.length > width) {
+      width = line.length;
+      offset = index;
+    }
+  });
+  return { offset, width };
+};
+
+const tooWide = (
+  comment: SourceComment,
+  limits: CommentLimits,
+): CommentIssue | null => {
+  const { offset, width } = widestLine(comment.text);
+  // Only the opening line sits at a column; later lines carry their own indent.
+  const columns = offset === 0 ? width + comment.column : width;
+  if (columns <= limits.maxColumns) return null;
+  return {
+    fix: "Shorten the wording rather than rewrapping it.",
+    line: comment.line + offset,
+    problem: `comment line is ${columns} columns (limit ${limits.maxColumns})`,
+    rule: "comment-width",
+  };
+};
+
+/** A `{@link Target}` reference, capturing the leading name only, so
+ *  `{@link Money.total}` is judged on `Money`. The optional `*` lets a link that
+ *  wrapped onto the next line of a block still be seen, rather than escaping the
+ *  check by being hard to spot. */
+const DOC_LINK_RE = /\{@link\s+(?:\*\s*)?([A-Za-z_][A-Za-z0-9_]*)/g;
+
+const NAME_RE = /[A-Za-z_][A-Za-z0-9_]*/g;
+
+/**
+ * Every name a file mentions outside a doc link. The links are cut out first, so
+ * a name that appears only as a link target never vouches for itself — which is
+ * what lets a link to a deleted function be spotted.
+ */
+export const namesMentioned = (content: string): Set<string> =>
+  new Set(content.replace(DOC_LINK_RE, " ").match(NAME_RE) ?? []);
+
+/** One file's comments checked against whatever that rule needs to know. */
+export type CommentCheck<Config> = (
+  content: string,
+  config: Config,
+) => CommentIssue[];
+
+/** Turn a rule about one comment into a rule about a whole file, so every check
+ *  walks the comments the same way and reports them in source order. */
+const eachComment =
+  <Config>(
+    check: (comment: SourceComment, config: Config) => CommentIssue[],
+  ): CommentCheck<Config> =>
+  (content, config) =>
+    readComments(content).flatMap((comment) => check(comment, config));
+
+/**
+ * Doc links pointing at a name that appears nowhere in the scanned tree, which
+ * means a rename or delete left the comment behind. Deliberately permissive: a
+ * name still mentioned anywhere counts, so only a target with no home at all is
+ * reported.
+ */
+export const findDeadLinks: CommentCheck<ReadonlySet<string>> = eachComment(
+  (comment, known) =>
+    [...comment.text.matchAll(DOC_LINK_RE)]
+      .filter((match) => !known.has(match[1]!))
+      .map((match) => ({
+        fix: "Point it at the name the code uses now, or drop the link.",
+        // A link deep in a block reports its own line, as a wide line does.
+        line: comment.line + newlinesBetween(comment.text, 0, match.index),
+        problem: `{@link ${match[1]}} names nothing in the tree`,
+        rule: "comment-dead-link",
+      })),
+);
+
+/** Every limit one file's comments break, ordered by where they appear. */
+export const findCommentIssues: CommentCheck<CommentLimits> = eachComment(
+  (comment, limits) =>
+    [tooLong(comment, limits), tooWide(comment, limits)].filter(
+      (issue): issue is CommentIssue => issue !== null,
+    ),
+);
+
+/**
+ * A repo check the comment name-drops, and a word that credits the code with
+ * passing or dodging it: "(avoids jscpd duplication)" and "so the linter
+ * passes" read this way. The checks run on every change, so a comment that
+ * vouches for one adds nothing. Directives a tool reads are already dropped
+ * by readComments, and the tooling trees are out of scope — their comments
+ * document the checks themselves.
+ */
+const GATE_TOOL =
+  /(jscpd|biome|deno[- ]lint|deno fmt|deno check|\btypecheck\b|\bprecommit\b|\blint(?:er|ing)?\b)/i;
+/** Credit words in the object position: the code avoids, satisfies, or
+ * silences the named check. */
+const GATE_CREDIT_OBJECT =
+  /(avoid|satisf|appeas|placat|silenc|excus|happ(?:y|i)|pleas|\bpass(?:es|ed)?\b)/i;
+/** Credit words in the result position, after the tool: the check passes or
+ * is kept happy. "Avoid" stays out — "Biome avoids X" describes the tool,
+ * not the code's shape. */
+const GATE_CREDIT_RESULT =
+  /(satisf|appeas|placat|silenc|excus|happ(?:y|i)|pleas|\bpass(?:es|ed)?\b)/i;
+
+/** Whether a credit word sits beside the tool it credits: right before it
+ * ("avoids jscpd duplication") or just after it ("so the linter passes").
+ * A tool named as the sentence's topic ("Deno lint rules: avoid nested
+ * calls") keeps its distance from the credit word and stays unflagged. */
+const creditsTheTool = (
+  text: string,
+  toolAt: number,
+  toolEnd: number,
+): boolean =>
+  GATE_CREDIT_OBJECT.test(text.slice(Math.max(0, toolAt - 12), toolAt)) ||
+  GATE_CREDIT_RESULT.test(text.slice(toolEnd, toolEnd + 12));
+
+/** Comments under src/ that justify the code by a check it passes or avoids. */
+export const findGateCitations = (
+  file: string,
+  content: string,
+): CommentIssue[] => {
+  // The path shape varies by caller: `src/...` from the gate, absolute from a
+  // test or another root, so the scope check looks for the src segment.
+  if (!/(?:^|\/)src\//.test(file)) return [];
+  return readComments(content).flatMap((comment) => {
+    const tool = GATE_TOOL.exec(comment.text);
+    if (
+      tool === null ||
+      !creditsTheTool(comment.text, tool.index, tool.index + tool[0].length)
+    ) {
+      return [];
+    }
+    return [
+      {
+        fix: "Delete the comment. The checks run on every change, so no comment needs to vouch for the code.",
+        line: comment.line,
+        problem: `comment cites the ${tool[0]} check as a reason for the code's shape`,
+        rule: "gate-citation",
+      },
+    ];
+  });
+};
+
+/** One issue as a reader-friendly line. */
+export const formatIssue = (file: string, issue: CommentIssue): string =>
+  `${file}:${issue.line}  ${issue.problem}\n    ${issue.fix}`;

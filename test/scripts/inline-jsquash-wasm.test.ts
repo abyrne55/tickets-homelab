@@ -1,0 +1,236 @@
+import { assert, assertStringIncludes } from "@std/assert";
+import { expect } from "@std/expect";
+import { fromFileUrl } from "@std/path";
+import { describe, it as test } from "@std/testing/bdd";
+import { FakeTime } from "@std/testing/time";
+import type {
+  OnLoadArgs,
+  OnLoadResult,
+  OnResolveArgs,
+  OnResolveResult,
+  PluginBuild,
+} from "esbuild";
+import {
+  buildModule,
+  buildPackageModule,
+  buildRemoteModule,
+  createPlugin,
+  isBytesImport,
+} from "#scripts/inline-jsquash-wasm.ts";
+import { ASSETS } from "#shared/images/wasm-assets.ts";
+import { expectIncludesAll } from "#test-utils/assertions.ts";
+import { stubFetch } from "#test-utils/fetch-stub.ts";
+
+type ResolveCallback = Parameters<PluginBuild["onResolve"]>[1];
+type LoadCallback = Parameters<PluginBuild["onLoad"]>[1];
+type GeneratedModule = {
+  jpegDec: () => Uint8Array | Promise<Uint8Array>;
+  webpEnc: () => Uint8Array | Promise<Uint8Array>;
+};
+
+const importGeneratedModule = (source: string): Promise<GeneratedModule> =>
+  import(
+    `data:text/javascript;charset=utf-8,${encodeURIComponent(source)}#${crypto.randomUUID()}`
+  );
+
+const fakePluginBuild = (): {
+  build: PluginBuild;
+  loadCallbacks: LoadCallback[];
+  resolveCallbacks: ResolveCallback[];
+} => {
+  const resolveCallbacks: ResolveCallback[] = [];
+  const loadCallbacks: LoadCallback[] = [];
+  const build = {
+    onLoad(
+      _options: Parameters<PluginBuild["onLoad"]>[0],
+      callback: LoadCallback,
+    ) {
+      loadCallbacks.push(callback);
+    },
+    onResolve(
+      _options: Parameters<PluginBuild["onResolve"]>[0],
+      callback: ResolveCallback,
+    ) {
+      resolveCallbacks.push(callback);
+    },
+  } as unknown as PluginBuild;
+  return { build, loadCallbacks, resolveCallbacks };
+};
+
+describe("isBytesImport", () => {
+  test("matches the shared image wasm module and rejects unrelated imports", () => {
+    const imagesDir = "/repo/src/shared/images";
+    expect(
+      isBytesImport(
+        "#shared/images/wasm-bytes.ts",
+        "/repo/src/shared/images",
+        imagesDir,
+      ),
+    ).toBe(true);
+    expect(
+      isBytesImport(
+        "/repo/src/shared/images/wasm-bytes.ts",
+        "/repo/src/shared/images",
+        imagesDir,
+      ),
+    ).toBe(true);
+    expect(isBytesImport("./wasm-bytes.ts", imagesDir, imagesDir)).toBe(true);
+    expect(
+      isBytesImport("./wasm-bytes.ts", "/repo/src/shared/other", imagesDir),
+    ).toBe(false);
+    expect(isBytesImport("./other.ts", imagesDir, imagesDir)).toBe(false);
+  });
+
+  test("normalizes Windows package paths", () => {
+    expect(
+      isBytesImport(
+        ".\\wasm-bytes.ts",
+        "C:\\repo\\src\\shared\\images",
+        "C:/repo/src/shared/images",
+      ),
+    ).toBe(true);
+  });
+});
+
+describe("buildModule", () => {
+  test("builds working base64-backed exports from supplied bytes", async () => {
+    const source = buildModule(
+      [{ exportName: "jpegDec" }, { exportName: "webpEnc" }] as const,
+      (asset) =>
+        asset.exportName === "jpegDec"
+          ? new Uint8Array([1, 2, 3])
+          : new Uint8Array([4, 5]),
+    );
+    expectIncludesAll(source, [
+      'const jpegDecBytes = b64ToBytes("AQID");',
+      "export const jpegDec = () => jpegDecBytes;",
+      'const webpEncBytes = b64ToBytes("BAU=");',
+      "export const webpEnc = () => webpEncBytes;",
+    ]);
+    const generated = await importGeneratedModule(source);
+    expect([...(await generated.jpegDec())]).toEqual([1, 2, 3]);
+    expect([...(await generated.webpEnc())]).toEqual([4, 5]);
+  });
+
+  test("builds the real jSquash module with every expected export", () => {
+    const source = buildPackageModule();
+    for (const asset of ASSETS) {
+      assertStringIncludes(source, `export const ${asset.exportName} = () =>`);
+    }
+    assert(!source.includes("src/shared/images/wasm"));
+  });
+});
+
+describe("buildRemoteModule", () => {
+  test("builds checked fetch-backed exports for published wasm", async () => {
+    const source = buildRemoteModule(
+      [{ exportName: "jpegDec" }, { exportName: "webpEnc" }] as const,
+      {
+        "jpegDec.wasm": "https://assets.example.com/release/jpegDec.wasm",
+        "webpEnc.wasm": "https://assets.example.com/release/webpEnc.wasm",
+      },
+    );
+    using fetchStub = stubFetch(new Response(new Uint8Array([4, 5])));
+    const generated = await importGeneratedModule(source);
+    expect([...(await generated.webpEnc())]).toEqual([4, 5]);
+    expect(fetchStub.calls.map((call) => String(call.args[0]))).toEqual([
+      "https://assets.example.com/release/webpEnc.wasm",
+    ]);
+  });
+
+  test("reports the URL and status when published wasm cannot load", async () => {
+    const url = "https://assets.example.com/release/webpEnc.wasm";
+    const source = buildRemoteModule([{ exportName: "webpEnc" }] as const, {
+      "webpEnc.wasm": url,
+    });
+    using _fetch = stubFetch(new Response(null, { status: 503 }));
+    const generated = await importGeneratedModule(source);
+    await expect(generated.webpEnc()).rejects.toThrow(
+      `Failed to load image codec ${url}: HTTP 503`,
+    );
+  });
+
+  test("aborts a stalled published wasm request after 30 seconds", async () => {
+    using time = new FakeTime();
+    const source = buildRemoteModule([{ exportName: "webpEnc" }] as const, {
+      "webpEnc.wasm": "https://assets.example.com/release/webpEnc.wasm",
+    });
+    const originalFetch = globalThis.fetch;
+    let error: unknown;
+    let settled = false;
+    globalThis.fetch = (_input, init) => {
+      const signal = init?.signal;
+      if (!signal) throw new Error("Expected bounded codec request");
+      return new Promise((_resolve, reject) => {
+        signal.addEventListener("abort", () => reject(signal.reason), {
+          once: true,
+        });
+      });
+    };
+    try {
+      const generated = await importGeneratedModule(source);
+      const observed = Promise.resolve(generated.webpEnc())
+        .catch((caught: unknown) => {
+          error = caught;
+        })
+        .finally(() => {
+          settled = true;
+        });
+      await time.tickAsync(29_999);
+      expect(settled).toBe(false);
+      await time.tickAsync(1);
+      await observed;
+      if (!(error instanceof DOMException)) {
+        throw new Error("Expected codec timeout DOMException");
+      }
+      expect(error.name).toBe("TimeoutError");
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  test("rejects a release missing one of its wasm URLs", () => {
+    expect(() =>
+      buildRemoteModule([{ exportName: "jpegDec" }] as const, {}),
+    ).toThrow("jpegDec.wasm");
+  });
+});
+
+describe("createPlugin", () => {
+  test("registers a resolver and loader for the wasm-bytes module", async () => {
+    const { build, loadCallbacks, resolveCallbacks } = fakePluginBuild();
+    const plugin = createPlugin(() => "export const ok = true;");
+    plugin.setup(build);
+
+    const resolved = (await resolveCallbacks[0]!({
+      path: "#shared/images/wasm-bytes.ts",
+      resolveDir: "/repo/src/shared/images",
+    } as OnResolveArgs)) as OnResolveResult;
+    expect(resolved).toEqual({
+      namespace: "inline-jsquash-wasm",
+      path: "#shared/images/wasm-bytes.ts",
+    });
+    const ignored = await resolveCallbacks[0]!({
+      path: "./other.ts",
+      resolveDir: "/repo/src/shared/images",
+    } as OnResolveArgs);
+    expect(ignored).toBe(undefined);
+    const imagesDir = fromFileUrl(
+      new URL("../../src/shared/images", import.meta.url),
+    );
+    const relative = await resolveCallbacks[0]!({
+      path: "./wasm-bytes.ts",
+      resolveDir: imagesDir,
+    } as OnResolveArgs);
+    expect(relative).toEqual({
+      namespace: "inline-jsquash-wasm",
+      path: "./wasm-bytes.ts",
+    });
+
+    const loaded = (await loadCallbacks[0]!({} as OnLoadArgs)) as OnLoadResult;
+    expect(loaded).toEqual({
+      contents: "export const ok = true;",
+      loader: "ts",
+    });
+  });
+});

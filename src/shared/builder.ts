@@ -1,0 +1,380 @@
+/**
+ * Site builder — creates new Tickets instances via Bunny or Deno Deploy.
+ *
+ * Both flows auto-provision a database when dbUrl and dbToken are absent.
+ * Bunny additionally needs cookies enabled on the linked pull zone
+ * (DisableCookies: false), or sessions do not survive the CDN.
+ */
+
+import { toBase64 } from "#crypto/utils.ts";
+import type { DbProvider, HostingProvider } from "#db/built-sites/types.ts";
+import { builtSitesCrudTable } from "#db/built-sites.ts";
+import { t, withMessageGroups } from "#i18n";
+import {
+  dryRunOrFetchText,
+  runWithSiteBuildScope,
+} from "#shared/builder-dry-run.ts";
+import { bunnyDbProvider } from "#shared/bunny-db.ts";
+import { getDefaultDbProvider } from "#shared/config.ts";
+import { getEnv } from "#shared/env.ts";
+import { errorMessage } from "#shared/error-message.ts";
+import { errorResult, type Outcome } from "#shared/result.ts";
+import { generateScheduledTaskKey } from "#shared/scheduled-keys.ts";
+import { withSiteDb } from "#shared/site-db.ts";
+import { resolveHostingProvider } from "#shared/site-hosting.ts";
+import {
+  supportMessageApi,
+  supportMessageTooLong,
+} from "#shared/site-support-message.ts";
+import { getSupportPageText } from "#shared/support.ts";
+import { tryStep } from "#shared/try-step.ts";
+import { tursoDbProvider } from "#shared/turso-api.ts";
+import { fetchLatestRelease } from "#shared/update.ts";
+
+/**
+ * Secrets copied from the host environment to every built site (when set).
+ * `hostInfra: true` tags account-/infrastructure-level credentials (the Bunny
+ * account key, shared storage, host email, wallet signing material). They are
+ * copied deliberately — built sites are trusted clones on the operator's own
+ * infrastructure. The backfill UI surfaces them distinctly so the operator
+ * stays aware. Keeping sensitivity here, on the single source list, stops it
+ * drifting from a hand-maintained parallel list.
+ */
+type HostSecret = {
+  name: string;
+  hostInfra?: boolean;
+  bunnyOnly?: boolean;
+};
+
+const HOST_SECRETS: readonly HostSecret[] = [
+  { name: "NTFY_URL" },
+  { name: "SENTRY_URL" },
+  { name: "BOTPOISON_PUBLIC_KEY" },
+  { name: "BOTPOISON_SECRET_KEY" },
+  { name: "ADMIN_EMAIL_ADDRESS" },
+  { name: "SUPPORT_FORM_NAG_DAYS" },
+  { hostInfra: true, name: "STORAGE_ZONE_NAME" },
+  { hostInfra: true, name: "STORAGE_ZONE_KEY" },
+  { name: "HOST_EMAIL_PROVIDER" },
+  { hostInfra: true, name: "HOST_EMAIL_API_KEY" },
+  { name: "HOST_EMAIL_FROM_ADDRESS" },
+  { bunnyOnly: true, hostInfra: true, name: "BUNNY_API_KEY" },
+  { bunnyOnly: true, hostInfra: true, name: "BUNNY_DNS_ZONE_ID" },
+  { bunnyOnly: true, name: "BUNNY_DNS_SUBDOMAIN_SUFFIX" },
+  { name: "APPLE_WALLET_PASS_TYPE_ID" },
+  { name: "APPLE_WALLET_TEAM_ID" },
+  { hostInfra: true, name: "APPLE_WALLET_SIGNING_CERT" },
+  { hostInfra: true, name: "APPLE_WALLET_SIGNING_KEY" },
+  { hostInfra: true, name: "APPLE_WALLET_WWDR_CERT" },
+  { name: "GOOGLE_WALLET_ISSUER_ID" },
+  { name: "GOOGLE_WALLET_SERVICE_ACCOUNT_EMAIL" },
+  { hostInfra: true, name: "GOOGLE_WALLET_SERVICE_ACCOUNT_KEY" },
+];
+
+/** The host-level infrastructure credential names — the high-privilege subset
+ * the backfill UI flags. Derived from the same list, so it can't drift. */
+export const HOST_INFRA_SECRET_KEYS: readonly string[] = HOST_SECRETS.filter(
+  (s) => s.hostInfra,
+).map((s) => s.name);
+
+/** Secrets that only work when both keys change together, declared once per
+ * pair. Completing one half from the host can mismatch a half the site
+ * already holds. The hosting API never returns values, so the copy cannot
+ * check. */
+const SECRET_PAIRS: readonly (readonly [string, string])[] = [
+  ["BOTPOISON_PUBLIC_KEY", "BOTPOISON_SECRET_KEY"],
+];
+
+/** The other name of a two-key secret, for keys that only work as a pair.
+ * Null for every name that is not one half of a declared pair — absence is
+ * the normal case for a copy list that mostly holds standalone secrets. */
+export const pairSiblingOrNull = (name: string): string | null => {
+  const pair = SECRET_PAIRS.find(([a, b]) => a === name || b === name);
+  if (pair === undefined) return null;
+  return pair[0] === name ? pair[1] : pair[0];
+};
+
+export type BuildSiteInput = {
+  siteName: string;
+  /** Leave blank to auto-provision a new database via the API. */
+  dbUrl?: string;
+  /** Leave blank to auto-provision a new database via the API. */
+  dbToken?: string;
+  /**
+   * Pre-built bundle source to deploy. When omitted, the latest GitHub
+   * release asset is fetched (used by /admin/builder). The CLI builder
+   * passes a freshly-built local bundle here.
+   */
+  code?: string;
+  /** Hosting provider — defaults to "bunny". */
+  hostingProvider?: HostingProvider;
+  /** Database provider (when auto-provisioning) — defaults to "bunny". */
+  dbProvider?: DbProvider;
+};
+
+export type BuildSiteResult =
+  | {
+      ok: true;
+      /** Provider-specific identifier: Bunny script ID (as string) or Deno app ID. */
+      hostingId: string;
+      defaultHostname: string;
+      dbUrl: string;
+      dbToken: string;
+      hostingProvider: HostingProvider;
+      dbProvider: DbProvider;
+    }
+  | { ok: false; error: string };
+
+export type PreparedBuildSite = Extract<BuildSiteResult, { ok: true }> & {
+  scheduledTaskKey: string;
+};
+
+/** Retain the prepared site and answer its row's id, so the build deletes
+ * the row when a later step fails and no unfinished site stays recorded. */
+export type RetainPreparedSite = (site: PreparedBuildSite) => Promise<number>;
+
+type BuildSiteCredentials = { dbUrl: string; dbToken: string };
+
+/** Generate a random 32-byte base64 encryption key */
+export const generateEncryptionKey = (): string => {
+  const bytes = crypto.getRandomValues(new Uint8Array(32));
+  return toBase64(bytes);
+};
+
+/** Test a libsql database connection by running a simple query */
+export const testDbConnection = async (
+  dbUrl: string,
+  dbToken: string,
+): Promise<Outcome> => {
+  const result = await withSiteDb({ dbToken, dbUrl }, (client) =>
+    client.execute("SELECT 1"),
+  );
+  return result.ok ? { ok: true } : errorResult(result.error);
+};
+
+/**
+ * Collect the host-environment secrets that are currently set, as [name, value]
+ * pairs. These are copied onto every freshly built site, and backfilled onto
+ * existing sites that are missing them (see #shared/site-secrets.ts).
+ * Secrets tagged `bunnyOnly` apply to Bunny sites alone. Every site keeps the
+ * support message as a readable variable instead of a secret copy (see
+ * #shared/site-support-message.ts).
+ */
+export const collectHostSecrets = (
+  hostingProvider: HostingProvider = "bunny",
+): [string, string][] => {
+  const secrets: [string, string][] = [];
+  for (const { name, bunnyOnly } of HOST_SECRETS) {
+    if (bunnyOnly && hostingProvider !== "bunny") continue;
+    const value = getEnv(name);
+    if (value) secrets.push([name, value]);
+  }
+  return secrets;
+};
+
+/** Build the base per-site secrets: DB credentials and encryption key. */
+const buildBaseSecrets = (
+  dbCredentials: BuildSiteCredentials,
+  encryptionKey: string,
+): [string, string][] => [
+  ["DB_URL", dbCredentials.dbUrl],
+  ["DB_TOKEN", dbCredentials.dbToken],
+  ["DB_ENCRYPTION_KEY", encryptionKey],
+];
+
+/** Source the bundle code from input or the latest GitHub release. */
+const getBuildCode = async (
+  input: BuildSiteInput,
+): Promise<{ ok: true; code: string } | { ok: false; error: string }> => {
+  if (input.code !== undefined) return { code: input.code, ok: true };
+
+  return tryStep("Failed to fetch release", async () => {
+    const release = await fetchLatestRelease();
+    if (!release.assetUrl) {
+      return { error: "No release asset found on GitHub", ok: false as const };
+    }
+    const assetResponse = await dryRunOrFetchText(release.assetUrl, () => ({}));
+    if (!assetResponse.ok) {
+      return {
+        error: `Failed to download release: ${assetResponse.status}`,
+        ok: false as const,
+      };
+    }
+    return { code: assetResponse.text, ok: true as const };
+  });
+};
+
+/** Use supplied DB credentials or provision a new database via the selected provider. */
+const getDbCredentials = async (
+  input: BuildSiteInput,
+): Promise<
+  | {
+      ok: true;
+      credentials: BuildSiteCredentials;
+      dbProvider: DbProvider;
+    }
+  | { ok: false; error: string }
+> => {
+  if (input.dbUrl) {
+    return {
+      credentials: { dbToken: input.dbToken ?? "", dbUrl: input.dbUrl },
+      dbProvider: input.dbProvider ?? getDefaultDbProvider(),
+      ok: true,
+    };
+  }
+
+  const provider = input.dbProvider ?? getDefaultDbProvider();
+  const dbResult = await builderApi.createDatabase(input.siteName, provider);
+  if (!dbResult.ok) return dbResult;
+  return {
+    credentials: {
+      dbToken: dbResult.value.dbToken,
+      dbUrl: dbResult.value.dbUrl,
+    },
+    dbProvider: provider,
+    ok: true,
+  };
+};
+
+/**
+ * Build a new site on the selected hosting provider: Bunny Edge Scripting or
+ * Deno Deploy. Configures secrets/env-vars and deploys the code.
+ */
+const buildSiteOnProvider = async (
+  input: BuildSiteInput,
+  code: string,
+  dbCredentials: BuildSiteCredentials,
+  dbProvider: DbProvider,
+  hostSupportText: string | null,
+  hostingProvider: HostingProvider,
+  retain: RetainPreparedSite,
+): Promise<BuildSiteResult> => {
+  const fullName = `Tickets - ${input.siteName}`;
+  const encryptionKey = builderApi.generateEncryptionKey();
+  const scheduledTaskKey = generateScheduledTaskKey();
+  const secrets: [string, string][] = [
+    ...buildBaseSecrets(dbCredentials, encryptionKey),
+    ["SCHEDULED_TASK_KEY", scheduledTaskKey],
+    ...collectHostSecrets(hostingProvider),
+  ];
+  const provider = resolveHostingProvider(hostingProvider);
+  const result = await provider.prepareSite(fullName, code, secrets);
+  if (!result.ok) return result;
+  const prepared: PreparedBuildSite = {
+    dbProvider,
+    dbToken: dbCredentials.dbToken,
+    dbUrl: dbCredentials.dbUrl,
+    defaultHostname: result.value.defaultHostname,
+    hostingId: result.value.hostingId,
+    hostingProvider,
+    ok: true,
+    scheduledTaskKey,
+  };
+  let retainedId: number;
+  try {
+    retainedId = await retain(prepared);
+  } catch (error) {
+    return {
+      error: `Failed to retain site: ${errorMessage(error)}`,
+      ok: false,
+    };
+  }
+  // The recorded site must not survive a failed build. A record that cannot
+  // be deleted appends its own failure, so the provider error stays the
+  // first cause in the answer.
+  const buildFailedAfterRetain = async (failed: {
+    error: string;
+    ok: false;
+  }): Promise<BuildSiteResult> => {
+    try {
+      await builtSitesCrudTable.deleteById(retainedId);
+    } catch (deleteError) {
+      return {
+        error: `${failed.error}; the retained record could not be deleted: ${errorMessage(deleteError)}`,
+        ok: false,
+      };
+    }
+    return failed;
+  };
+  // Every site's support message lives as a readable variable, so the new
+  // site starts with the host's own text instead of a secret copy nobody can
+  // read back. Set before publishing so the first request already sees it.
+  if (hostSupportText !== null) {
+    const seeded = await supportMessageApi.setSupportMessage(
+      hostingProvider,
+      result.value.hostingId,
+      hostSupportText,
+    );
+    if (!seeded.ok) return await buildFailedAfterRetain(seeded);
+  }
+  const published = await provider.publishSite(result.value.hostingId, code);
+  if (!published.ok) return await buildFailedAfterRetain(published);
+  const { scheduledTaskKey: _scheduledTaskKey, ...built } = prepared;
+  return built;
+};
+
+/**
+ * Build a new site: provision database if needed, create hosting, configure
+ * secrets, deploy. The whole flow runs inside the site-build scope, so a
+ * SITE_BUILD_DRY_RUN set answers these calls without live network while the
+ * same instance's unrelated admin actions stay real.
+ */
+export const buildSite = async (
+  input: BuildSiteInput,
+  retain: RetainPreparedSite,
+): Promise<BuildSiteResult> =>
+  runWithSiteBuildScope(async () => {
+    const hostSupportText = getSupportPageText();
+    // The seed copy must fit a site's variable, so a swollen host text fails
+    // the build before any provisioned resource — database, hosting script,
+    // or release download — exists to leave behind.
+    if (hostSupportText !== null && supportMessageTooLong(hostSupportText)) {
+      // A site-plan purchase auto-builds inside the booking request, where
+      // only the public message groups are visible: load the builder's own
+      // copy around this one lookup so the refusal still reads its sentence.
+      return {
+        error: await withMessageGroups(["built-sites"], () =>
+          t("built_sites.support_message_too_long"),
+        ),
+        ok: false,
+      };
+    }
+
+    // 1. Source the bundle code: caller-supplied or latest GitHub release
+    const codeResult = await getBuildCode(input);
+    if (!codeResult.ok) {
+      return codeResult;
+    }
+
+    // 2. Auto-provision database if credentials not supplied
+    const credentialsResult = await getDbCredentials(input);
+    if (!credentialsResult.ok) {
+      return credentialsResult;
+    }
+    const { credentials: dbCredentials, dbProvider } = credentialsResult;
+
+    // 3. Build on the selected hosting provider
+    return buildSiteOnProvider(
+      input,
+      codeResult.code,
+      dbCredentials,
+      dbProvider,
+      hostSupportText,
+      input.hostingProvider ?? "bunny",
+      retain,
+    );
+  });
+
+/** Dispatch database creation to the selected provider. */
+function createDatabase(name: string, provider: DbProvider = "bunny") {
+  if (provider === "turso") return tursoDbProvider.createDatabase(name);
+  return bunnyDbProvider.createDatabase(name);
+}
+
+/** Stubbable API for testing */
+export const builderApi = {
+  buildSite,
+  createDatabase,
+  generateEncryptionKey,
+  testDbConnection,
+};

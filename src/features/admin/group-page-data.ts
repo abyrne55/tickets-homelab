@@ -1,0 +1,206 @@
+/**
+ * Data loaders for the group entity page's tabs — Overview, Attendees, and
+ * Edit. Each gathers exactly what its own tab renders (per-tab loading). So
+ * the decrypted-attendee fetch runs only for the two tabs that show roster
+ * data, never for a bare Edit render. The gathering mirrors the pre-migration
+ * detail and edit handlers (groups.ts) so the tabs render the same data those
+ * separate pages used to.
+ */
+
+import { listingMoneyTotals } from "#accounting/listing-money-totals.ts";
+import { emptyRange } from "#accounting/range.ts";
+import { linePair } from "#booking/ticket-moves.ts";
+import { decryptAttendees } from "#db/attendees/pii.ts";
+import { getPairBookings } from "#db/attendees/ticket-lines.ts";
+import { getListingsNotInGroup } from "#db/groups/candidates.ts";
+import {
+  getGroupById,
+  getGroupPackagePrices,
+  getListingsByGroupId,
+} from "#db/groups.ts";
+import { getActiveHolidays } from "#db/holidays.ts";
+import { getGroupDayPrices } from "#db/listing-prices.ts";
+import { getAttendeesByListingIds } from "#db/listings/attendees.ts";
+import { loadAttendeeQuestionData } from "#db/questions/attendee-answers/reads.ts";
+import { settings } from "#db/settings.ts";
+import {
+  getVisibleGroupMembers,
+  groupBookable,
+} from "#routes/public/group-liveness.ts";
+import { getEffectiveDomain } from "#shared/config.ts";
+import { requireRequestPrivateKey } from "#shared/session-private-key.ts";
+import { sortListings } from "#shared/sort-listings.ts";
+import { GroupAttendeesPanel } from "#templates/admin/groups/attendees.tsx";
+import {
+  GroupEditPanel,
+  type PackageMemberValues,
+} from "#templates/admin/groups/form.tsx";
+import { GroupOverviewPanel } from "#templates/admin/groups/overview.tsx";
+import { type Group, isPaidListing, type ListingWithCount } from "#types";
+import { loadItemImagesPanel } from "./item-images.ts";
+
+/** The group entity page's loaded row is just the stored group. Every tab's
+ * remaining data is fetched by its own loader below. So a bare page frame
+ * never decrypts a roster it is not about to show. */
+export const loadGroupForPage = (id: number): Promise<Group | null> =>
+  getGroupById(id);
+
+/** Whether a group's roster has any paid attendee data to decrypt. A package
+ * member can carry a `package_price` override while its own `unit_price` is 0,
+ * so it is paid in practice. Treat any positive override as paid (alongside
+ * the usual {@link isPaidListing} checks) so the roster decrypts payment
+ * fields. */
+export const groupHasPaidListing = async (
+  group: Group,
+  listings: ListingWithCount[],
+): Promise<boolean> => {
+  if (listings.some(isPaidListing)) return true;
+  if (!group.is_package) return false;
+  // Only a positive override charges money. A null (no override → base price,
+  // already covered above) or an explicit free (0) adds no revenue. Per-day
+  // overrides can make an otherwise-free customisable member paid the same way.
+  const rows = await getGroupPackagePrices(group.id);
+  if (rows.some((row) => (row.package_price ?? 0) > 0)) return true;
+  const dayRows = await getGroupDayPrices(group.id);
+  return [...dayRows.values()].some((byDay) =>
+    [...byDay.values()].some((price) => price > 0),
+  );
+};
+
+/** The group's sorted member listings, its decrypted attendees, the roster's
+ * question data, and the paid-listing flag that gated the decrypt. It also
+ * carries the active holidays used for sorting. The Overview and Attendees
+ * tabs share this, and both read the roster. */
+const loadGroupRoster = async (group: Group) => {
+  const [listings, holidays] = await Promise.all([
+    getListingsByGroupId(group.id),
+    getActiveHolidays(),
+  ]);
+  const sortedListings = sortListings(listings, holidays);
+  const listingIds = sortedListings.map((listing) => listing.id);
+  // Package-aware: an override-priced package charges via package_price even
+  // when its member listings are free. So this decides whether the roster
+  // decrypts payment fields AND whether the detail table shows the revenue row.
+  const hasPaidListing = await groupHasPaidListing(group, sortedListings);
+  const privateKey = await requireRequestPrivateKey();
+  // getAttendeesByListingIds resolves to [] for an empty id list, so no guard is
+  // needed — an empty group yields an empty roster.
+  const rawAttendees = await getAttendeesByListingIds(listingIds);
+  const attendees = await decryptAttendees(
+    rawAttendees,
+    privateKey,
+    hasPaidListing,
+  );
+  const questionData = await loadAttendeeQuestionData(
+    listingIds,
+    attendees.map((attendee) => attendee.id),
+    privateKey,
+  );
+  return {
+    attendees,
+    hasPaidListing,
+    holidays,
+    listingIds,
+    listings: sortedListings,
+    questionData,
+  };
+};
+
+type GroupRoster = Awaited<ReturnType<typeof loadGroupRoster>>;
+
+/** The props both roster-reading tabs share: the display domain, the group, its
+ * sorted listings, the decrypted attendees, and the optional question data.
+ * Each tab spreads these and adds its own extras. */
+const rosterPanelProps = (group: Group, roster: GroupRoster) => ({
+  allowedDomain: getEffectiveDomain(),
+  attendees: roster.attendees,
+  group,
+  listings: roster.listings,
+  ...(roster.questionData !== undefined
+    ? { questionData: roster.questionData }
+    : {}),
+});
+
+/** Load the roster once, then hand it (with its group) to a panel builder. The
+ * Overview and Attendees tabs share their roster fetch in this single place. */
+const rosterTab =
+  (
+    build: (
+      group: Group,
+      roster: GroupRoster,
+      canViewLedger: boolean,
+    ) => JSX.Element | Promise<JSX.Element>,
+  ) =>
+  async (group: Group, canViewLedger = false): Promise<JSX.Element> =>
+    build(group, await loadGroupRoster(group), canViewLedger);
+
+/** Build the Overview tab: the group detail table, the member-listings table,
+ * and the add-listings membership form. */
+export const loadGroupOverviewPanel = rosterTab(
+  async (group, roster, canViewLedger) => {
+    // The add-listings form offers any listing not already in THIS group —
+    // membership is many-to-many, so a listing in another group can still join.
+    const [listingsNotInGroup, visibleMembers, money] = await Promise.all([
+      getListingsNotInGroup(group.id),
+      getVisibleGroupMembers(group),
+      listingMoneyTotals(emptyRange, roster.listingIds),
+    ]);
+    const ungroupedListings = sortListings(listingsNotInGroup, roster.holidays);
+    // Mirror exactly when the public /ticket/<group> page renders vs 404s so
+    // the admin never offers a dead share/QR/embed link. It 404s when the
+    // buyer-visible member list is empty and, for a package, when the bundle
+    // is not bookable. A regular group with merely sold-out members still
+    // renders.
+    const shareable =
+      visibleMembers.length > 0 &&
+      (!group.is_package || (await groupBookable(group, visibleMembers)));
+    return GroupOverviewPanel({
+      ...rosterPanelProps(group, roster),
+      hasPaidListing: roster.hasPaidListing,
+      ...(canViewLedger
+        ? { ledgerHref: `/admin/ledger?group=${group.id}` }
+        : {}),
+      money,
+      shareable,
+      ungroupedListings,
+    });
+  },
+);
+
+/** Build the Attendees tab: one row per booking line across the group's
+ * listings. */
+export const loadGroupAttendeesPanel = rosterTab(async (group, roster) =>
+  GroupAttendeesPanel({
+    ...rosterPanelProps(group, roster),
+    pairBookings: await getPairBookings(roster.attendees.map(linePair)),
+    phonePrefix: settings.phonePrefix,
+  }),
+);
+
+/** Build the Edit tab: the group form with the per-listing package-price table
+ * pre-filled from the group's current overrides. A null price renders blank
+ * (no override). An explicit 0 renders as 0 (free in the package). */
+export const loadGroupEditPanel = async (
+  group: Group,
+): Promise<JSX.Element> => {
+  const [listings, rows, dayPrices] = await Promise.all([
+    getListingsByGroupId(group.id),
+    getGroupPackagePrices(group.id),
+    getGroupDayPrices(group.id),
+  ]);
+  const members: PackageMemberValues = new Map(
+    rows.map((row) => [
+      row.listing_id,
+      {
+        dayPrices: dayPrices.get(row.listing_id) ?? new Map(),
+        price: row.package_price,
+        quantity: row.quantity,
+      },
+    ]),
+  );
+  return GroupEditPanel({ group, listings, members });
+};
+
+/** Build the Images tab: current linked images plus upload/existing selection. */
+export const loadGroupImagesPanel = (group: Group): Promise<JSX.Element> =>
+  loadItemImagesPanel("group", group.id, `/admin/groups/${group.id}`);

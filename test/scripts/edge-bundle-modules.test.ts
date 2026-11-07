@@ -1,0 +1,324 @@
+/**
+ * Tests for the pure builders and guards behind the shared edge-bundle
+ * pipeline (`scripts/edge-bundle-modules.ts`). These produce the source text
+ * esbuild inlines in place of the dev/test modules that read from disk, and the
+ * post-build assertions on the finished bundle. The IO shell that drives
+ * esbuild (`edge-bundle-lib.ts`) is exercised by `deno task build:edge`; the
+ * branch-carrying logic lives here and is unit-tested directly.
+ */
+
+import { assert, assertStringIncludes } from "@std/assert";
+import { expect } from "@std/expect";
+import { describe, it as test } from "@std/testing/bdd";
+import {
+  type AssetDef,
+  buildAssetPathsModule,
+  buildAssetsModule,
+  buildBuildInfoModule,
+  bundleSizeGuard,
+  nativeLibsqlGuard,
+  reactRuntimeGuard,
+  renameSourceMapLink,
+  SENTRY_BUILD_DEFINES,
+  sentryTreeShakingGuard,
+} from "#scripts/edge-bundle-modules.ts";
+import { expectIncludesAll } from "#test-utils/assertions.ts";
+
+describe("buildBuildInfoModule", () => {
+  test("emits both constants with the given timestamp and commit", () => {
+    expect(buildBuildInfoModule("2026-07-04T00:00:00.000Z", "abc123")).toBe(
+      [
+        `export const BUILD_TIMESTAMP = "2026-07-04T00:00:00.000Z";`,
+        `export const BUILD_COMMIT = "abc123";`,
+      ].join("\n"),
+    );
+  });
+
+  test("JSON-encodes an empty commit rather than emitting a bare token", () => {
+    assertStringIncludes(
+      buildBuildInfoModule("2026-01-01T00:00:00.000Z", ""),
+      `export const BUILD_COMMIT = "";`,
+    );
+  });
+
+  test("escapes values through JSON.stringify", () => {
+    // A quote in the value must be escaped, not emitted raw, or the module
+    // would be syntactically broken.
+    assertStringIncludes(
+      buildBuildInfoModule("2026", 'a"b'),
+      `export const BUILD_COMMIT = "a\\"b";`,
+    );
+  });
+});
+
+const PATH_DEFS: AssetDef[] = [
+  ["favicon.svg", "handleFavicon", "image/svg+xml", ""],
+  ["style.css", "handleStyleCss", "text/css", "CSS_PATH"],
+  ["embed.js", "handleEmbedJs", "application/javascript", "EMBED_JS_PATH"],
+];
+
+describe("buildAssetPathsModule", () => {
+  test("emits a const only for defs that carry a path constant", () => {
+    const out = buildAssetPathsModule(PATH_DEFS, 1234);
+    // favicon.svg has no path constant, so it is filtered out entirely.
+    assert(!out.includes("favicon"));
+    expectIncludesAll(out, ["CSS_PATH", "EMBED_JS_PATH"]);
+  });
+
+  test("cache-busts normal assets with the build timestamp", () => {
+    assertStringIncludes(
+      buildAssetPathsModule(PATH_DEFS, 1234),
+      `export const CSS_PATH = "/style.css?ts=1234";`,
+    );
+  });
+
+  test("never cache-busts the embed script (must always serve latest)", () => {
+    assertStringIncludes(
+      buildAssetPathsModule(PATH_DEFS, 1234),
+      `export const EMBED_JS_PATH = "/embed.js";`,
+    );
+  });
+
+  test("produces exactly the path consts, newline-joined", () => {
+    expect(buildAssetPathsModule(PATH_DEFS, 1234)).toBe(
+      [
+        `export const CSS_PATH = "/style.css?ts=1234";`,
+        `export const EMBED_JS_PATH = "/embed.js";`,
+        "export const ASSET_CDN_ORIGIN = null;",
+      ].join("\n"),
+    );
+  });
+
+  test("bakes published CDN URLs and origin into the bundle", () => {
+    const paths = buildAssetPathsModule(PATH_DEFS, 1234, {
+      origin: "https://assets.example.com",
+      urls: {
+        "style.css": "https://assets.example.com/assets/release/style.css",
+      },
+    });
+    expectIncludesAll(paths, [
+      `export const CSS_PATH = "https://assets.example.com/assets/release/style.css";`,
+      `export const EMBED_JS_PATH = "/embed.js";`,
+      `export const ASSET_CDN_ORIGIN = "https://assets.example.com";`,
+    ]);
+  });
+});
+
+const ASSET_DEFS: AssetDef[] = [
+  ["favicon.svg", "handleFavicon", "image/svg+xml", ""],
+  ["admin.js", "handleAdminJs", "application/javascript", "JS_PATH"],
+];
+const STATIC_ASSETS = {
+  "admin.js": "console.log(1)",
+  "favicon.svg": "<svg/>",
+  "order.js": "widget-source",
+};
+const CDN_ASSETS = {
+  origin: "https://assets.example.com",
+  urls: {
+    "admin.js": "https://assets.example.com/assets/release/admin.js",
+  },
+};
+
+/** Import one generated module, typed by the caller's claim about its
+ * exports: the data import itself carries no types. */
+const importAssetsModule = <T extends Record<string, unknown>>(
+  source: string,
+): Promise<T> =>
+  import(
+    `data:text/javascript;charset=utf-8,${encodeURIComponent(source)}#${crypto.randomUUID()}`
+  ) as Promise<T>;
+
+describe("buildAssetsModule", () => {
+  test("declares a variable per def carrying the pre-read content", () => {
+    const out = buildAssetsModule(ASSET_DEFS, STATIC_ASSETS);
+    expectIncludesAll(out, [
+      `const v0 = "<svg/>";`,
+      `const v1 = "console.log(1)";`,
+    ]);
+  });
+
+  test("emits a handler wiring each export name to its content-type and var", () => {
+    const out = buildAssetsModule(ASSET_DEFS, STATIC_ASSETS);
+    expectIncludesAll(out, [
+      `export const handleFavicon = () => new Response(v0, { headers: { "content-type": "image/svg+xml", ...CACHE_HEADERS } });`,
+      `export const handleAdminJs = () => new Response(v1, { headers: { "content-type": "application/javascript", ...CACHE_HEADERS } });`,
+    ]);
+  });
+
+  test("declares the immutable cache header once", () => {
+    assertStringIncludes(
+      buildAssetsModule(ASSET_DEFS, STATIC_ASSETS),
+      `const CACHE_HEADERS = { "cache-control": "public, max-age=31536000, immutable" };`,
+    );
+  });
+
+  test("wires a fresh-revalidation asset to FRESH_HEADERS and serves it", async () => {
+    const out = buildAssetsModule(
+      [
+        [
+          "scanner-sw.js",
+          "handleScannerSwJs",
+          "application/javascript",
+          "",
+          false,
+          true,
+        ],
+      ],
+      { "scanner-sw.js": "worker-source" },
+    );
+    assertStringIncludes(
+      out,
+      `export const handleScannerSwJs = () => new Response(v0, { headers: { "content-type": "application/javascript", ...FRESH_HEADERS } });`,
+    );
+
+    const generated = await importAssetsModule<{
+      handleScannerSwJs: () => Response;
+    }>(out);
+    expect(generated.handleScannerSwJs().headers.get("cache-control")).toBe(
+      "no-cache",
+    );
+  });
+
+  test("mirrors assets.ts's orderWidgetBody from the inlined order.js", () => {
+    const out = buildAssetsModule(ASSET_DEFS, STATIC_ASSETS);
+    expectIncludesAll(out, [
+      `const orderJsBody = "widget-source";`,
+      "export const orderWidgetBody = () => orderJsBody;",
+    ]);
+  });
+
+  test("redirects published assets without embedding their bodies", () => {
+    const out = buildAssetsModule(ASSET_DEFS, STATIC_ASSETS, CDN_ASSETS);
+    assert(!out.includes("console.log(1)"));
+    expectIncludesAll(out, [
+      `export const handleAdminJs = () => new Response(null, { status: 302, headers: { location: "https://assets.example.com/assets/release/admin.js" } });`,
+      `const v0 = "<svg/>";`,
+    ]);
+  });
+
+  test("returns a CDN redirect whose security headers remain mutable", async () => {
+    const generated = await importAssetsModule<{
+      handleAdminJs: () => Response;
+    }>(buildAssetsModule(ASSET_DEFS, STATIC_ASSETS, CDN_ASSETS));
+    const response = generated.handleAdminJs();
+
+    response.headers.set("x-content-type-options", "nosniff");
+    expect(response.status).toBe(302);
+    expect(response.headers.get("location")).toBe(
+      "https://assets.example.com/assets/release/admin.js",
+    );
+    expect(response.headers.get("x-content-type-options")).toBe("nosniff");
+  });
+
+  test("produces exactly the vars, cache header, handlers, and widget, newline-joined", () => {
+    expect(buildAssetsModule(ASSET_DEFS, STATIC_ASSETS)).toBe(
+      [
+        `const v0 = "<svg/>";`,
+        `const v1 = "console.log(1)";`,
+        `const CACHE_HEADERS = { "cache-control": "public, max-age=31536000, immutable" };`,
+        `const FRESH_HEADERS = { "cache-control": "no-cache" };`,
+        `export const handleFavicon = () => new Response(v0, { headers: { "content-type": "image/svg+xml", ...CACHE_HEADERS } });`,
+        `export const handleAdminJs = () => new Response(v1, { headers: { "content-type": "application/javascript", ...CACHE_HEADERS } });`,
+        `const orderJsBody = "widget-source";`,
+        "export const orderWidgetBody = () => orderJsBody;",
+      ].join("\n"),
+    );
+  });
+});
+
+describe("renameSourceMapLink", () => {
+  test("re-points the sourceMappingURL comment at the new filename", () => {
+    expect(
+      renameSourceMapLink(
+        "code;\n//# sourceMappingURL=edge.js.map",
+        "edge.js.map",
+        "bunny-script.ts.map",
+      ),
+    ).toBe("code;\n//# sourceMappingURL=bunny-script.ts.map");
+  });
+
+  test("leaves content untouched when the link is absent", () => {
+    expect(renameSourceMapLink("no map here", "edge.js.map", "x.map")).toBe(
+      "no map here",
+    );
+  });
+});
+
+describe("reactRuntimeGuard", () => {
+  test("trips when the bundle references React.createElement", () => {
+    expect(
+      reactRuntimeGuard("Edge").test("var x = React.createElement()"),
+    ).toBe(true);
+  });
+
+  test("passes a bundle using the automatic JSX runtime", () => {
+    expect(reactRuntimeGuard("Edge").test("import { jsx } from '#jsx'")).toBe(
+      false,
+    );
+  });
+
+  test("labels the message with the given build name", () => {
+    assertStringIncludes(reactRuntimeGuard("Deploy").message, "Deploy bundle");
+  });
+});
+
+describe("Sentry tree shaking", () => {
+  test("compiles out debug and tracing code", () => {
+    expect(SENTRY_BUILD_DEFINES).toEqual({
+      __SENTRY_DEBUG__: "false",
+      __SENTRY_TRACING__: "false",
+    });
+  });
+
+  test("rejects a bundle that retains a Sentry compile-time flag", () => {
+    expect(sentryTreeShakingGuard.test("if (__SENTRY_DEBUG__) log()")).toBe(
+      true,
+    );
+  });
+
+  test("accepts a bundle with Sentry's optional paths compiled away", () => {
+    expect(sentryTreeShakingGuard.test("captureException(error)")).toBe(false);
+  });
+
+  test("explains which Sentry paths remain", () => {
+    expect(sentryTreeShakingGuard.message).toBe(
+      "Bundle retains a Sentry compile-time flag — expected debug and tracing code to be tree-shaken",
+    );
+  });
+});
+
+describe("bundleSizeGuard", () => {
+  test("trips when the bundle exceeds the limit", () => {
+    expect(bundleSizeGuard(3).test("abcd")).toBe(true);
+  });
+
+  test("passes a bundle exactly at the limit", () => {
+    // Boundary: `> max`, so an exactly-max bundle is allowed.
+    expect(bundleSizeGuard(4).test("abcd")).toBe(false);
+  });
+
+  test("names the byte limit in its message", () => {
+    assertStringIncludes(bundleSizeGuard(10_000_000).message, "10000000");
+  });
+});
+
+describe("nativeLibsqlGuard", () => {
+  test('trips on a native ".node" binding reference', () => {
+    expect(nativeLibsqlGuard.test('require("foo.node")')).toBe(true);
+  });
+
+  test("trips on a native libsql client path reference", () => {
+    expect(nativeLibsqlGuard.test("libsql/client/.")).toBe(true);
+  });
+
+  test("passes the pure-JS web client bundle", () => {
+    expect(nativeLibsqlGuard.test("libsql/client/web")).toBe(false);
+  });
+
+  test("explains the native-binding failure in its message", () => {
+    expect(nativeLibsqlGuard.message).toBe(
+      "Deploy bundle references a native libsql binding — expected the pure-JS web client via platform: 'browser'",
+    );
+  });
+});

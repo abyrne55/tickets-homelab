@@ -1,0 +1,13 @@
+{
+  "owners": [
+    "access",
+    "attendees",
+    "bookings",
+    "catalogue",
+    "pages",
+    "payments",
+    "records",
+    "servicing",
+    "settings"
+  ]
+}

@@ -1,0 +1,206 @@
+/**
+ * Admin settings page rendering - GET /admin/settings and
+ * GET /admin/settings-advanced, plus the state-gathering they depend on.
+ * Owner-only access.
+ */
+
+import { getAdminFeatureUsage } from "#db/admin-features.ts";
+import { serializeTaxPolicy } from "#db/settings/tax.ts";
+import { settings } from "#db/settings.ts";
+import type { AuthSession } from "#routes/auth.ts";
+import { authPageAt } from "#routes/route-gates.ts";
+import type { TypedRouteHandler } from "#routes/router.ts";
+import { enabledFeaturesWithUsage } from "#shared/admin-features.ts";
+import { getCdnHostname } from "#shared/bunny-cdn.ts";
+import {
+  getBunnyDnsSubdomainSuffix,
+  isBunnyCdnEnabled,
+  isBunnyDnsEnabled,
+} from "#shared/config.ts";
+import { EMAIL_PROVIDER_LABELS, hostEmail } from "#shared/email.ts";
+import { getEnv } from "#shared/env.ts";
+import { existingPaymentProviderState } from "#shared/existing-payment-provider.ts";
+import { getFlash } from "#shared/flash-context.ts";
+import {
+  paymentProviderHasCredentials,
+  paymentProviderMode,
+} from "#shared/payment-provider-status.ts";
+import { getPaymentWebhookUrl } from "#shared/payment-webhook-url.ts";
+import { SCHEDULED_TASK_KEY_ENV } from "#shared/scheduled-keys.ts";
+import { isStorageEnabled } from "#shared/storage.ts";
+import { getSuperuserState } from "#shared/superuser.ts";
+import {
+  adminSettingsPage,
+  type ShownPaymentProvider,
+} from "#templates/admin/settings.tsx";
+import { adminAdvancedSettingsPage } from "#templates/admin/settings-advanced.tsx";
+import type { PaymentProviderType } from "#types";
+
+/** The line a wallet configured through host env settings shows: its detail,
+ *  or nothing when no host config stands behind the settings. */
+const hostWalletLabel = (detail: string | undefined): string =>
+  detail === undefined ? "" : `Host env (${detail})`;
+
+/** The provider whose credentials form the settings page shows, and what the
+ *  stored credentials for it say. Sales being off does not hide the form: the
+ *  provider that owns the payments already taken still needs its keys. */
+const shownPaymentProvider = (
+  existing: PaymentProviderType | null,
+): ShownPaymentProvider | null => {
+  const provider = settings.paymentProvider ?? existing;
+  return provider === null
+    ? null
+    : {
+        configured: paymentProviderHasCredentials(provider),
+        mode: paymentProviderMode(provider),
+        provider,
+      };
+};
+
+/**
+ * Gather all state needed to render the settings page.
+ * All calls are independent, so we fetch them concurrently with Promise.all
+ * to reduce sequential await overhead (especially for calls that decrypt).
+ */
+const getSettingsPageState = async () => {
+  const [superuser, featureUsage] = await Promise.all([
+    getSuperuserState(),
+    getAdminFeatureUsage(),
+  ]);
+  const existingPaymentProvider = existingPaymentProviderState();
+  const tax = settings.tax;
+  return {
+    bookingFee: settings.bookingFee,
+    businessEmail: settings.businessEmail,
+    calendarFeedsEnabled: settings.calendarFeedsEnabled,
+    calendarFeedsGroupBy: settings.calendarFeedsGroupBy,
+    currency: settings.currency,
+    embedHosts: settings.embedHosts,
+    enabledFeatures: enabledFeaturesWithUsage(settings.features, featureUsage),
+    expectedTax: serializeTaxPolicy(tax),
+    headerImageUrl: settings.headerImageUrl,
+    paymentProvider: settings.paymentProvider,
+    paymentProviderRecoveryChoices: existingPaymentProvider.recoveryChoices,
+    shownPaymentProvider: shownPaymentProvider(
+      existingPaymentProvider.provider,
+    ),
+    siteFooter: settings.siteFooter,
+    squareWebhookConfigured: settings.square.webhookSignatureKey !== "",
+    storageEnabled: isStorageEnabled(),
+    superuser,
+    taxMode: tax.mode,
+    taxRate: tax.mode === "none" ? "" : (tax.rateBasisPoints / 100).toFixed(2),
+    termsAndConditions: settings.terms,
+    theme: settings.theme,
+    underlineLinks: settings.underlineLinks,
+    webhookUrl: getPaymentWebhookUrl(),
+  };
+};
+
+/** Render the settings page with current state */
+const renderSettingsPage = async (session: AuthSession) => {
+  const state = await getSettingsPageState();
+  return adminSettingsPage(session, state);
+};
+
+/** Gather state for the advanced settings page */
+const getAdvancedSettingsPageState = async (
+  subdomainPreview: string,
+  subdomainPreviewFullDomain: string,
+) => {
+  const bunnyCdnConfigured = isBunnyCdnEnabled();
+  const bunnyDnsEnabled = isBunnyDnsEnabled();
+  const confirmationTemplates = settings.email.templateSet("confirmation");
+  const adminTemplates = settings.email.templateSet("admin");
+  const cdnResult = bunnyCdnConfigured ? await getCdnHostname() : null;
+  const existingPaymentProvider = existingPaymentProviderState();
+  return {
+    addressLookupApiKeyConfigured: settings.addressLookup.hasKey,
+    addressLookupProvider: settings.addressLookup.provider,
+    adminTemplates,
+    appleWalletConfigured: settings.appleWallet.hasDbConfig,
+    appleWalletPassTypeId: settings.appleWallet.passTypeId,
+    appleWalletTeamId: settings.appleWallet.teamId,
+    attendeeColumnOrder: settings.attendeeColumnOrder,
+    bunnyCdnEnabled: bunnyCdnConfigured,
+    bunnyDnsEnabled,
+    bunnyDnsSubdomainSuffix: getBunnyDnsSubdomainSuffix(),
+    bunnySubdomain: settings.bunnySubdomain,
+    businessEmail: settings.businessEmail,
+    cdnHostname: cdnResult?.ok ? cdnResult.hostname : "",
+    confirmationTemplates,
+    customCss: settings.customCss,
+    customDomain: settings.customDomain,
+    customDomainLastValidated: settings.customDomainLastValidated,
+    emailApiKeyConfigured: settings.email.hasApiKey,
+    emailFromAddress: settings.email.fromAddress,
+    emailProvider: settings.email.provider,
+    existingPaymentProvider: existingPaymentProvider.provider,
+    externalOrderEnabled: settings.externalOrderEnabled,
+    googleWalletConfigured: settings.googleWallet.hasDbConfig,
+    googleWalletIssuerId: settings.googleWallet.issuerId,
+    googleWalletServiceAccountEmail: settings.googleWallet.serviceAccountEmail,
+    hostAppleWalletLabel: hostWalletLabel(
+      settings.appleWallet.hostConfig?.passTypeId,
+    ),
+    hostEmailLabel: (() => {
+      const hostConfig = hostEmail.getHostConfig();
+      if (!hostConfig) return "";
+      const label = EMAIL_PROVIDER_LABELS[hostConfig.provider];
+      return `Host ${label} (${hostConfig.fromAddress})`;
+    })(),
+    hostGoogleWalletLabel: hostWalletLabel(
+      settings.googleWallet.hostConfig?.issuerId,
+    ),
+    listingColumnOrder: settings.listingColumnOrder,
+    logisticsEnabled: settings.features.logistics,
+    logisticsRunSheetBody: settings.logisticsRunSheetBody,
+    logisticsRunSheetHeading: settings.logisticsRunSheetHeading,
+    paymentProviderRecoveryNeeded:
+      existingPaymentProvider.recoveryChoices.length > 0,
+    scheduledTaskKey: getEnv(SCHEDULED_TASK_KEY_ENV),
+    showPublicApi: settings.showPublicApi,
+    smsGatewayBaseUrl: settings.smsGatewayBaseUrl,
+    smsGatewayPassphraseConfigured: settings.smsGateway.hasPassphrase,
+    smsGatewayPasswordConfigured: settings.smsGateway.hasPassword,
+    smsGatewayUsername: settings.smsGatewayUsername,
+    smsGatewayWebhookConfigured: settings.smsGateway.hasWebhookSecret,
+    subdomainPreview,
+    subdomainPreviewFullDomain,
+    theme: settings.theme,
+  };
+};
+
+/** Render the advanced settings page with current state */
+const renderAdvancedSettingsPage = async (
+  session: AuthSession,
+  subdomainPreview: string,
+  subdomainPreviewFullDomain: string,
+) => {
+  const state = await getAdvancedSettingsPageState(
+    subdomainPreview,
+    subdomainPreviewFullDomain,
+  );
+  return adminAdvancedSettingsPage(session, state);
+};
+
+/**
+ * Handle GET /admin/settings - owner only
+ */
+export const handleAdminSettingsGet: TypedRouteHandler<"GET /admin/settings"> =
+  authPageAt("/admin/settings")((session) => renderSettingsPage(session));
+
+/**
+ * Handle GET /admin/settings-advanced - owner only
+ */
+export const handleAdminSettingsAdvancedGet: TypedRouteHandler<"GET /admin/settings-advanced"> =
+  authPageAt("/admin/settings-advanced")(async (session) => {
+    const flash = getFlash();
+    const [subdomainPreview = "", subdomainPreviewFullDomain = ""] =
+      flash.result ? flash.result.split("\n") : [];
+    return await renderAdvancedSettingsPage(
+      session,
+      subdomainPreview,
+      subdomainPreviewFullDomain,
+    );
+  });

@@ -1,0 +1,165 @@
+import { filterTestOutput, testProgressFromLine } from "./output.ts";
+
+/**
+ * Optional always-shown summary for a step. Invoked after the step finishes
+ * (on success only) and printed verbatim — used by the test step to surface the
+ * slow-tests report, which the step writes to a JUnit file but whose stdout is
+ * otherwise swallowed on success.
+ */
+export type StepSummary = (
+  stdout: string,
+  stderr: string,
+) => string | undefined | Promise<string | undefined>;
+
+export interface Step {
+  cmd: string[];
+  filterOutput?: (stdout: string, stderr: string) => string;
+  name: string;
+  progress?: (line: string) => string | undefined;
+  summary?: StepSummary;
+}
+
+const STEPS = [
+  // Always run read-only `lint:ci` (Biome) so local precommit is exactly as
+  // strict as CI without changing the checkout. Run `deno task lint`
+  // separately to auto-fix formatting before committing.
+  { cmd: ["task", "lint:ci"], name: "lint" },
+  { cmd: ["task", "typecheck"], name: "typecheck" },
+  // An exact baseline and reviewed false positives turn the whole-repository
+  // field scan into a ratchet. It follows typecheck because it asks the same
+  // compiler program which symbol each mention reaches.
+  {
+    cmd: ["task", "check:unread-fields"],
+    name: "check:unread-fields",
+  },
+  { cmd: ["task", "cpd"], name: "cpd" },
+  // Guard the user-facing copy catalog against the mechanical simple-language
+  // rules (see the "Simple Language" section of AGENTS.md).
+  { cmd: ["task", "check:copy"], name: "check:copy" },
+  // Hold comments to the length and width limits, which the formatter cannot
+  // do — Biome never reflows comment text (see "Comments are short" in
+  // AGENTS.md, and docs/comment-policy.md for how the limits ratchet down).
+  { cmd: ["task", "check:comments"], name: "check:comments" },
+  // Hold comments to the mechanical comment-language rules — contractions,
+  // banned modals, sentence length — against per-file baselines that only
+  // fall (see "Simplified Technical English" in AGENTS.md).
+  { cmd: ["task", "check:comment-ste"], name: "check:comment-ste" },
+  // Keep one module to one name: no file importing the same module twice, and
+  // no import spelling a module longer than its own alias allows (see
+  // "Imports name a module one way" in AGENTS.md).
+  { cmd: ["task", "check:imports"], name: "check:imports" },
+  // Keep the pure core pure: no pure-listed module may reach the database,
+  // the network, or the wall clock through its imports (see "Pure,
+  // functional" in docs/designing-systems.md).
+  { cmd: ["task", "check:effects"], name: "check:effects" },
+  // An exported name must do more than rename an imported one (see "No alias
+  // exports" in AGENTS.md).
+  {
+    cmd: ["task", "check:alias-exports"],
+    name: "check:alias-exports",
+  },
+  // Every catch block must recover, re-raise, or comment its fallback (see
+  // "Offensive Programming" in AGENTS.md).
+  {
+    cmd: ["task", "check:empty-catch"],
+    name: "check:empty-catch",
+  },
+  // An unchecked `as` cast claims a shape nothing checked (see "Offensive
+  // Programming" in AGENTS.md). CI runs this step; the mirror test holds the
+  // two lists together, so precommit runs it too.
+  {
+    cmd: ["task", "check:double-casts"],
+    name: "check:double-casts",
+  },
+  // Hold code and test files under the 500-line limit, against the accepted
+  // list that only shrinks (see "Keep code and test files under ~400 lines"
+  // in AGENTS.md).
+  {
+    cmd: ["task", "check:file-lengths"],
+    name: "check:file-lengths",
+  },
+  // Fail every chain of three or more methods that repeats at another site
+  // (see "Keep methods flat" in AGENTS.md).
+  {
+    cmd: ["task", "check:call-chains"],
+    name: "check:call-chains",
+  },
+  // The coverage exclusion list only shrinks: fail on an entry the branch
+  // adds against the merge base on origin/main (see "Never add a coverage
+  // exclusion" in AGENTS.md).
+  {
+    cmd: ["task", "check:coverage-exclusions"],
+    name: "check:coverage-exclusions",
+  },
+  // The test-quality gate fails on every weak assertion a test file the
+  // branch touches carries — one the change adds or one it inherits — against
+  // the merge base on origin/main (see "Test Quality Standards" in AGENTS.md).
+  {
+    cmd: ["task", "check:test-quality"],
+    name: "check:test-quality",
+  },
+  // The presence-assertion check holds every test file to its recorded
+  // toBeDefined() count in a registry that only falls (see "Test Quality
+  // Standards" in AGENTS.md).
+  {
+    cmd: ["task", "check:presence-assertions"],
+    name: "check:presence-assertions",
+  },
+  // The dump module must also run against the base tree: a helper the branch
+  // adds is invisible to origin/main, and only this diff exercises that
+  // import (issue #2740).
+  {
+    cmd: ["task", "contract:diff"],
+    name: "contract:diff",
+  },
+  // Hold the repository Markdown to the mechanical half of the Simplified
+  // Technical English rules, against per-document baselines that only fall
+  // (see the "Simplified Technical English" section of AGENTS.md).
+  { cmd: ["task", "check:ste"], name: "check:ste" },
+  // Hold the payment e2e to the catalog's own words: every label it clicks
+  // or asserts must be copy src/locales/en renders (or a t("…") call), so a
+  // copy rename fails here instead of the schedule-only nightly run.
+  {
+    cmd: ["task", "check:e2e-labels"],
+    name: "check:e2e-labels",
+  },
+  // Catch a known-equivalent entry that no longer points at a real mutant on
+  // the branch that moved it, rather than in review. Resolution only — the
+  // audit that re-proves equivalence runs lint and type-check per entry and
+  // stays an on-demand tool.
+  { cmd: ["task", "check:equivalents"], name: "check:equivalents" },
+  // Hold src/ at zero import cycles. The rings the tree carried were broken
+  // one by one while the report stayed advisory (see test/integration/
+  // import-cycles.test.ts); once it reached zero the report became the gate.
+  { cmd: ["task", "cycles"], name: "cycles" },
+  // The required status checks live in repository Settings, which no pull
+  // request can edit. The manifest at scripts/required-checks/checks.json is
+  // the reviewable record of the gate, and this step fails when the live
+  // ruleset and the manifest disagree (issue #2671).
+  {
+    cmd: ["task", "check:required-checks"],
+    name: "check:required-checks",
+  },
+  { cmd: ["task", "check:tla"], name: "check:tla" },
+  { cmd: ["task", "verify:models"], name: "verify:models" },
+  { cmd: ["task", "build:edge"], name: "build:edge" },
+  {
+    cmd: ["task", "test:coverage"],
+    filterOutput: filterTestOutput,
+    name: "test:coverage",
+    progress: testProgressFromLine,
+    summary: async (): Promise<string | undefined> => {
+      const { readSlowTestsReport } = await import(
+        "#scripts/test-durations.ts"
+      );
+      return (await readSlowTestsReport()) || undefined;
+    },
+  },
+] as const;
+
+export const PRECOMMIT_STEP_NAMES = STEPS.map((step) => step.name);
+
+export const getSteps = (): Step[] => {
+  const deno = Deno.execPath();
+  return STEPS.map((step) => ({ ...step, cmd: [deno, ...step.cmd] }));
+};

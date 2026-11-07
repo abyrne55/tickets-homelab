@@ -1,0 +1,402 @@
+/**
+ * Pure-ish state and filesystem helpers for isolated mutation runs.
+ *
+ * The process supervisor lives in isolation.ts; this module holds the small
+ * rules that are cheap to unit-test directly.
+ */
+
+import {
+  basename,
+  isAbsolute,
+  join,
+  relative,
+  resolve,
+  SEPARATOR,
+} from "@std/path";
+import * as v from "valibot";
+import { projectRoot } from "#scripts/project-root.ts";
+import { BUILD_LOCK_PATH } from "#scripts/static-assets/build-lock.ts";
+import { STATIC_ASSET_MANIFEST_PATH } from "#scripts/static-assets/cache.ts";
+import { directoryEntries } from "#scripts/walk-files.ts";
+import { splitParts } from "#shared/split.ts";
+
+export const MUTATION_RUNS_DIR = ".mutation-runs";
+export const MUTATION_WORK_DIR = "work";
+export const MUTATION_RECORD_FILE = "run.json";
+const MUTATION_RUN_ID_PREFIX = "mutation-";
+export const MUTATION_CLAIM_FILE = "claim";
+const MUTATION_COPY_BACK_LOCK_FILE = "copy-back.lock";
+export const MUTATION_SNAPSHOT_CHILD_ENV = "TICKETS_MUTATION_SNAPSHOT_CHILD";
+export const MUTATION_RUN_ID_ENV = "TICKETS_MUTATION_RUN_ID";
+export const MUTATION_SUPERVISOR_PID_ENV = "TICKETS_MUTATION_SUPERVISOR_PID";
+export const MUTATION_RUN_ROOT_ENV = "TICKETS_MUTATION_RUN_ROOT";
+export const MUTATION_WORK_ROOT_ENV = "TICKETS_MUTATION_WORK_ROOT";
+
+/* jscpd:ignore-start -- a list of strings, not code */
+const SKIPPED_TOP_LEVEL_NAMES = new Set([
+  ".agents",
+  ".claude",
+  ".codex",
+  ".container-work",
+  ".deno",
+  ".deno-cache",
+  ".deno_cache",
+  ".devenv",
+  ".diagnostics",
+  ".direnv",
+  ".do",
+  ".git",
+  ".i18n-work",
+  ".local-data",
+  ".mutation-runs",
+  ".pi-worktrees",
+  ".scratch",
+  "cov",
+  "cov_profile",
+  "dist",
+  "misc",
+  "node_modules",
+  "undefined",
+  "null",
+]);
+/* jscpd:ignore-end */
+
+const SKIPPED_TOP_LEVEL_PREFIXES = ["coverage", ".jscpd", "docs-output"];
+
+const SKIPPED_FILE_NAMES = new Set([
+  ".build-tag",
+  ".db-key",
+  ".env",
+  // The browser-asset build's own records, named from its declarations: the
+  // manifest names the checkout it was written in by absolute path, so the
+  // copy cannot honour it, and the lock belongs to the checkout's build alone.
+  basename(STATIC_ASSET_MANIFEST_PATH),
+  basename(BUILD_LOCK_PATH),
+  ".test-junit.xml",
+  "bunny-script.ts",
+  "bunny-script.ts.map",
+]);
+
+const MutationRunStatusSchema = v.picklist([
+  "copying",
+  "running",
+  "passed",
+  "failed",
+  "interrupted",
+]);
+
+export type MutationRunStatus = v.InferOutput<typeof MutationRunStatusSchema>;
+
+/** The shape of a run's record, so half-written ones can be spotted. */
+export const MutationRunRecordSchema = v.object({
+  args: v.array(v.string()),
+  createdAt: v.string(),
+  exitCode: v.optional(v.number()),
+  id: v.string(),
+  pid: v.optional(v.number()),
+  root: v.string(),
+  status: MutationRunStatusSchema,
+  supervisorPid: v.optional(v.number()),
+  updatedAt: v.string(),
+  workRoot: v.string(),
+});
+
+export type MutationRunRecord = v.InferOutput<typeof MutationRunRecordSchema>;
+
+export type IsolationCommand =
+  | { kind: "clean"; target: string }
+  | { kind: "help" }
+  | { kind: "invalid"; message: string }
+  | { kind: "kill"; force: boolean; target: string }
+  | { kind: "list" }
+  | { args: string[]; kind: "run" };
+
+export const ISOLATION_USAGE = `Usage:
+  deno task mutation <source-glob> <test-glob> [mutation options]
+  deno task mutation --list
+  deno task mutation --kill <run-id|all> [--force]
+  deno task mutation --clean <run-id|all|finished>
+
+Mutation runs are copied to .mutation-runs/<run-id>/work first. The normal
+in-place mutation engine then runs inside that copy, so live source files are
+not touched. The copy is deleted when the run ends, and anything a stopped run
+left behind is deleted when the next run starts.`;
+
+const nowIso = (): string => new Date().toISOString();
+
+const pathParts = splitParts(/[\\/]+/);
+
+const isDatabaseFile = (name: string): boolean =>
+  name.endsWith(".db") || name.endsWith(".db-shm") || name.endsWith(".db-wal");
+
+export const shouldCopySnapshotPath = (relativePath: string): boolean => {
+  const parts = pathParts(relativePath);
+  const top = parts[0];
+  const name = parts.at(-1);
+  if (!top || !name) return true;
+  if (SKIPPED_TOP_LEVEL_NAMES.has(top)) return false;
+  if (SKIPPED_TOP_LEVEL_PREFIXES.some((prefix) => top.startsWith(prefix))) {
+    return false;
+  }
+  if (SKIPPED_FILE_NAMES.has(name) || isDatabaseFile(name)) return false;
+  // Everything else comes along, built browser assets included — a snapshot
+  // must stay as runnable as the checkout it was copied from, and modules
+  // like src/features/assets.ts read those files at import time.
+  return true;
+};
+
+const copyDirectory = async (
+  fromRoot: string,
+  toRoot: string,
+  shouldCopy: (relativePath: string) => boolean,
+  relativePath = "",
+): Promise<void> => {
+  const fromDir = join(fromRoot, relativePath);
+  const toDir = join(toRoot, relativePath);
+  await Deno.mkdir(toDir, { recursive: true });
+
+  const entries = await directoryEntries(fromDir);
+
+  for (const entry of entries.sort((left, right) =>
+    left.name.localeCompare(right.name),
+  )) {
+    const childPath = relativePath
+      ? join(relativePath, entry.name)
+      : entry.name;
+    if (!shouldCopy(childPath)) continue;
+
+    const from = join(fromRoot, childPath);
+    const to = join(toRoot, childPath);
+    if (entry.isDirectory) {
+      await copyDirectory(fromRoot, toRoot, shouldCopy, childPath);
+    } else {
+      await Deno.copyFile(from, to);
+    }
+  }
+};
+
+const copyMatching =
+  (shouldCopy: (relativePath: string) => boolean) =>
+  (fromRoot: string, toRoot: string): Promise<void> =>
+    copyDirectory(fromRoot, toRoot, shouldCopy);
+
+/** Copy a checkout into a snapshot, leaving out everything a run must not carry. */
+export const copyMutationSnapshot = copyMatching(shouldCopySnapshotPath);
+
+const shouldCopyStaticWorkspacePath = (relativePath: string): boolean =>
+  pathParts(relativePath)[0] !== ".bin" && shouldCopySnapshotPath(relativePath);
+
+/** Copy only the source and configuration needed by lint and type-check. */
+export const copyStaticWorkspace = copyMatching(shouldCopyStaticWorkspacePath);
+
+const compactIso = (iso: string): string =>
+  iso
+    .replaceAll(":", "")
+    .replaceAll("-", "")
+    .replace(/\.\d+Z$/, "Z");
+
+export const createRunId = (
+  date = new Date(),
+  suffix = crypto.randomUUID().slice(0, 8),
+): string =>
+  `${MUTATION_RUN_ID_PREFIX}${compactIso(date.toISOString())}-${suffix}`;
+
+const RUN_ID_SHAPE = new RegExp(
+  `^${MUTATION_RUN_ID_PREFIX}\\d{8}T\\d{6}Z-[0-9a-f]{8}$`,
+);
+
+/**
+ * Does this folder name look like one `createRunId` made? Only those are ours
+ * to clear away; anything else under .mutation-runs belongs to someone else.
+ */
+export const isRunId = (name: string): boolean => RUN_ID_SHAPE.test(name);
+
+export const runsRoot = (root = projectRoot): string =>
+  join(root, MUTATION_RUNS_DIR);
+
+export const runRoot = (id: string, root = projectRoot): string =>
+  join(runsRoot(root), id);
+
+/** Path to a named child (dir or file) inside a run's own folder. */
+const runChildPath =
+  (childName: string) =>
+  (id: string, root = projectRoot): string =>
+    join(runRoot(id, root), childName);
+
+export const workRoot = runChildPath(MUTATION_WORK_DIR);
+
+export const recordPath = runChildPath(MUTATION_RECORD_FILE);
+
+/** Where a run's claim sits: the supervisor's proof the folder is still its. */
+export const runClaimPath = (record: Pick<MutationRunRecord, "root">): string =>
+  join(record.root, MUTATION_CLAIM_FILE);
+
+/** One lock for the whole checkout, shared by every run bringing files back. */
+export const copyBackLockPath = (root = projectRoot): string =>
+  join(runsRoot(root), MUTATION_COPY_BACK_LOCK_FILE);
+
+export const newRunRecord = (
+  id: string,
+  args: string[],
+  root = projectRoot,
+  createdAt = nowIso(),
+): MutationRunRecord => ({
+  args,
+  createdAt,
+  id,
+  root: runRoot(id, root),
+  status: "copying",
+  updatedAt: createdAt,
+  workRoot: workRoot(id, root),
+});
+
+export const statusForExitCode = (code: number): MutationRunStatus =>
+  code === 0 ? "passed" : code === 130 ? "interrupted" : "failed";
+
+/** The run is going, under the child that does the work and the supervisor
+ * that owns its folder. The supervisor outlives the child, and `--kill`
+ * signals it — see `signalRun`. */
+export const markRunning = (
+  record: MutationRunRecord,
+  pids: { pid: number; supervisorPid: number },
+  updatedAt = nowIso(),
+): MutationRunRecord => ({
+  ...record,
+  ...pids,
+  status: "running",
+  updatedAt,
+});
+
+/** The record once its child has ended: the child's pid is dropped, so the
+ * record never names an id that may already be somebody else's. The
+ * supervisor's stays, since the supervisor is still finishing the run. */
+export const markChildEnded = (
+  record: MutationRunRecord,
+  updatedAt = nowIso(),
+): MutationRunRecord => {
+  const { pid: _endedChildPid, ...rest } = record;
+  return { ...rest, updatedAt };
+};
+
+export const markFinished = (
+  record: MutationRunRecord,
+  exitCode: number,
+  updatedAt = nowIso(),
+): MutationRunRecord => ({
+  ...record,
+  exitCode,
+  status: statusForExitCode(exitCode),
+  updatedAt,
+});
+
+export const markInterrupted = (
+  record: MutationRunRecord,
+  updatedAt = nowIso(),
+): MutationRunRecord => ({
+  ...record,
+  exitCode: 130,
+  status: "interrupted",
+  updatedAt,
+});
+
+export const isTerminalRunStatus = (status: MutationRunStatus): boolean =>
+  status === "passed" || status === "failed" || status === "interrupted";
+
+const withTrailingSeparator = (path: string): string =>
+  path.endsWith(SEPARATOR) ? path : `${path}${SEPARATOR}`;
+
+export const rewriteProjectPathArg = (
+  root: string,
+  snapshotRoot: string,
+  value: string,
+): string => {
+  if (!isAbsolute(value)) return value;
+  const resolvedRoot = resolve(root);
+  const resolvedSnapshot = resolve(snapshotRoot);
+  const resolvedValue = resolve(value);
+  if (resolvedValue === resolvedRoot) return resolvedSnapshot;
+  const rootPrefix = withTrailingSeparator(resolvedRoot);
+  if (!resolvedValue.startsWith(rootPrefix)) return value;
+  return join(resolvedSnapshot, resolvedValue.slice(rootPrefix.length));
+};
+
+/** Turn a run's arguments into the ones the child sees inside its snapshot. */
+export type SnapshotArgsFn = (
+  root: string,
+  snapshotRoot: string,
+  args: string[],
+) => string[];
+
+export const rewriteMutationArgs: SnapshotArgsFn = (root, snapshotRoot, args) =>
+  args.map((arg) => rewriteProjectPathArg(root, snapshotRoot, arg));
+
+export const parseIsolationCommand = (args: string[]): IsolationCommand => {
+  const [first, second, ...rest] = args;
+  if (!first) {
+    return {
+      kind: "invalid",
+      message: "Mutation source and test globs are required.",
+    };
+  }
+  if (first === "-h" || first === "--help") return { kind: "help" };
+  if (first === "list" || first === "--list") return { kind: "list" };
+  if (first === "kill" || first === "--kill") {
+    return second
+      ? { force: rest.includes("--force"), kind: "kill", target: second }
+      : { kind: "invalid", message: "A run id or all is required for --kill." };
+  }
+  if (first === "clean" || first === "--clean") {
+    return second
+      ? { kind: "clean", target: second }
+      : {
+          kind: "invalid",
+          message: "A run id, all, or finished is required for --clean.",
+        };
+  }
+  return { args, kind: "run" };
+};
+
+export const visibleStatus = (
+  record: MutationRunRecord,
+  isAlive: boolean,
+): MutationRunStatus | "stale" =>
+  record.status === "running" && !isAlive ? "stale" : record.status;
+
+export const formatRunLine = (
+  record: MutationRunRecord,
+  isAlive: boolean,
+  root = projectRoot,
+): string => {
+  const status = visibleStatus(record, isAlive);
+  const pid = record.pid === undefined ? "pid=-" : `pid=${record.pid}`;
+  const exit =
+    record.exitCode === undefined ? "exit=-" : `exit=${record.exitCode}`;
+  const work = relative(root, record.workRoot);
+  const args = record.args.length === 0 ? "" : ` args=${record.args.join(" ")}`;
+  return `${record.id} ${status} ${pid} ${exit} work=${work}${args}`;
+};
+
+export const formatRunList = (
+  records: MutationRunRecord[],
+  liveRunIds: Set<string>,
+  root = projectRoot,
+): string[] =>
+  records.length === 0
+    ? ["No isolated mutation runs."]
+    : records.map((record) =>
+        formatRunLine(record, liveRunIds.has(record.id), root),
+      );
+
+export const selectedRuns = (
+  records: MutationRunRecord[],
+  target: string,
+): MutationRunRecord[] => {
+  if (target === "all") return records;
+  if (target === "finished") {
+    return records.filter((record) => isTerminalRunStatus(record.status));
+  }
+  const exact = records.filter((record) => record.id === target);
+  if (exact.length > 0) return exact;
+  const prefixed = records.filter((record) => record.id.startsWith(target));
+  return prefixed.length === 1 ? prefixed : [];
+};

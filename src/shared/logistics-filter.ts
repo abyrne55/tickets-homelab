@@ -1,0 +1,67 @@
+/**
+ * The calendar's "by logistics agent" filter. It covers the filter value,
+ * parsing a raw query param into it, and matching a booking's assignment
+ * against it. It also renders the "Agent: All / None / Van 1 / …" bar. Mirrors
+ * the listing-type filter so the calendar drives the same kind of control.
+ */
+
+import { escapeHtml } from "#jsx/escape-html.ts";
+import { renderFilterBar } from "#shared/filter-bar.ts";
+import { parsePositiveInt as parsePositiveIntId } from "#shared/validation/number.ts";
+import type { LogisticsAgent } from "#types";
+
+/** Filter value: "all", "none" (no agent assigned), or a specific agent id. */
+export type AgentFilter = "all" | "none" | number;
+
+/** Parse a raw `?agent=` value: "none", a known agent id, else "all". */
+export const parseAgentFilter = (
+  raw: string | null,
+  agentIds: ReadonlySet<number>,
+): AgentFilter => {
+  if (raw === "none") return "none";
+  const n = parsePositiveIntId(raw ?? "");
+  return n !== null && agentIds.has(n) ? n : "all";
+};
+
+/** The query-param string for a filter value ("" means omit it / all). */
+export const agentFilterParam = (filter: AgentFilter): string =>
+  filter === "all" ? "" : String(filter);
+
+/**
+ * Whether a booking's drop-off/collection pair matches the active filter.
+ * Everything matches for "all". An unassigned pair matches for "none". Either
+ * side equal to the chosen agent matches for a specific id.
+ */
+export const assignmentMatchesAgentFilter = (
+  filter: AgentFilter,
+  startAgentId: number | null,
+  endAgentId: number | null,
+): boolean => {
+  if (filter === "all") return true;
+  if (filter === "none") return startAgentId === null && endAgentId === null;
+  return startAgentId === filter || endAgentId === filter;
+};
+
+/**
+ * Render the "Agent: All / None / …" filter as a paragraph of links. The active
+ * option is bold and underlined. The rest link via `hrefFor`.
+ */
+export const renderAgentFilter = (
+  active: AgentFilter,
+  agents: readonly LogisticsAgent[],
+  hrefFor: (f: AgentFilter) => string,
+): string => {
+  const options: { filter: AgentFilter; label: string }[] = [
+    { filter: "all", label: "All" },
+    { filter: "none", label: "None" },
+    ...agents.map((a) => ({ filter: a.id, label: a.name })),
+  ];
+  return renderFilterBar(
+    "Agent",
+    options.map(({ filter, label }) => ({
+      active: filter === active,
+      href: hrefFor(filter),
+      label: escapeHtml(label),
+    })),
+  );
+};

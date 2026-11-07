@@ -1,0 +1,318 @@
+/** Atomic attendee creation across one or more listing bookings. */
+
+import { generateTicketToken } from "#crypto/utils.ts";
+import type {
+  AttendeeInput,
+  BuildAttendeeInput,
+  CreateAttendeeResult,
+  EncryptedAttendeeData,
+  ListingBooking,
+} from "#db/attendee-types.ts";
+import { hasDuplicateBookingSlot } from "#db/attendees/booking-slot.ts";
+import { buildCapacityCheckedInsert } from "#db/attendees/capacity/checks.ts";
+import { refusedOrderUnfitListingIds } from "#db/attendees/capacity/refusal-diagnosis.ts";
+import {
+  ATTENDEE_BY_TOKEN_SQL,
+  type AttendeeCreationWork,
+  type BatchTail,
+  type BookingBatchPlan,
+  bookingBatchCondition,
+  type PreparedWrite,
+  type WriteOutcome,
+  writeAsBatch,
+  writeAsLedgerBatch,
+  writeWithCreationWork,
+} from "#db/attendees/create-batch.ts";
+import { ATTENDEE_KIND, type AttendeeKind } from "#db/attendees/kind.ts";
+import {
+  PENDING_NOTIFICATION,
+  type PendingNotificationFlag,
+} from "#db/attendees/notification-flags.ts";
+import { annotateOrderParents } from "#db/attendees/order-parents.ts";
+import { contactFields, encryptAttendeeFields } from "#db/attendees/pii.ts";
+import { insert, type SqlStatement } from "#db/client.ts";
+import { orderActivityStatements } from "#db/contact-tokens.ts";
+import { anyModifierSoldOut } from "#db/modifier-usage.ts";
+import type { NumberedSql } from "#db/numbered-statement.ts";
+import { addDays } from "#shared/dates.ts";
+import { parseDateStringOrThrow } from "#shared/validation/date-string.ts";
+import { type Attendee, type ContactInfo, clampDurationDays } from "#types";
+
+type AttendeeOrderFields = {
+  emailPending?: PendingNotificationFlag | undefined;
+  kind?: AttendeeKind | undefined;
+  statusId: number | null;
+  webhooksPending?: PendingNotificationFlag | undefined;
+};
+
+export const buildAttendeeInsert = (
+  enc: EncryptedAttendeeData,
+  order: AttendeeOrderFields,
+  piiPaymentSessionId = enc.piiPaymentSessionId,
+): SqlStatement =>
+  insert("attendees", {
+    created: enc.created,
+    email_pending: order.emailPending ?? PENDING_NOTIFICATION.none,
+    kind: order.kind ?? ATTENDEE_KIND,
+    pii_blob: enc.encryptedPiiBlob,
+    pii_payment_session_id: piiPaymentSessionId,
+    status_id: order.statusId,
+    ticket_token_index: enc.ticketTokenIndex,
+    webhooks_pending: order.webhooksPending ?? PENDING_NOTIFICATION.none,
+  });
+
+const contactInfoFromInput = (input: AttendeeInput): ContactInfo => ({
+  address: input.address ?? "",
+  email: input.email,
+  name: input.name,
+  phone: input.phone ?? "",
+  special_instructions: input.special_instructions ?? "",
+});
+
+const buildAttendeeResult = (input: BuildAttendeeInput): Attendee => ({
+  id: Number(input.insertId),
+  listing_id: input.listingId,
+  ...contactFields(input),
+  attachment_downloads: 0,
+  checked_in: 0,
+  created: input.created,
+  date: input.date,
+  // The flag went up at creation only when a booked listing collected an
+  // email — the same condition the database read resolves into email_owed.
+  // The result reaches the notification step before any re-read.
+  email_owed: (input.emailPending ?? PENDING_NOTIFICATION.none) > 0 ? 1 : 0,
+  email_pending: input.emailPending ?? PENDING_NOTIFICATION.none,
+  end_date: input.date
+    ? addDays(
+        parseDateStringOrThrow(input.date, "a stored booking date"),
+        clampDurationDays(input.durationDays ?? 1),
+      )
+    : null,
+  kind: input.kind,
+  lat: "",
+  lng: "",
+  package_group_id: input.packageGroupId,
+  payment_id: input.paymentId,
+  pii_blob: "",
+  price_paid: String(input.pricePaid),
+  quantity: input.quantity,
+  refunded: false,
+  remaining_balance: input.remainingBalance,
+  split_logistics_agents: false,
+  status_id: input.statusId,
+  ticket_token: input.ticketToken,
+  ticket_token_index: input.ticketTokenIndex,
+  webhooks_pending: input.webhooksPending ?? PENDING_NOTIFICATION.none,
+});
+
+const prepareAttendeeWrite = async (
+  input: AttendeeInput,
+  extraCondition?: NumberedSql,
+  piiPaymentSessionId?: string,
+): Promise<
+  | { ok: true; prepared: PreparedWrite }
+  | { ok: false; failure: Extract<CreateAttendeeResult, { success: false }> }
+> => {
+  const {
+    bookings: rawBookings,
+    paymentId = "",
+    statusId = null,
+    allowOverbook = false,
+  } = input;
+  if (
+    rawBookings.length === 0 ||
+    rawBookings.some((booking) => (booking.quantity ?? 1) < 0) ||
+    hasDuplicateBookingSlot(rawBookings)
+  ) {
+    // A malformed order, not one listing's capacity shortfall — none is named.
+    return {
+      failure: { listingIds: [], reason: "capacity_exceeded", success: false },
+      ok: false,
+    };
+  }
+
+  const bookings = await annotateOrderParents(
+    rawBookings,
+    input.parentIdsByChild,
+  );
+  const contactInfo = contactInfoFromInput(input);
+  const enc = await encryptAttendeeFields(
+    {
+      ...contactInfo,
+      paymentId,
+      ...(input.created === undefined ? {} : { created: input.created }),
+    },
+    input.ticketToken ?? generateTicketToken(),
+  );
+
+  const bookingStatements = bookings.map((booking) => {
+    const statement = buildCapacityCheckedInsert(
+      booking,
+      (bind) => ATTENDEE_BY_TOKEN_SQL.replace("?", bind(enc.ticketTokenIndex)),
+      allowOverbook,
+      extraCondition,
+    );
+    return statement;
+  });
+  const hasRealBooking = bookings.some(
+    (booking) => (booking.quantity ?? 1) > 0,
+  );
+  const activityStatements = hasRealBooking
+    ? await orderActivityStatements(
+        contactInfo.email,
+        contactInfo.phone,
+        input.source ?? "public",
+        enc.ticketToken,
+      )
+    : [];
+
+  return {
+    ok: true,
+    prepared: {
+      activityStatements,
+      attendeeInsert: buildAttendeeInsert(
+        enc,
+        {
+          emailPending: input.emailPending,
+          kind: input.kind,
+          statusId,
+          webhooksPending: input.webhooksPending,
+        },
+        piiPaymentSessionId,
+      ),
+      bookingStatements,
+      bookings,
+      enc,
+    },
+  };
+};
+
+const finishAttendeeWrite = (
+  written: WriteOutcome,
+  input: AttendeeInput,
+  enc: EncryptedAttendeeData,
+  bookings: ListingBooking[],
+): CreateAttendeeResult => {
+  const contactInfo = contactInfoFromInput(input);
+  return {
+    attendees: bookings.map((booking) =>
+      buildAttendeeResult({
+        insertId: written.insertId,
+        listingId: booking.listingId,
+        ...contactInfo,
+        created: enc.created,
+        date: booking.date ?? null,
+        ...(booking.durationDays !== undefined
+          ? { durationDays: booking.durationDays }
+          : {}),
+        emailPending: input.emailPending,
+        kind: input.kind ?? ATTENDEE_KIND,
+        packageGroupId: booking.packageGroupId ?? 0,
+        paymentId: input.paymentId ?? "",
+        pricePaid: booking.pricePaid ?? 0,
+        quantity: booking.quantity ?? 1,
+        remainingBalance: input.remainingBalance ?? 0,
+        statusId: input.statusId ?? null,
+        ticketToken: enc.ticketToken,
+        ticketTokenIndex: enc.ticketTokenIndex,
+        webhooksPending: input.webhooksPending,
+      }),
+    ),
+    success: true,
+  };
+};
+
+type CreateStrategy<R extends CreateAttendeeResult | "sold-out"> = {
+  condition?: NumberedSql;
+  noBooking: () => R | Promise<R>;
+  piiPaymentSessionId?: string | undefined;
+  write: (prepared: PreparedWrite) => Promise<WriteOutcome | null>;
+};
+
+const createWith =
+  <R extends CreateAttendeeResult | "sold-out">(strategy: CreateStrategy<R>) =>
+  async (input: AttendeeInput): Promise<CreateAttendeeResult | R> => {
+    const prepared = await prepareAttendeeWrite(
+      input,
+      strategy.condition,
+      strategy.piiPaymentSessionId,
+    );
+    if (!prepared.ok) return prepared.failure;
+    const written = await strategy.write(prepared.prepared);
+    return written
+      ? finishAttendeeWrite(
+          written,
+          input,
+          prepared.prepared.enc,
+          prepared.prepared.bookings,
+        )
+      : strategy.noBooking();
+  };
+
+/** The refusal a failed write answers with. The guarded batch cannot say
+ * which statement it aborted on, so the order is asked again on the primary.
+ * The retry walks every prefix of a typical order in one snapshot batch, or
+ * a longer one narrowing a bracket over a few stride batches. The first line
+ * that does not fit at the last batch's snapshot is named. Capacity that
+ * changed between batches is honoured: a room freed names none, and a room
+ * consumed names the earlier line it made unfit. */
+const capacityFailure = async (
+  bookings: AttendeeInput["bookings"],
+): Promise<CreateAttendeeResult> => ({
+  listingIds: await refusedOrderUnfitListingIds(
+    bookings.map((booking) => ({
+      date: booking.date ?? null,
+      durationDays: booking.durationDays ?? 1,
+      listingId: booking.listingId,
+      quantity: booking.quantity ?? 1,
+    })),
+  ),
+  reason: "capacity_exceeded",
+  success: false,
+});
+
+export const createAttendeeAtomicImpl = (
+  input: AttendeeInput,
+  creationWork?: AttendeeCreationWork,
+  tail?: BatchTail,
+): Promise<CreateAttendeeResult> =>
+  createWith<CreateAttendeeResult>({
+    noBooking: () => capacityFailure(input.bookings),
+    write: (prepared) =>
+      creationWork
+        ? writeWithCreationWork(prepared, creationWork)
+        : writeAsBatch(prepared, tail),
+  })(input);
+
+export type { AttendeeCreationWork, BookingBatchPlan };
+
+const provenPiiPaymentSession = (
+  input: AttendeeInput,
+  plan: BookingBatchPlan,
+): string | undefined => {
+  const source = plan.finalize;
+  if (source === undefined || source.paymentReference === null) {
+    return;
+  }
+  if ((input.paymentId ?? "") !== source.paymentReference.reference) {
+    throw new Error(
+      `Payment session ${source.sessionId} does not match the attendee payment id`,
+    );
+  }
+  return source.sessionId;
+};
+
+export const createBookingAtomic = (
+  input: AttendeeInput,
+  plan: BookingBatchPlan,
+  tail?: BatchTail,
+): Promise<CreateAttendeeResult | "sold-out"> =>
+  createWith<CreateAttendeeResult | "sold-out">({
+    condition: bookingBatchCondition(plan),
+    noBooking: async () =>
+      (await anyModifierSoldOut(plan.usages))
+        ? "sold-out"
+        : capacityFailure(input.bookings),
+    piiPaymentSessionId: provenPiiPaymentSession(input, plan),
+    write: (prepared) => writeAsLedgerBatch(prepared, plan, tail),
+  })(input);

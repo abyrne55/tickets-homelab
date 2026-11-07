@@ -1,0 +1,124 @@
+/**
+ * The one leveled navigation both site navigations render through: a node and
+ * level data model plus a single renderer.
+ *
+ * Each viewport gets its own correctly-ordered DOM instead of a CSS `order`
+ * reshuffle, so tab order and reading order always match what is shown. On
+ * desktop the submenu levels nest under the active node of the level above, and
+ * the `.admin-nav-group` wrapper is what the grid pins left. On mobile each
+ * level follows the top-level row as its own bar.
+ */
+
+/** One nav entry. The public site-pages `NavNode` is structurally one of
+ * these; the admin nav lifts its link schema into them. */
+export interface LeveledNavNode {
+  /** Highlighted; on desktop the next submenu level nests beneath it. */
+  active: boolean;
+  href: string;
+  label: string;
+  /** false ⇒ render as text, not a link (never a dead link). */
+  live: boolean;
+}
+
+/** One stacked submenu level: one mobile bar / one desktop nesting step. */
+export interface LeveledNavLevel {
+  /** The level's accessible name (the mobile bar's aria-label). */
+  label: string;
+  nodes: readonly LeveledNavNode[];
+}
+
+/** A node as a link — or plain text when its target isn't reachable by the
+ * viewer (never render a dead or forbidden link). */
+export const NodeLink = ({ node }: { node: LeveledNavNode }): JSX.Element =>
+  node.live ? (
+    <a class={node.active ? "active" : undefined} href={node.href}>
+      {node.label}
+    </a>
+  ) : (
+    <span>{node.label}</span>
+  );
+
+/** Flat `<li>` list of nodes. `nested` supplies a node's extra children (the
+ * desktop level nesting beneath the active node); omit it for a plain list. */
+export const nodeLis = (
+  nodes: readonly LeveledNavNode[],
+  nested: (node: LeveledNavNode) => JSX.Element | null = () => null,
+): JSX.Element[] =>
+  nodes.map((node) => (
+    <li>
+      <NodeLink node={node} />
+      {nested(node)}
+    </li>
+  ));
+
+/** Desktop: the submenu levels nested recursively — level `depth` renders
+ * beneath the active node of the level above (the next step on the active
+ * chain), indenting one step per level. The model never carries an empty
+ * level, so every rendered `<ul>` has children. */
+const DesktopLevels = ({
+  levels,
+  depth,
+}: {
+  levels: readonly LeveledNavLevel[];
+  depth: number;
+}): JSX.Element | null =>
+  depth >= levels.length ? null : (
+    <ul class="admin-subnav">
+      {nodeLis(levels[depth]!.nodes, (node) =>
+        node.active ? (
+          <DesktopLevels depth={depth + 1} levels={levels} />
+        ) : null,
+      )}
+    </ul>
+  );
+
+/** A named nav bar built for one `admin-nav--{variant}` layout: give it the
+ * accessible name and the `<li>`s (and an optional id) and it renders the bar.
+ * The accessible name lets screen-reader users tell the stacked bars apart. */
+const navBar =
+  (variant: "mobile" | "desktop") =>
+  (label: string, lis: JSX.Element[], id?: string): JSX.Element => (
+    <nav aria-label={label} class={`admin-nav admin-nav--${variant}`} id={id}>
+      <ul>{lis}</ul>
+    </nav>
+  );
+
+/** One mobile nav bar (the top-level row, or a submenu level beneath it). */
+const mobileNavBar = navBar("mobile");
+
+/** The desktop sidebar shell around the top-level `<li>`s. */
+const desktopNavShell = navBar("desktop");
+
+/** Render one whole leveled navigation. `rootLis` builds the top-level row for
+ * each viewport; its `nested` argument is the desktop nesting to hang beneath
+ * the active root (always null on mobile), so callers that splice fixed links
+ * around their nodes stay in control of the row. `id` is the admin nav's
+ * `#main-nav` marker — the stylesheet reads it as "this is an admin page", so
+ * the public nav must not pass one. The desktop sidebar and the mobile bars
+ * share one wrapper so the desktop grid can pin it as a single sticky
+ * left-hand column. */
+export const leveledNav = (opts: {
+  label: string;
+  rootLis: (
+    nested: (node: LeveledNavNode) => JSX.Element | null,
+  ) => JSX.Element[];
+  levels: readonly LeveledNavLevel[];
+  id?: string;
+}): JSX.Element => (
+  <div class="admin-nav-group">
+    {desktopNavShell(
+      opts.label,
+      opts.rootLis((node) =>
+        node.active ? <DesktopLevels depth={0} levels={opts.levels} /> : null,
+      ),
+      opts.id,
+    )}
+    {mobileNavBar(
+      opts.label,
+      opts.rootLis(() => null),
+    )}
+    {opts.levels.map((level) =>
+      mobileNavBar(level.label, nodeLis(level.nodes)),
+    )}
+  </div>
+);

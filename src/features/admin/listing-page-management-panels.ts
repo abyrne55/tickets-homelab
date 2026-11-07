@@ -1,0 +1,122 @@
+import {
+  getAllAttributesWithOptions,
+  listingAttributeOptions,
+} from "#db/attributes.ts";
+import {
+  getAllQuestionsWithAnswers,
+  getListingQuestionIds,
+} from "#db/questions/queries.ts";
+import type { PageCtx } from "#routes/admin/entity-pages.ts";
+import type { AssignPageContext } from "#routes/admin/listings-switch.ts";
+import { ListingAttributesPanel } from "#templates/admin/attributes.tsx";
+import { ListingQrPanel } from "#templates/admin/listing-qr.tsx";
+import { ListingEditPanel } from "#templates/admin/listings/edit-panel.tsx";
+import { ListingQuestionsPanel } from "#templates/admin/questions.tsx";
+import type { ListingWithCount } from "#types";
+import { loadItemImagesPanel } from "./item-images.ts";
+import {
+  getListingAndGroups,
+  type LoadedListing,
+} from "./listing-page-data.ts";
+import { EMPTY_QR_VALUES, loadQrFormContext } from "./listing-qr.ts";
+import { loadListingParentsSection } from "./listings-parents.ts";
+
+/**
+ * Build the Edit tab: the multipart edit form and its side panels. Reloads via
+ * getListingAndGroups so the form reads the listing's *stored* values (not the
+ * defaults-resolved view the page frame loaded). `error` is set only on a
+ * rejected-save in-place re-render.
+ */
+export const loadListingEditPanel = async (
+  { listing }: LoadedListing,
+  ctx: PageCtx,
+  error?: string,
+  selectedGroupIds?: number[],
+  assignUndatedDay?: AssignPageContext,
+): Promise<JSX.Element> => {
+  // The framework resolved (and 404'd) the listing before this tab loads, so
+  // the stored re-fetch the edit form needs always finds the row. Assert it
+  // rather than carry a null branch this tab can never reach.
+  const ctxData = (await getListingAndGroups(listing.id))!;
+  const parents = await loadListingParentsSection(ctxData.listing);
+  return ListingEditPanel({
+    aggregateRecalculation: ctxData.aggregateRecalculation,
+    assignUndatedDay,
+    error,
+    groups: ctxData.groups,
+    listing: ctxData.listing,
+    parents,
+    // On a rejected save re-render the checkboxes the operator submitted, not
+    // the stored set, so their group changes are not silently dropped.
+    selectedGroupIds: selectedGroupIds ?? ctxData.selectedGroupIds,
+    session: ctx.session,
+  });
+};
+
+/** Build the Images tab: current linked images plus upload/existing selection. */
+export const loadListingImagesPanel = ({
+  listing,
+}: LoadedListing): Promise<JSX.Element> =>
+  loadItemImagesPanel("listing", listing.id, `/admin/listing/${listing.id}`);
+
+/** A tab section loader the entity-page framework invokes with the loaded
+ *  listing (and a page context this panel ignores). */
+type ListingPanelLoader = (entity: LoadedListing) => Promise<JSX.Element>;
+
+/** A choose-from-a-site-wide-set panel (Questions, Attributes): load every
+ *  available item and this listing's selected ids in parallel, then render. The
+ *  tab is owner-only (matching the route's own gate). Save feedback arrives as
+ *  a redirect flash rendered by the page frame, so the panel carries no error
+ *  of its own. An extra loader parameter here reads the framework's
+ *  page-context argument instead, never an error. */
+const listingChoicePanelLoader =
+  <Item>(
+    loadItems: () => Promise<Item[]>,
+    loadSelectedIds: (listingId: number) => Promise<number[]>,
+    render: (
+      listing: ListingWithCount,
+      items: Item[],
+      selectedIds: Set<number>,
+    ) => JSX.Element,
+  ): ListingPanelLoader =>
+  async ({ listing }: LoadedListing): Promise<JSX.Element> => {
+    const [items, selectedIds] = await Promise.all([
+      loadItems(),
+      loadSelectedIds(listing.id),
+    ]);
+    return render(listing, items, new Set(selectedIds));
+  };
+
+/** Build the Questions tab: assign the site's questions to this listing. */
+export const loadListingQuestionsPanel: ListingPanelLoader =
+  listingChoicePanelLoader(
+    getAllQuestionsWithAnswers,
+    getListingQuestionIds,
+    (listing, allQuestions, assignedIds) =>
+      ListingQuestionsPanel({ allQuestions, assignedIds, listing }),
+  );
+
+/** Build the Attributes tab: choose the public attributes displayed for this
+ *  listing. */
+export const loadListingAttributesPanel: ListingPanelLoader =
+  listingChoicePanelLoader(
+    getAllAttributesWithOptions,
+    listingAttributeOptions.getIds,
+    (listing, attributes, selectedOptionIds) =>
+      ListingAttributesPanel({ attributes, listing, selectedOptionIds }),
+  );
+
+/** Build the QR tab. A child without a standalone page does not show this tab. */
+export const loadListingQrPanel = async ({
+  listing,
+}: LoadedListing): Promise<JSX.Element> => {
+  const { bookableDates, canDirectCheckout } = await loadQrFormContext(listing);
+  return ListingQrPanel({
+    bookableDates,
+    canDirectCheckout,
+    listing,
+    // The pristine form opens at the smallest quantity the listing sells, so
+    // the required number box never starts below its own minimum.
+    values: { ...EMPTY_QR_VALUES, quantity: String(listing.min_quantity) },
+  });
+};

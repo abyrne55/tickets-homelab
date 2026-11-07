@@ -1,0 +1,268 @@
+import {
+  type AuthPolicy,
+  type AuthSession,
+  formPolicyFor,
+  withAuth,
+} from "#routes/auth.ts";
+import { applyFlash, requireCsrfFormWithMessage } from "#routes/csrf.ts";
+import {
+  errorRedirect,
+  notFoundResponse,
+  publicPageResponse,
+  redirect,
+} from "#routes/response.ts";
+import { adminDestinationAt } from "#shared/admin-surface.ts";
+import { signCsrfToken } from "#shared/csrf.ts";
+import type { Flash } from "#shared/flash-context.ts";
+import type { FormParams } from "#shared/form-data.ts";
+import type { ValidationResult } from "#shared/forms/validation.ts";
+import { planReorder } from "#shared/reorder.ts";
+import type { ParamsRoute, ResponseHandler } from "#shared/response-steps.ts";
+
+export type FormValidator<TValues> = {
+  validate: (form: FormParams) => ValidationResult<TValues>;
+};
+
+// ── createAuthedHandler: shared auth + load primitive ─────────────────
+
+/** The authed, context-loaded request passed to a {@link createAuthedHandler}
+ * `handle`. Exported so callers can type a specialised handler factory (fixing
+ * the params/context generics) over the same shape. */
+export type AuthedHandlerArgs<TParams, TContext> = {
+  context: TContext;
+  form: FormParams;
+  params: TParams;
+  session: AuthSession;
+};
+
+/** Shared auth + load context fields for all authed-form route primitives.
+ * Every caller names the form policy its route's declaration gives it. */
+export type AuthedBase<TParams, TContext> = {
+  /** The form policy, taken from the route's declaration. */
+  auth: AuthPolicy<"form">;
+  /** Load context after auth. Returning null yields a 404. */
+  loadContext?: (
+    params: TParams,
+    session: AuthSession,
+  ) => Promise<TContext | null>;
+};
+
+/** The handling step run once auth and any context load passes. */
+export type AuthedHandleStep<TParams, TContext> = ResponseHandler<
+  [args: AuthedHandlerArgs<TParams, TContext>]
+>;
+
+type AuthedHandlerConfig<TParams, TContext> = AuthedBase<TParams, TContext> & {
+  /** Handle the authed, loaded request. */
+  handle: AuthedHandleStep<TParams, TContext>;
+};
+
+/**
+ * Authed form handler: CSRF + auth, optional entity load (null → 404), then
+ * dispatch to `handle` with the raw form. Shared core used by the passthrough
+ * factories (entityFormById, groupFormPost) and createAuthedFormRoute.
+ */
+export const createAuthedHandler =
+  <TParams = Record<string, never>, TContext = void>(
+    config: AuthedHandlerConfig<TParams, TContext>,
+  ) =>
+  (request: Request, params: TParams): Promise<Response> =>
+    withAuth<"form">(request, config.auth, async (session, form) => {
+      const loaded = config.loadContext
+        ? await config.loadContext(params, session)
+        : (undefined as TContext);
+      if (config.loadContext && loaded === null) return notFoundResponse();
+      return config.handle({
+        context: loaded as TContext,
+        form,
+        params,
+        session,
+      });
+    });
+
+/** An authed form route with no params or loaded context:
+ * {@link createAuthedHandler} with the form policy the route's declaration
+ * gives it. Callers pass only their `handle` step and the pattern. */
+export const formHandlerAt =
+  (pattern: string) =>
+  (
+    handle: AuthedHandleStep<Record<string, never>, void>,
+  ): ParamsRoute<Record<string, never>> =>
+    createAuthedHandler({
+      auth: formPolicyFor(adminDestinationAt(pattern)),
+      handle,
+    });
+
+/** Build an authed route from the shared auth/load config plus its own
+ * handling step. The factories that layer more behaviour on top of
+ * {@link createAuthedHandler} — typed-form validation below, typed-name
+ * confirmation in the admin confirmation module — attach their step here. */
+export const authedHandlerWithStep = <TParams, TContext>(
+  config: AuthedBase<TParams, TContext>,
+  handle: AuthedHandleStep<TParams, TContext>,
+): ParamsRoute<TParams> =>
+  createAuthedHandler<TParams, TContext>({ ...config, handle });
+
+type OrderedConfig<Params, Context, Key> = AuthedBase<Params, Context> & {
+  keys: (
+    args: AuthedHandlerArgs<Params, Context>,
+  ) => readonly Key[] | Promise<readonly Key[]>;
+  movedMessage: string;
+  redirectPath: (args: AuthedHandlerArgs<Params, Context>) => string;
+  swap: (
+    first: Key,
+    second: Key,
+    args: AuthedHandlerArgs<Params, Context>,
+  ) => Promise<void>;
+  target: (args: AuthedHandlerArgs<Params, Context>) => Key;
+};
+
+/** Build both move routes for any ordered admin collection. */
+export const createOrderedCollectionHandlers = <Params, Context, Key>(
+  config: OrderedConfig<Params, Context, Key>,
+): { down: ParamsRoute<Params>; up: ParamsRoute<Params> } => {
+  const move = (direction: "up" | "down"): ParamsRoute<Params> =>
+    authedHandlerWithStep(config, async (args) => {
+      const pair = planReorder(
+        await config.keys(args),
+        config.target(args),
+        direction,
+      );
+      if (pair) await config.swap(pair[0], pair[1], args);
+      return redirect(config.redirectPath(args), config.movedMessage, true);
+    });
+  return { down: move("down"), up: move("up") };
+};
+
+// ── createAuthedFormRoute: adds schema validation on top ──────────────
+
+type HandlerArgs<TValues, TParams, TContext> = AuthedHandlerArgs<
+  TParams,
+  TContext
+> & {
+  values: TValues;
+};
+
+type InvalidArgs<TParams, TContext> = AuthedHandlerArgs<TParams, TContext> & {
+  error: string;
+};
+
+type FormRouteConfig<TValues, TParams, TContext> = AuthedBase<
+  TParams,
+  TContext
+> & {
+  /** Mutate the form before validation (demo overrides, secret triage, etc.). */
+  preprocessForm?: (form: FormParams, context: TContext) => void;
+  /** Form validator — static, or built from the loaded context. */
+  form:
+    | FormValidator<TValues>
+    | ((context: TContext) => FormValidator<TValues>);
+  onInvalid: ResponseHandler<[args: InvalidArgs<TParams, TContext>]>;
+  onValid: ResponseHandler<[args: HandlerArgs<TValues, TParams, TContext>]>;
+};
+
+/** Collect common typed-form config while leaving persistence at the direct
+ * `createAuthedFormRoute` call. */
+export function authedFormConfig<
+  TValues,
+  TParams = Record<string, never>,
+  TContext = void,
+>(
+  auth: AuthPolicy<"form">,
+  form: FormValidator<TValues>,
+  errorPath: (context: TContext) => string,
+  loadContext?: AuthedBase<TParams, TContext>["loadContext"],
+): Omit<FormRouteConfig<TValues, TParams, TContext>, "onValid"> {
+  return {
+    auth,
+    ...(loadContext ? { loadContext } : {}),
+    form,
+    onInvalid: ({ context, error }) => errorRedirect(errorPath(context), error),
+  };
+}
+
+/** Require auth, optionally load context, validate a typed form, then dispatch. */
+export const createAuthedFormRoute = <
+  TValues,
+  TParams = Record<string, never>,
+  TContext = void,
+>(
+  config: FormRouteConfig<TValues, TParams, TContext>,
+) =>
+  authedHandlerWithStep<TParams, TContext>(
+    config,
+    ({ context, form, params, session }) => {
+      config.preprocessForm?.(form, context);
+      const validator =
+        typeof config.form === "function" ? config.form(context) : config.form;
+      const result = validator.validate(form);
+      return result.valid
+        ? config.onValid({
+            context,
+            form,
+            params,
+            session,
+            values: result.values,
+          })
+        : config.onInvalid({
+            context,
+            error: result.error,
+            form,
+            params,
+            session,
+          });
+    },
+  );
+
+// ── createFormRoute: public CSRF-only (no auth) ───────────────────────
+
+type PublicHandlerArgs<TValues, TParams> = {
+  form: FormParams;
+  params: TParams;
+  values: TValues;
+};
+
+type PublicInvalidArgs<TParams> = {
+  error: string;
+  params: TParams;
+};
+
+type PublicFormRouteConfig<TValues, TParams> = {
+  form: FormValidator<TValues>;
+  /** Must return a synchronous Response (used as the CSRF error handler too). */
+  onInvalid: (args: PublicInvalidArgs<TParams>) => Response;
+  onValid: ResponseHandler<[args: PublicHandlerArgs<TValues, TParams>]>;
+};
+
+/** Render a public page that carries a form: sign a CSRF token for it, pick
+ * up any flashed message, and return the page HTML. The join page renders the
+ * site footer, so its images resolve like every other public page's. The
+ * demo-reset page renders no footer and gains nothing from the lookup. The
+ * GET-side partner of {@link createFormRoute} (the join and demo-reset pages
+ * use both). */
+export const publicFormPage = async (
+  request: Request,
+  render: (flash: Flash) => string,
+): Promise<Response> => {
+  await signCsrfToken();
+  return publicPageResponse(() => render(applyFlash(request)));
+};
+
+/** CSRF-only (no auth): validate a typed form, then dispatch. */
+export const createFormRoute =
+  <TValues, TParams = Record<string, never>>(
+    config: PublicFormRouteConfig<TValues, TParams>,
+  ) =>
+  async (request: Request, params: TParams): Promise<Response> => {
+    const csrf = await requireCsrfFormWithMessage(request, (error) =>
+      config.onInvalid({ error, params }),
+    );
+    if (!csrf.ok) return csrf.response;
+
+    const { form } = csrf;
+    const result = config.form.validate(form);
+
+    return result.valid
+      ? config.onValid({ form, params, values: result.values })
+      : config.onInvalid({ error: result.error, params });
+  };

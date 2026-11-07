@@ -1,0 +1,10 @@
+/// <reference lib="dom" />
+/// <reference lib="dom.iterable" />
+/** iframe-resizer parent - bundled for embedders to load from our domain */
+
+import "#src/ui/client/window-globals.ts";
+
+import iframeResize from "@iframe-resizer/parent";
+
+// Expose globally so the inline <script> in the embed code can call it
+window.iframeResize = iframeResize;

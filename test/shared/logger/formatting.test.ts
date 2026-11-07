@@ -1,0 +1,128 @@
+import { assert, assertStringIncludes } from "@std/assert";
+import { expect } from "@std/expect";
+import { describe, it as test } from "@std/testing/bdd";
+import {
+  ErrorCode,
+  type ErrorCodeType,
+  type ErrorContext,
+  errorCodeLabel,
+  formatErrorMessage,
+  formatOperatorMessage,
+  formatRequestError,
+} from "#shared/logger.ts";
+
+describe("errorCodeLabel", () => {
+  test("has a label for every error code", () => {
+    for (const code of Object.values(ErrorCode)) {
+      expect(typeof errorCodeLabel[code as ErrorCodeType]).toBe("string");
+    }
+  });
+
+  test("all labels are non-empty strings", () => {
+    for (const label of Object.values(errorCodeLabel)) {
+      expect(typeof label).toBe("string");
+      expect(label.length).toBeGreaterThan(0);
+    }
+  });
+});
+
+describe("formatErrorMessage", () => {
+  test("formats error with detail", () => {
+    const context: ErrorContext = {
+      code: ErrorCode.STRIPE_CHECKOUT,
+      detail: "timeout",
+    };
+    expect(formatErrorMessage(context)).toBe(
+      "Error: Stripe checkout failed (timeout)",
+    );
+  });
+
+  test("formats error without detail", () => {
+    const context: ErrorContext = { code: ErrorCode.DB_CONNECTION };
+    expect(formatErrorMessage(context)).toBe(
+      "Error: Database connection failed",
+    );
+  });
+
+  test("ignores listingId (metadata only for log routing)", () => {
+    const context: ErrorContext = {
+      code: ErrorCode.PAYMENT_SESSION,
+      detail: "price mismatch",
+      listingId: 42,
+    };
+    expect(formatErrorMessage(context)).toBe(
+      "Error: Payment session error (price mismatch)",
+    );
+    assert(!formatErrorMessage(context).includes("42"));
+  });
+
+  test("ignores the operator-only detail", () => {
+    const context: ErrorContext = {
+      code: ErrorCode.EMAIL_SEND,
+      detail: "provider=postmark status=422",
+      operatorDetail: "Suppressed recipient",
+    };
+    expect(formatErrorMessage(context)).toBe(
+      "Error: Email send failed (provider=postmark status=422)",
+    );
+    assert(!formatErrorMessage(context).includes("Suppressed"));
+  });
+});
+
+describe("formatOperatorMessage", () => {
+  test("carries the operator-only detail after the shared message", () => {
+    const context: ErrorContext = {
+      code: ErrorCode.EMAIL_SEND,
+      detail: "provider=postmark status=422",
+      operatorDetail: "Suppressed recipient",
+    };
+    expect(formatOperatorMessage(context)).toBe(
+      "Error: Email send failed (provider=postmark status=422) — Suppressed recipient",
+    );
+  });
+
+  test("is the shared message when there is no operator-only detail", () => {
+    const context: ErrorContext = {
+      code: ErrorCode.DB_CONNECTION,
+      detail: "pool drained",
+    };
+    expect(formatOperatorMessage(context)).toBe(
+      "Error: Database connection failed (pool drained)",
+    );
+  });
+
+  test("treats an empty operator-only detail as absent", () => {
+    const context: ErrorContext = {
+      code: ErrorCode.EMAIL_SEND,
+      detail: "provider=resend status=500",
+      operatorDetail: "",
+    };
+    expect(formatOperatorMessage(context)).toBe(
+      "Error: Email send failed (provider=resend status=500)",
+    );
+  });
+});
+
+describe("formatRequestError", () => {
+  test("formats Error instance with message", () => {
+    expect(
+      formatRequestError("GET", "/ticket/abc", new Error("DB timeout")),
+    ).toBe("GET /ticket/[redacted]: DB timeout");
+  });
+
+  test("formats non-Error value as string", () => {
+    expect(
+      formatRequestError("POST", "/admin/listings/5", "connection reset"),
+    ).toBe("POST /admin/listings/[id]: connection reset");
+  });
+
+  test("redacts path in the output", () => {
+    const result = formatRequestError(
+      "GET",
+      "/checkin/secret-token",
+      new Error("fail"),
+    );
+    assert(!result.includes("secret-token"));
+    assertStringIncludes(result, "[redacted]");
+  });
+});

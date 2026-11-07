@@ -1,0 +1,804 @@
+import { assert, assertArrayIncludes, assertStringIncludes } from "@std/assert";
+import { expect } from "@std/expect";
+import { describe, it as test } from "@std/testing/bdd";
+import { bookedRangeLabel } from "#shared/date-labels.ts";
+import {
+  addDays,
+  addMonthsIso,
+  bookedSpanDays,
+  daysAgo,
+  formatDatetimeLabel,
+  formatDatetimeShort,
+  formatTimeAgo,
+  getAvailableDates,
+  getNextBookableDate,
+  isBookingRangeValid,
+  listingDateToCalendarDate,
+  normalizeDatetime,
+  parseIsoDateParam,
+  widestDatedEntry,
+} from "#shared/dates.ts";
+import { DAY_NAMES, VALID_DAY_NAMES } from "#shared/day-names.ts";
+import { todayInTz } from "#shared/timezone.ts";
+import { today } from "#test-utils/booking-model-fixtures.ts";
+import { testDate } from "#test-utils/dates.ts";
+import { testHoliday } from "#test-utils/db-helpers/holidays.ts";
+import { testListing } from "#test-utils/factories.ts";
+import { testWithSetting, useSetting } from "#test-utils/settings.ts";
+
+describe("dates", () => {
+  useSetting({ timezone: "UTC" });
+  describe("addDays", () => {
+    test("adds positive days to a date", () => {
+      expect(addDays(testDate("2026-01-01"), 5)).toBe("2026-01-06");
+    });
+
+    test("adds zero days returns same date", () => {
+      expect(addDays(testDate("2026-06-15"), 0)).toBe("2026-06-15");
+    });
+
+    test("handles month boundary", () => {
+      expect(addDays(testDate("2026-01-30"), 3)).toBe("2026-02-02");
+    });
+
+    test("handles year boundary", () => {
+      expect(addDays(testDate("2026-12-30"), 5)).toBe("2027-01-04");
+    });
+
+    test("handles large number of days", () => {
+      expect(addDays(testDate("2026-01-01"), 365)).toBe("2027-01-01");
+    });
+  });
+
+  describe("addMonthsIso", () => {
+    test("clamps Jan 31 + 1mo to Feb 28", () => {
+      expect(addMonthsIso("2026-01-31T12:00:00.000Z", 1)).toBe(
+        "2026-02-28T12:00:00.000Z",
+      );
+    });
+
+    test("clamps Jan 31 + 1mo to Feb 29 in leap year", () => {
+      expect(addMonthsIso("2024-01-31T12:00:00.000Z", 1)).toBe(
+        "2024-02-29T12:00:00.000Z",
+      );
+    });
+
+    test("clamps to Feb 28 in a non-leap century year (1900)", () => {
+      // 1900 is divisible by 100 but not 400, so it is NOT a leap year.
+      expect(addMonthsIso("1900-01-31T12:00:00.000Z", 1)).toBe(
+        "1900-02-28T12:00:00.000Z",
+      );
+    });
+
+    test("clamps to Feb 29 in a leap century year (2000)", () => {
+      // 2000 is divisible by 400, so it IS a leap year.
+      expect(addMonthsIso("2000-01-31T12:00:00.000Z", 1)).toBe(
+        "2000-02-29T12:00:00.000Z",
+      );
+    });
+
+    test("clamps Mar 31 + 1mo to Apr 30", () => {
+      expect(addMonthsIso("2026-03-31T00:00:00.000Z", 1)).toBe(
+        "2026-04-30T00:00:00.000Z",
+      );
+    });
+
+    test("year rollover Dec 15 + 1mo", () => {
+      expect(addMonthsIso("2026-12-15T00:00:00.000Z", 1)).toBe(
+        "2027-01-15T00:00:00.000Z",
+      );
+    });
+
+    test("12-month renewal", () => {
+      expect(addMonthsIso("2026-05-17T00:00:00.000Z", 12)).toBe(
+        "2027-05-17T00:00:00.000Z",
+      );
+    });
+
+    test("zero months returns canonical ISO string", () => {
+      expect(addMonthsIso("2026-05-17T09:30:00.000Z", 0)).toBe(
+        "2026-05-17T09:30:00.000Z",
+      );
+    });
+
+    test("preserves time component", () => {
+      expect(addMonthsIso("2026-01-15T14:30:45.123Z", 2)).toBe(
+        "2026-03-15T14:30:45.123Z",
+      );
+    });
+  });
+
+  describe("getAvailableDates", () => {
+    /** A daily listing with a 5-day duration, full week, wide date range —
+     *  the fixture two duration-override tests share. */
+    const dailyOverrideListing = () =>
+      testListing({
+        bookable_days: [...VALID_DAY_NAMES],
+        duration_days: 5,
+        listing_type: "daily",
+        maximum_days_after: 14,
+        minimum_days_before: 0,
+      });
+
+    /** The daily-override listing plus a single one-day holiday at day+2 —
+     *  the shared arrange behind the duration-override tests below. */
+    const overrideListingWithDay2Holiday = () => {
+      const holidayDay = addDays(testDate(today()), 2);
+      return {
+        holidays: [
+          testHoliday({
+            end_date: holidayDay,
+            name: "H",
+            start_date: holidayDay,
+          }),
+        ],
+        listing: dailyOverrideListing(),
+      };
+    };
+
+    test("returns dates filtered by bookable days", () => {
+      const listing = testListing({
+        bookable_days: ["Monday"],
+        listing_type: "daily",
+        maximum_days_after: 14,
+        minimum_days_before: 0,
+      });
+
+      const dates = getAvailableDates(listing, []);
+      expect(dates.length).toBeGreaterThan(0);
+      // Every returned date should be a Monday
+      for (const d of dates) {
+        const dayName = DAY_NAMES[new Date(`${d}T00:00:00Z`).getUTCDay()];
+        expect(dayName).toBe("Monday");
+      }
+    });
+
+    const dailyListingWithAllDays = () =>
+      testListing({
+        bookable_days: [...VALID_DAY_NAMES],
+        listing_type: "daily",
+        maximum_days_after: 7,
+        minimum_days_before: 0,
+      });
+
+    const makeHoliday = (name: string, start: string, end: string) => [
+      { end_date: end, id: 1, name, start_date: start },
+    ];
+
+    test("excludes holidays", () => {
+      const holidayDate = addDays(testDate(today()), 1);
+      const dates = getAvailableDates(
+        dailyListingWithAllDays(),
+        makeHoliday("Holiday", holidayDate, holidayDate),
+      );
+      assert(!dates.includes(holidayDate));
+    });
+
+    test("excludes holiday ranges", () => {
+      const holidayStart = addDays(testDate(today()), 1);
+      const holidayEnd = addDays(testDate(today()), 3);
+      const dates = getAvailableDates(
+        dailyListingWithAllDays(),
+        makeHoliday("Holiday Range", holidayStart, holidayEnd),
+      );
+      assert(!dates.includes(holidayStart));
+      assert(!dates.includes(addDays(testDate(today()), 2)));
+      assert(!dates.includes(holidayEnd));
+    });
+
+    test("respects minimum_days_before", () => {
+      const listing = testListing({
+        bookable_days: [...VALID_DAY_NAMES],
+        listing_type: "daily",
+        maximum_days_after: 10,
+        minimum_days_before: 3,
+      });
+
+      const dates = getAvailableDates(listing, []);
+      const earliest = dates[0]!;
+      expect(earliest >= addDays(testDate(today()), 3)).toBe(true);
+    });
+
+    test("uses 730 days when maximum_days_after is 0 (unlimited)", () => {
+      const listing = testListing({
+        bookable_days: [...VALID_DAY_NAMES],
+        listing_type: "daily",
+        maximum_days_after: 0,
+        minimum_days_before: 0,
+      });
+
+      const dates = getAvailableDates(listing, []);
+      const latest = dates[dates.length - 1]!;
+      // Should extend close to 730 days (2 years)
+      expect(latest >= addDays(testDate(today()), 700)).toBe(true);
+    });
+
+    test("respects maximum_days_after when non-zero", () => {
+      const listing = testListing({
+        bookable_days: [...VALID_DAY_NAMES],
+        listing_type: "daily",
+        maximum_days_after: 7,
+        minimum_days_before: 0,
+      });
+
+      const dates = getAvailableDates(listing, []);
+      const latest = dates[dates.length - 1]!;
+      expect(latest <= addDays(testDate(today()), 7)).toBe(true);
+    });
+
+    test("returns empty array when no bookable days match", () => {
+      // Pick a day name that is not in the 7-day range from today.
+      const listing = testListing({
+        bookable_days: [],
+        listing_type: "daily",
+        maximum_days_after: 7,
+        minimum_days_before: 0,
+      });
+
+      const dates = getAvailableDates(listing, []);
+      expect(dates).toEqual([]);
+    });
+
+    test("excludes multi-day start dates whose range covers a holiday", () => {
+      const holidayStart = addDays(testDate(today()), 3);
+      const holidays = [
+        {
+          end_date: holidayStart,
+          id: 1,
+          name: "Conflict",
+          start_date: holidayStart,
+        },
+      ];
+      const listing = testListing({
+        bookable_days: [...VALID_DAY_NAMES],
+        duration_days: 3,
+        listing_type: "daily",
+        maximum_days_after: 14,
+        minimum_days_before: 0,
+      });
+      const dates = getAvailableDates(listing, holidays);
+      // day+1 start → covers day 1,2,3 → contains holidayStart → excluded
+      assert(!dates.includes(addDays(testDate(today()), 1)));
+      // day+3 start is the holiday itself → excluded
+      assert(!dates.includes(holidayStart));
+      // day+4 start → covers day 4,5,6 → no holiday → included
+      assertArrayIncludes(dates, [addDays(testDate(today()), 4)]);
+    });
+
+    test("durationOverride filters by the given span instead of duration_days", () => {
+      // duration_days (5) is the max, but a customisable listing's date list
+      // is built per day, so every bookable start appears.
+      const { listing, holidays } = overrideListingWithDay2Holiday();
+      // With duration 5 the day+1 start spans the holiday and is excluded;
+      // with an override of 1 it is offered.
+      assert(
+        !getAvailableDates(listing, holidays).includes(
+          addDays(testDate(today()), 1),
+        ),
+      );
+      assertArrayIncludes(getAvailableDates(listing, holidays, 1), [
+        addDays(testDate(today()), 1),
+      ]);
+    });
+
+    test("durationOverride of 0 is clamped to one day, not treated as absent", () => {
+      // An explicit 0 is a provided override (clamped to the 1-day minimum),
+      // distinct from omitting it, which falls back to duration_days.
+      // `0 ?? duration_days` keeps the 0.
+      const { listing, holidays } = overrideListingWithDay2Holiday();
+      // Override 0 → a 1-day span: the day+1 start clears the day+2 holiday.
+      // Were 0 mistaken for "absent" it would use duration_days (5), which
+      // spans the holiday, and the day would be excluded.
+      assertArrayIncludes(getAvailableDates(listing, holidays, 0), [
+        addDays(testDate(today()), 1),
+      ]);
+    });
+  });
+
+  describe("isBookingRangeValid", () => {
+    const dailyAllDays = () =>
+      testListing({
+        bookable_days: [...VALID_DAY_NAMES],
+        listing_type: "daily",
+        maximum_days_after: 10,
+        minimum_days_before: 0,
+      });
+
+    test("accepts a holiday-free range within the booking window", () => {
+      expect(isBookingRangeValid(dailyAllDays(), today(), 3, [])).toBe(true);
+    });
+
+    test("rejects a range that overlaps a holiday", () => {
+      const holidayDay = addDays(testDate(today()), 2);
+      const holidays = [
+        { end_date: holidayDay, id: 1, name: "H", start_date: holidayDay },
+      ];
+      expect(isBookingRangeValid(dailyAllDays(), today(), 3, holidays)).toBe(
+        false,
+      );
+    });
+
+    test("rejects a range that runs past the booking window", () => {
+      const listing = testListing({
+        bookable_days: [...VALID_DAY_NAMES],
+        listing_type: "daily",
+        maximum_days_after: 2,
+        minimum_days_before: 0,
+      });
+      expect(isBookingRangeValid(listing, today(), 5, [])).toBe(false);
+    });
+
+    test("rejects a start date before the earliest bookable date", () => {
+      const listing = testListing({
+        bookable_days: [...VALID_DAY_NAMES],
+        listing_type: "daily",
+        maximum_days_after: 10,
+        minimum_days_before: 2,
+      });
+      expect(isBookingRangeValid(listing, today(), 1, [])).toBe(false);
+    });
+
+    test("rejects a range that hits a non-bookable weekday", () => {
+      // Only Mondays are bookable, so a 2-day span from a Monday includes
+      // Tuesday and must be rejected.
+      const listing = testListing({
+        bookable_days: ["Monday"],
+        listing_type: "daily",
+        maximum_days_after: 21,
+        minimum_days_before: 0,
+      });
+      const monday = getAvailableDates(listing, [])[0]!;
+      expect(isBookingRangeValid(listing, monday, 2, [])).toBe(false);
+    });
+  });
+
+  describe("parseIsoDateParam", () => {
+    test("accepts a well-formed real date", () => {
+      expect(parseIsoDateParam("2026-08-20")).toBe("2026-08-20");
+    });
+
+    test("rejects an absent value", () => {
+      expect(parseIsoDateParam(null)).toBe(null);
+    });
+
+    test("rejects a malformed value", () => {
+      expect(parseIsoDateParam("20/08/2026")).toBe(null);
+      expect(parseIsoDateParam("2026-8-20")).toBe(null);
+    });
+
+    test("rejects a rolled-over calendar impossibility", () => {
+      expect(parseIsoDateParam("2026-02-30")).toBe(null);
+    });
+
+    test("rejects an unparseable month", () => {
+      expect(parseIsoDateParam("2026-99-01")).toBe(null);
+    });
+  });
+
+  describe("bookedRangeLabel", () => {
+    test("is empty without a booked date", () => {
+      expect(bookedRangeLabel(null, null)).toBe("");
+    });
+
+    test("a single booked day reads as one date", () => {
+      expect(bookedRangeLabel("2027-02-02", null)).toBe(
+        "Tuesday 2 February 2027",
+      );
+    });
+
+    test("the stored [start, end) range renders its actual span", () => {
+      expect(bookedRangeLabel("2027-02-02", "2027-02-05")).toBe(
+        "2\u20134 February 2027",
+      );
+    });
+
+    test("a degenerate stored range (one day) reads as one date", () => {
+      expect(bookedRangeLabel("2027-02-02", "2027-02-03")).toBe(
+        "Tuesday 2 February 2027",
+      );
+    });
+
+    test("a legacy row without a stored end falls back to the fixed duration", () => {
+      expect(bookedRangeLabel("2027-02-02", null, 3)).toBe(
+        "2\u20134 February 2027",
+      );
+    });
+
+    test("the stored range outranks the fixed-duration fallback", () => {
+      // Booked 2 days of a 7-day-max customisable listing: the stored range wins.
+      expect(bookedRangeLabel("2027-02-02", "2027-02-04", 7)).toBe(
+        "2\u20133 February 2027",
+      );
+    });
+  });
+
+  describe("widestDatedEntry", () => {
+    const entry = (date: string | null, endDate: string | null) => ({
+      attendee: { date, end_date: endDate },
+    });
+
+    test("is null when every entry is date-less", () => {
+      expect(widestDatedEntry([entry(null, null)])).toBeNull();
+    });
+
+    test("picks the entry whose booked range ends last", () => {
+      const narrow = entry("2027-02-02", "2027-02-03");
+      const wide = entry("2027-02-02", "2027-02-06");
+      const narrowB = entry("2027-02-02", "2027-02-03");
+      expect(widestDatedEntry([narrow, wide, narrowB])).toBe(wide);
+    });
+
+    test("an end-less dated entry sorts below any ranged stay", () => {
+      const dayOnly = entry("2027-02-02", null);
+      const ranged = entry("2027-02-02", "2027-02-04");
+      expect(widestDatedEntry([dayOnly, ranged])).toBe(ranged);
+      expect(widestDatedEntry([dayOnly])).toBe(dayOnly);
+    });
+  });
+
+  describe("bookedSpanDays", () => {
+    test("counts the whole days of a [start, end) range", () => {
+      expect(
+        bookedSpanDays("2026-08-01T00:00:00Z", "2026-08-03T00:00:00.000Z"),
+      ).toBe(2);
+    });
+
+    test("a one-day range and a degenerate range both read as 1", () => {
+      expect(
+        bookedSpanDays("2026-08-01T00:00:00Z", "2026-08-02T00:00:00.000Z"),
+      ).toBe(1);
+      expect(
+        bookedSpanDays("2026-08-01T00:00:00Z", "2026-08-01T00:00:00.000Z"),
+      ).toBe(1);
+    });
+
+    test("a missing start or end reads as 1", () => {
+      expect(bookedSpanDays(null, "2026-08-02T00:00:00Z")).toBe(1);
+      expect(bookedSpanDays("2026-08-01T00:00:00Z", null)).toBe(1);
+    });
+  });
+
+  describe("getNextBookableDate", () => {
+    test("returns the first available date", () => {
+      const listing = testListing({
+        bookable_days: [...VALID_DAY_NAMES],
+        listing_type: "daily",
+        maximum_days_after: 14,
+        minimum_days_before: 0,
+      });
+
+      const result = getNextBookableDate(listing, []);
+      expect(result).toBe(today());
+    });
+
+    test("returns null when no bookable days configured", () => {
+      const listing = testListing({
+        bookable_days: [],
+        listing_type: "daily",
+        maximum_days_after: 7,
+        minimum_days_before: 0,
+      });
+
+      expect(getNextBookableDate(listing, [])).toBeNull();
+    });
+
+    test("skips start dates whose multi-day range extends past the window", () => {
+      const listing = testListing({
+        bookable_days: [...VALID_DAY_NAMES],
+        duration_days: 3,
+        listing_type: "daily",
+        maximum_days_after: 4,
+        minimum_days_before: 0,
+      });
+      const result = getNextBookableDate(listing, []);
+      expect(result).toBe(today());
+      const dates = getAvailableDates(listing, []);
+      // A 3-day booking can only start on days 0, 1, or 2 — day 3 and 4
+      // can't fit a 3-day range within the 4-day window.
+      expect(dates.length).toBeLessThanOrEqual(3);
+      assert(!dates.includes(addDays(testDate(today()), 4)));
+    });
+
+    test("skips holidays", () => {
+      const todayStr = today();
+      const holidays = [
+        { end_date: todayStr, id: 1, name: "Holiday", start_date: todayStr },
+      ];
+
+      const listing = testListing({
+        bookable_days: [...VALID_DAY_NAMES],
+        listing_type: "daily",
+        maximum_days_after: 7,
+        minimum_days_before: 0,
+      });
+
+      const result = getNextBookableDate(listing, holidays);
+      expect(result).toBe(addDays(testDate(todayStr), 1));
+    });
+
+    test("respects minimum_days_before", () => {
+      const listing = testListing({
+        bookable_days: [...VALID_DAY_NAMES],
+        listing_type: "daily",
+        maximum_days_after: 10,
+        minimum_days_before: 3,
+      });
+
+      const result = getNextBookableDate(listing, []);
+      expect(result).toBe(addDays(testDate(today()), 3));
+    });
+
+    test("returns null when all dates fall on holidays", () => {
+      const start = addDays(testDate(today()), 1);
+      const end = addDays(testDate(today()), 3);
+      const holidays = [
+        { end_date: end, id: 1, name: "Long Holiday", start_date: start },
+      ];
+
+      const listing = testListing({
+        bookable_days: [...VALID_DAY_NAMES],
+        listing_type: "daily",
+        maximum_days_after: 3,
+        minimum_days_before: 1,
+      });
+
+      expect(getNextBookableDate(listing, holidays)).toBeNull();
+    });
+
+    test("uses 730 days when maximum_days_after is 0", () => {
+      const listing = testListing({
+        bookable_days: [...VALID_DAY_NAMES],
+        listing_type: "daily",
+        maximum_days_after: 0,
+        minimum_days_before: 0,
+      });
+
+      const result = getNextBookableDate(listing, []);
+      expect(result).toBe(today());
+    });
+
+    test("returns first matching day when only specific days are bookable", () => {
+      const listing = testListing({
+        bookable_days: ["Monday"],
+        listing_type: "daily",
+        maximum_days_after: 14,
+        minimum_days_before: 0,
+      });
+
+      const result = getNextBookableDate(listing, []);
+      expect(result).not.toBeNull();
+      const dayName = DAY_NAMES[new Date(`${result}T00:00:00Z`).getUTCDay()];
+      expect(dayName).toBe("Monday");
+    });
+  });
+
+  describe("normalizeDatetime", () => {
+    test("normalizes datetime-local (16 chars) to full ISO string", () => {
+      const result = normalizeDatetime("2026-06-15T14:30", "date");
+      expect(result).toBe("2026-06-15T14:30:00.000Z");
+    });
+
+    test("handles datetime with seconds", () => {
+      const result = normalizeDatetime("2026-06-15T14:30:00", "date");
+      expect(result).toBe("2026-06-15T14:30:00.000Z");
+    });
+
+    test("throws on invalid datetime string", () => {
+      expect(() => normalizeDatetime("not-a-date", "date")).toThrow(
+        "Invalid date",
+      );
+    });
+
+    test("includes the label in the error message", () => {
+      expect(() => normalizeDatetime("bad-value", "closes_at")).toThrow(
+        "Invalid closes_at",
+      );
+    });
+
+    testWithSetting(
+      "converts datetime-local to UTC using timezone",
+      { timezone: "Europe/London" },
+      () => {
+        // 14:30 BST (June) = 13:30 UTC
+        const result = normalizeDatetime("2026-06-15T14:30", "date");
+        expect(result).toBe("2026-06-15T13:30:00.000Z");
+      },
+    );
+  });
+
+  describe("listingDateToCalendarDate", () => {
+    test("converts UTC datetime to YYYY-MM-DD in UTC", () => {
+      expect(listingDateToCalendarDate("2026-06-15T14:00:00.000Z")).toBe(
+        "2026-06-15",
+      );
+    });
+
+    testWithSetting(
+      "converts UTC datetime to local date in timezone",
+      { timezone: "Europe/London" },
+      () => {
+        // 23:30 UTC on June 15 = 00:30 BST on June 16 (Europe/London in summer)
+        expect(listingDateToCalendarDate("2026-06-15T23:30:00.000Z")).toBe(
+          "2026-06-16",
+        );
+      },
+    );
+
+    test("returns null for empty string", () => {
+      expect(listingDateToCalendarDate("")).toBeNull();
+    });
+
+    test("returns null for invalid datetime", () => {
+      expect(listingDateToCalendarDate("not-a-date")).toBeNull();
+    });
+
+    testWithSetting(
+      "returns null for invalid timezone",
+      { timezone: "Invalid/Zone" },
+      () => {
+        expect(
+          listingDateToCalendarDate("2026-06-15T14:00:00.000Z"),
+        ).toBeNull();
+      },
+    );
+
+    test("handles midnight UTC", () => {
+      expect(listingDateToCalendarDate("2026-03-01T00:00:00.000Z")).toBe(
+        "2026-03-01",
+      );
+    });
+
+    test("pads single-digit month and day", () => {
+      expect(listingDateToCalendarDate("2026-01-05T12:00:00.000Z")).toBe(
+        "2026-01-05",
+      );
+    });
+  });
+
+  describe("daysAgo", () => {
+    test("returns null for empty string", () => {
+      expect(daysAgo("")).toBeNull();
+    });
+
+    test("returns null for an invalid date", () => {
+      expect(daysAgo("not-a-date")).toBeNull();
+    });
+
+    test("returns null for today's date", () => {
+      const todayStr = today();
+      expect(daysAgo(`${todayStr}T12:00:00.000Z`)).toBeNull();
+    });
+
+    test("returns null for future date", () => {
+      const futureStr = addDays(testDate(today()), 5);
+      expect(daysAgo(`${futureStr}T12:00:00.000Z`)).toBeNull();
+    });
+
+    test("returns 1 for yesterday", () => {
+      const yesterdayStr = addDays(testDate(today()), -1);
+      expect(daysAgo(`${yesterdayStr}T12:00:00.000Z`)).toBe(1);
+    });
+
+    test("returns correct count for multiple days ago", () => {
+      const pastStr = addDays(testDate(today()), -10);
+      expect(daysAgo(`${pastStr}T12:00:00.000Z`)).toBe(10);
+    });
+
+    testWithSetting(
+      "respects timezone when determining past date",
+      { timezone: "Asia/Tokyo" },
+      () => {
+        // Asia/Tokyo is UTC+9, so 16:00 UTC = 01:00 next day in Tokyo.
+        const todayTokyo = todayInTz("Asia/Tokyo");
+        const yesterdayTokyo = addDays(testDate(todayTokyo), -1);
+        expect(daysAgo(`${yesterdayTokyo}T16:00:00.000Z`)).toBeNull();
+      },
+    );
+  });
+
+  describe("formatTimeAgo", () => {
+    const base = Date.parse("2026-06-15T12:00:00.000Z");
+
+    test("returns null for an unparseable timestamp", () => {
+      expect(formatTimeAgo("not-a-date", base)).toBeNull();
+    });
+
+    test("returns null for a future timestamp", () => {
+      expect(formatTimeAgo("2026-06-15T12:00:01.000Z", base)).toBeNull();
+    });
+
+    test("labels a sub-minute span in seconds", () => {
+      expect(formatTimeAgo("2026-06-15T11:59:30.000Z", base)).toBe(
+        "30 seconds ago",
+      );
+    });
+
+    test("uses 'now' at zero elapsed", () => {
+      expect(formatTimeAgo("2026-06-15T12:00:00.000Z", base)).toBe("now");
+    });
+
+    test("uses singular minute at exactly one minute", () => {
+      expect(formatTimeAgo("2026-06-15T11:59:00.000Z", base)).toBe(
+        "1 minute ago",
+      );
+    });
+
+    test("pluralises minutes", () => {
+      expect(formatTimeAgo("2026-06-15T11:45:00.000Z", base)).toBe(
+        "15 minutes ago",
+      );
+    });
+
+    test("uses singular hour at exactly one hour", () => {
+      expect(formatTimeAgo("2026-06-15T11:00:00.000Z", base)).toBe(
+        "1 hour ago",
+      );
+    });
+
+    test("pluralises hours", () => {
+      expect(formatTimeAgo("2026-06-15T09:00:00.000Z", base)).toBe(
+        "3 hours ago",
+      );
+    });
+
+    test("uses 'yesterday' at exactly one day", () => {
+      expect(formatTimeAgo("2026-06-14T12:00:00.000Z", base)).toBe("yesterday");
+    });
+
+    test("pluralises days", () => {
+      expect(formatTimeAgo("2026-06-13T12:00:00.000Z", base)).toBe(
+        "2 days ago",
+      );
+    });
+  });
+
+  describe("formatDatetimeLabel", () => {
+    test("formats ISO datetime as human-readable string", () => {
+      const label = formatDatetimeLabel("2026-06-15T14:00:00.000Z");
+      assertStringIncludes(label, "Monday 15 June 2026 at 14:00");
+    });
+
+    test("pads single-digit hours and minutes", () => {
+      const label = formatDatetimeLabel("2026-01-05T09:05:00.000Z");
+      assertStringIncludes(label, "Monday 5 January 2026 at 09:05");
+    });
+
+    test("handles midnight", () => {
+      const label = formatDatetimeLabel("2026-03-01T00:00:00.000Z");
+      assertStringIncludes(label, "Sunday 1 March 2026 at 00:00");
+    });
+  });
+
+  describe("formatDatetimeShort", () => {
+    testWithSetting(
+      "uses configured timezone (Europe/London BST)",
+      { timezone: "Europe/London" },
+      () => {
+        // 13:00 UTC on 7 April 2026 is during BST (UTC+1) → 14:00 local
+        expect(formatDatetimeShort("2026-04-07T13:00:00.000Z")).toBe(
+          "2026-04-07 14:00",
+        );
+      },
+    );
+
+    testWithSetting(
+      "uses configured timezone (Europe/London GMT)",
+      { timezone: "Europe/London" },
+      () => {
+        expect(formatDatetimeShort("2026-01-15T09:05:00.000Z")).toBe(
+          "2026-01-15 09:05",
+        );
+      },
+    );
+
+    testWithSetting(
+      "uses configured timezone (Asia/Tokyo)",
+      { timezone: "Asia/Tokyo" },
+      () => {
+        expect(formatDatetimeShort("2026-06-15T05:30:00.000Z")).toBe(
+          "2026-06-15 14:30",
+        );
+      },
+    );
+  });
+});

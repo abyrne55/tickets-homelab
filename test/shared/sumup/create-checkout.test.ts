@@ -1,0 +1,364 @@
+import { assertStringIncludes } from "@std/assert";
+import { expect } from "@std/expect";
+import { describe, it as test } from "@std/testing/bdd";
+import { settings } from "#db/settings.ts";
+import { getSumupCheckout } from "#db/sumup-checkouts.ts";
+import { providerDetail, transportError } from "#payment/transport-error.ts";
+import type { ModifierSpec } from "#shared/payments.ts";
+import { sumupApi } from "#shared/sumup.ts";
+import {
+  expectClosedCheckoutFailure,
+  expectSameThrown,
+} from "#test-utils/checkout-failure.ts";
+import {
+  makeSumupClient,
+  setupSumupSuite,
+  withSumupClient,
+} from "#test-utils/sumup.ts";
+
+const intent = {
+  address: "",
+  date: null,
+  email: "alice@example.com",
+  items: [
+    { listingId: 1, name: "Evt", quantity: 2, slug: "evt", unitPrice: 1000 },
+  ],
+  name: "Alice",
+  phone: "",
+  special_instructions: "",
+};
+
+/** A £0.01 discount on the given listings — an amount no per-unit price
+ *  divides evenly, so the charge splits into differently-priced lines. */
+const pennyOff = (listingIds: number[]): ModifierSpec => ({
+  id: 9,
+  kind: "fixed",
+  listingIds,
+  name: "Penny off",
+  quantity: 1,
+  trigger: "code",
+  value: -1,
+});
+
+/** A one-month site-plan line of the given quantity at £5 per unit. */
+const oneMonthPlan = (quantity: number) => ({
+  listingId: 3,
+  name: "(1 Month)",
+  purchaseUnit: { kind: "months" as const, monthsPerUnit: 1 },
+  quantity,
+  slug: "one-month",
+  unitPrice: 500,
+});
+
+/** A fake SumUp client that answers creates as the given checkout and hands
+ *  back the last body it was sent, so a test can read what went over the wire. */
+const bodyCapturingClient = (checkout: { id: string; url: string }) => {
+  let sent: Record<string, unknown> = {};
+  return {
+    client: makeSumupClient({
+      create: (body) => {
+        sent = body as Record<string, unknown>;
+        return Promise.resolve({
+          checkout_reference: sent.checkout_reference,
+          hosted_checkout_url: checkout.url,
+          id: checkout.id,
+          status: "PENDING",
+        });
+      },
+    }),
+    sent: () => sent,
+  };
+};
+
+describe("sumup createCheckout", () => {
+  const { loggedDebug } = setupSumupSuite();
+
+  test("returns null and stores no orphan when merchant code is absent", async () => {
+    settings.setForTest({ sumup_merchant_code: "" });
+    const client = makeSumupClient({ create: () => Promise.resolve({}) });
+    await withSumupClient(client, async () => {
+      expect(
+        await sumupApi.createCheckout(intent, "http://localhost"),
+      ).toBeNull();
+    });
+  });
+
+  test("creates a hosted checkout, converts the total, and persists metadata + id", async () => {
+    const capture = bodyCapturingClient({
+      id: "co_created",
+      url: "https://pay.sumup.com/x",
+    });
+    await withSumupClient(capture.client, async () => {
+      const result = await sumupApi.createCheckout(intent, "http://localhost");
+      expect(result).not.toBeNull();
+      expect(result!.url).toBe("https://pay.sumup.com/x");
+      // 2 tickets * 1000 minor units = 2000 minor => 20 major units
+      expect(capture.sent().amount).toBe(20);
+      expect(capture.sent().currency).toBe("GBP");
+      // The whole order sits on one listing, so it is named for that listing.
+      expect(capture.sent().description).toBe("Evt (x2)");
+      expect(capture.sent().hosted_checkout).toEqual({ enabled: true });
+      expect(capture.sent().merchant_code).toBe("MC123");
+      assertStringIncludes(
+        String(capture.sent().redirect_url),
+        `session_id=${result!.reference}`,
+      );
+      expect(capture.sent().return_url).toBe(
+        "https://example.com/payment/webhook",
+      );
+      // Metadata + SumUp id persisted under the generated reference
+      const stored = await getSumupCheckout(result!.reference);
+      expect(stored!.metadata.name).toBe("Alice");
+      expect(stored!.sumupId).toBe("co_created");
+    });
+  });
+
+  test("describes the order by every ticket it sells, across listings", async () => {
+    const capture = bodyCapturingClient({
+      id: "co_multi",
+      url: "https://pay.sumup.com/multi",
+    });
+    await withSumupClient(capture.client, async () => {
+      await sumupApi.createCheckout(
+        {
+          ...intent,
+          items: [
+            ...intent.items,
+            {
+              listingId: 2,
+              name: "Gala",
+              quantity: 3,
+              slug: "gala",
+              unitPrice: 500,
+            },
+          ],
+        },
+        "http://localhost",
+      );
+      // 2 tickets on the first listing + 3 on the second = 5 tickets: the
+      // mixed order keeps the plain Tickets label with the ticket count.
+      expect(capture.sent().description).toBe("Tickets (x5)");
+    });
+  });
+
+  test("says what a site plan order's units buy in months", async () => {
+    const capture = bodyCapturingClient({
+      id: "co_plan",
+      url: "https://pay.sumup.com/plan",
+    });
+    await withSumupClient(capture.client, async () => {
+      await sumupApi.createCheckout(
+        {
+          ...intent,
+          items: [oneMonthPlan(3)],
+        },
+        "http://localhost",
+      );
+      // ×3 beside a plan buys three months of one site, not three sites.
+      expect(capture.sent().description).toBe(
+        "Site plan: (1 Month) — 3 months",
+      );
+    });
+  });
+
+  test("keeps each line's unit in a mixed plan-and-ticket order", async () => {
+    const capture = bodyCapturingClient({
+      id: "co_mixed",
+      url: "https://pay.sumup.com/mixed",
+    });
+    await withSumupClient(capture.client, async () => {
+      await sumupApi.createCheckout(
+        {
+          ...intent,
+          items: [oneMonthPlan(2), { ...intent.items[0]! }],
+        },
+        "http://localhost",
+      );
+      // The plan's units are months, the plain listing's are tickets: one
+      // description, each segment carrying its own unit.
+      expect(capture.sent().description).toBe(
+        "Site plan: (1 Month) — 2 months + Evt (x2)",
+      );
+    });
+  });
+
+  test("states a plan's term once when a discount splits the charge", async () => {
+    const capture = bodyCapturingClient({
+      id: "co_split",
+      url: "https://pay.sumup.com/split",
+    });
+    await withSumupClient(capture.client, async () => {
+      await sumupApi.createCheckout(
+        {
+          ...intent,
+          items: [oneMonthPlan(3)],
+          modifiers: [pennyOff([3])],
+        },
+        "http://localhost",
+      );
+      // The £0.01 discount splits the charge into 2× £5.00 and 1× £4.99
+      // lines. Each fragment repeats the item's whole quantity, so the
+      // description must state the term once: three months, not six.
+      expect(capture.sent().description).toBe(
+        "Site plan: (1 Month) — 3 months",
+      );
+      // The charged amount still reflects the discount.
+      expect(capture.sent().amount).toBe(14.99);
+    });
+  });
+
+  test("states each unit once in a split plan-and-ticket order", async () => {
+    const capture = bodyCapturingClient({
+      id: "co_split_mixed",
+      url: "https://pay.sumup.com/split-mixed",
+    });
+    await withSumupClient(capture.client, async () => {
+      await sumupApi.createCheckout(
+        {
+          ...intent,
+          items: [oneMonthPlan(2), { ...intent.items[0]! }],
+          modifiers: [pennyOff([3])],
+        },
+        "http://localhost",
+      );
+      expect(capture.sent().description).toBe(
+        "Site plan: (1 Month) — 2 months + Evt (x2)",
+      );
+      expect(capture.sent().amount).toBe(29.99);
+    });
+  });
+
+  test("logs the created checkout's own id", async () => {
+    // The payment-sandbox story reads this line to deliver the callback for
+    // the checkout it just made, so the id has to be in it.
+    const client = makeSumupClient({
+      create: () =>
+        Promise.resolve({
+          hosted_checkout_url: "https://pay.sumup.com/x",
+          id: "co_logged",
+        }),
+    });
+    await withSumupClient(client, async () => {
+      await sumupApi.createCheckout(intent, "http://localhost");
+      expect(loggedDebug("Checkout created id=co_logged")).toBe(true);
+    });
+  });
+
+  const checkoutFailure = async (providerError: unknown): Promise<unknown> => {
+    const client = makeSumupClient({
+      create: () => Promise.reject(providerError),
+    });
+    let result: Promise<unknown> = Promise.resolve();
+    await withSumupClient(client, async () => {
+      result = sumupApi.createCheckout(intent, "http://localhost");
+      await result.catch(() => undefined);
+    });
+    return result;
+  };
+
+  test("closes SumUp API bodies before they reach diagnostics", async () => {
+    const privateBody = "buyer private.person@example.com checkout co_private";
+    const providerError = transportError.answered(
+      providerDetail.sumup(),
+      422,
+      privateBody,
+    );
+    await expectClosedCheckoutFailure(
+      checkoutFailure(providerError),
+      { provider: "sumup", reason: "provider_error", statusCode: 422 },
+      [privateBody],
+      providerError,
+    );
+  });
+
+  test("closes SumUp network failures", async () => {
+    const providerError = transportError.unreachable(
+      providerDetail.sumup(),
+      "network_error",
+    );
+    await expectClosedCheckoutFailure(
+      checkoutFailure(providerError),
+      { provider: "sumup", reason: "network_error" },
+      [providerError.message],
+      providerError,
+    );
+  });
+
+  test("closes SumUp checkout timeouts", async () => {
+    const providerError = transportError.unreachable(
+      providerDetail.sumup(),
+      "timeout",
+    );
+    await expectClosedCheckoutFailure(
+      checkoutFailure(providerError),
+      { provider: "sumup", reason: "timeout" },
+      [providerError.message],
+      providerError,
+    );
+  });
+
+  test("closes malformed SumUp checkout responses", async () => {
+    const providerError = transportError.unusable(providerDetail.sumup());
+    await expectClosedCheckoutFailure(
+      checkoutFailure(providerError),
+      { provider: "sumup", reason: "invalid_response" },
+      [],
+      providerError,
+    );
+  });
+
+  test("does not relabel a raw transport failure the transport did not name", async () => {
+    const raw = new TypeError("network failed beside checkout co_private");
+    await expectSameThrown(checkoutFailure(raw), raw);
+  });
+
+  test("does not relabel an internal SumUp checkout failure", async () => {
+    const applicationError = new Error("SumUp checkout mapper bug");
+    await expectSameThrown(checkoutFailure(applicationError), applicationError);
+  });
+
+  test("derives the major-unit amount from the configured currency", async () => {
+    // CLP is a SumUp-supported zero-decimal currency: 2000 stays 2000.
+    settings.setForTest({ currency: "CLP" });
+    const capture = bodyCapturingClient({
+      id: "co_clp",
+      url: "https://pay.sumup.com/y",
+    });
+    await withSumupClient(capture.client, async () => {
+      await sumupApi.createCheckout(intent, "http://localhost");
+      expect(capture.sent().amount).toBe(2000);
+      expect(capture.sent().currency).toBe("CLP");
+    });
+  });
+
+  test("throws when the response lacks an id", async () => {
+    const client = makeSumupClient({
+      create: () =>
+        Promise.resolve({ hosted_checkout_url: "https://pay.sumup.com/z" }),
+    });
+    await withSumupClient(client, async () => {
+      await expect(
+        sumupApi.createCheckout(intent, "http://localhost"),
+      ).rejects.toThrow("SumUp checkout response is missing its id");
+    });
+  });
+
+  test("throws when the response lacks a hosted checkout URL", async () => {
+    const client = makeSumupClient({
+      create: () => Promise.resolve({ id: "co_no_url" }),
+    });
+    await withSumupClient(client, async () => {
+      await expect(
+        sumupApi.createCheckout(intent, "http://localhost"),
+      ).rejects.toThrow("SumUp checkout response is missing its hosted URL");
+    });
+  });
+
+  test("returns null when the client is unavailable", async () => {
+    await withSumupClient(null, async () => {
+      expect(
+        await sumupApi.createCheckout(intent, "http://localhost"),
+      ).toBeNull();
+    });
+  });
+});

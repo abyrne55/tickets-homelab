@@ -1,0 +1,56 @@
+// effects: pure
+import * as v from "valibot";
+import { sameOn } from "#fp";
+import { guardFor } from "#shared/validation/guard.ts";
+import { integerAtLeast } from "#shared/validation/number.ts";
+
+/**
+ * The money a payment charge moves, in the smallest unit its currency has
+ * (pence, cents). A charge carries an amount and a currency. The amount is a
+ * non-negative safe whole number, and the currency is three uppercase letters.
+ * This is the one shape every provider's wire response is normalised to at the
+ * boundary. The rest of the payment path never handles a half-parsed amount
+ * or a missing currency again.
+ */
+
+/** An ISO 4217 currency code, upper-cased. Providers return mixed case
+ *  ("gbp", "GBP"). {@link money} canonicalises before this runs. */
+export const CurrencySchema = v.pipe(
+  v.string(),
+  v.regex(/^[A-Z]{3}$/u, "Currency must be three uppercase letters"),
+);
+export type Currency = v.InferOutput<typeof CurrencySchema>;
+
+/** Whether a value is a well-formed currency code. Lets an adapter keep a
+ *  malformed provider code away from `Intl` (which throws on one) while still
+ *  handing the raw code to {@link money} to be refused. */
+export const isCurrency = guardFor(CurrencySchema);
+
+/** Money: a non-negative minor-unit amount paired with its currency. The
+ *  amount is already in the smallest unit the currency uses. Two amounts in
+ *  the same currency can therefore be compared or summed with no conversion. */
+export const MoneySchema = v.strictObject({
+  amount: integerAtLeast(0),
+  currency: CurrencySchema,
+});
+export type Money = v.InferOutput<typeof MoneySchema>;
+
+/**
+ * Build a {@link Money}, or `null` if the amount or currency is malformed.
+ * Upper-cases first, so a provider's "gbp" is the canonical "GBP" rather than a
+ * rejection. Takes the whole numbers some providers send as `bigint`: one
+ * too large to hold exactly is refused by the safe-integer rule rather than
+ * silently rounded. This is the only producer of a `Money`, so malformed
+ * charges are refused once, here, instead of leaking into the callbacks
+ * half-parsed.
+ */
+export const money = (amount: unknown, currency: unknown): Money | null => {
+  const result = v.safeParse(MoneySchema, {
+    amount: typeof amount === "bigint" ? Number(amount) : amount,
+    currency: typeof currency === "string" ? currency.toUpperCase() : currency,
+  });
+  return result.success ? result.output : null;
+};
+
+/** Whether two amounts name exactly the same money. */
+export const sameMoney = sameOn<Money>("amount", "currency");

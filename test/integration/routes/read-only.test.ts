@@ -1,0 +1,449 @@
+import { assert, assertStringIncludes } from "@std/assert";
+import { expect } from "@std/expect";
+import { it as test } from "@std/testing/bdd";
+import { allTransfers } from "#accounting/queries.ts";
+import { handleRequest } from "#routes";
+import { setBuildTimestampForTest } from "#shared/update.ts";
+import { updateBuildTagMeta } from "#shared/update-guard.ts";
+import { expectIncludesAll } from "#test-utils/assertions.ts";
+import { describeWithEnv } from "#test-utils/db.ts";
+import { jsonRequest, mockRequest } from "#test-utils/mocks.ts";
+import { enablePublicSite } from "#test-utils/settings.ts";
+
+/** POST a urlencoded form body to `path` (defaults to a trivial field). */
+const postForm = (path: string, body = "name=test"): Promise<Response> =>
+  handleRequest(
+    mockRequest(path, {
+      body,
+      headers: { "content-type": "application/x-www-form-urlencoded" },
+      method: "POST",
+    }),
+  );
+
+/** Assert a response is the read-only guard's 302 → /read-only redirect. */
+const expectReadOnlyRedirect = (res: Response): void => {
+  expect(res.status).toBe(302);
+  expect(res.headers.get("location")).toBe("/read-only");
+};
+
+/** Assert a JSON API response is the read-only guard's 403 with message. */
+const expectReadOnly403 = async (res: Response): Promise<void> => {
+  expect(res.status).toBe(403);
+  const body = await res.json();
+  expect(body.error).toBe("This site is in read-only mode");
+};
+
+describeWithEnv(
+  "read-only mode",
+  { db: true, env: { READ_ONLY_FROM: "2020-01-01T00:00:00.000Z" } },
+  () => {
+    test("GET /read-only returns the read-only page", async () => {
+      const res = await handleRequest(mockRequest("/read-only"));
+      expect(res.status).toBe(200);
+      const html = await res.text();
+      assertStringIncludes(html, "This site is in read-only mode.");
+    });
+
+    test("the page names the running build for the post-update wait", async () => {
+      setBuildTimestampForTest("2026-03-28T14:30:22.000Z");
+      try {
+        const res = await handleRequest(mockRequest("/read-only"));
+        const html = await res.text();
+        assertStringIncludes(html, updateBuildTagMeta("v2026-03-28-143022"));
+      } finally {
+        setBuildTimestampForTest(null);
+      }
+    });
+
+    test("a build with no timestamp reports no build tag", async () => {
+      const res = await handleRequest(mockRequest("/read-only"));
+      const html = await res.text();
+      assert(!html.includes('name="update-build-tag"'));
+    });
+
+    const api403Cases: ReadonlyArray<{
+      method: string;
+      path: string;
+      body?: Record<string, unknown>;
+    }> = [
+      { body: { name: "test" }, method: "POST", path: "/api/admin/listings" },
+      { body: { name: "test" }, method: "PUT", path: "/api/admin/listings/1" },
+      {
+        body: { name: "test" },
+        method: "POST",
+        path: "/api/listings/my-listing/book",
+      },
+    ];
+    for (const { body, method, path } of api403Cases) {
+      test(`${method} ${path} returns 403 JSON`, async () => {
+        await expectReadOnly403(
+          await handleRequest(jsonRequest(path, { body, method })),
+        );
+      });
+    }
+
+    test("DELETE /api/admin/listings/1 returns 403 JSON", async () => {
+      const res = await handleRequest(
+        jsonRequest("/api/admin/listings/1", { method: "DELETE" }),
+      );
+      expect(res.status).toBe(403);
+    });
+
+    test("GET /api/admin/listings is allowed", async () => {
+      const res = await handleRequest(jsonRequest("/api/admin/listings"));
+      // Should not be 403 — may be 401 (no auth) but not blocked by read-only
+      expect(res.status).not.toBe(403);
+    });
+
+    const getRedirectPaths = [
+      "/admin/listing/new",
+      "/admin/listing/42/edit",
+      "/admin/listing/42/duplicate",
+      "/admin/groups/new",
+      "/admin/groups/7/edit",
+      "/admin/site/pages/new",
+      "/admin/site/pages/3/edit",
+      "/admin/site/pages/3/delete",
+      "/admin/site/news/new",
+      "/admin/site/news/3/edit",
+      "/admin/site/news/3/delete",
+      "/admin/attendees/new",
+      "/admin/ledger/attendee/42/add",
+      "/admin/ledger/entries/9/edit",
+      // These create pages were gaps in the original hand-maintained list —
+      // the schema derivation catches them automatically now.
+      "/admin/servicing/new",
+      "/admin/modifiers/new",
+      "/admin/modifiers/42/edit",
+      "/admin/modifiers/42/delete",
+      "/admin/modifiers/recalculate/42",
+      "/admin/attributes/42/delete",
+      "/admin/attributes/42/options/9/edit",
+      "/admin/attributes/42/options/9/delete",
+      "/admin/questions/42/delete",
+      "/admin/questions/42/answers/9/edit",
+      "/admin/questions/42/answers/9/delete",
+      "/admin/questions/42/answers/9/recalculate",
+      "/admin/catalog/import",
+      "/admin/user/new",
+    ];
+    for (const path of getRedirectPaths) {
+      test(`GET ${path} redirects to /read-only`, async () => {
+        expectReadOnlyRedirect(await handleRequest(mockRequest(path)));
+      });
+    }
+
+    const postRedirectCases: ReadonlyArray<{ path: string; body?: string }> = [
+      { path: "/ticket/my-listing" },
+      { path: "/admin/listing" },
+      { path: "/admin/groups" },
+      { path: "/admin/listing/42/attendee" },
+      { path: "/admin/attendees/new" },
+      { body: "listing_ids=1", path: "/admin/groups/5/add-listings" },
+      { body: "listing_ids=1", path: "/admin/groups/5/remove-listings" },
+      { body: "child_listing_ids=1", path: "/admin/listing/42/children" },
+    ];
+    for (const { body, path } of postRedirectCases) {
+      test(`POST ${path} redirects to /read-only`, async () => {
+        expectReadOnlyRedirect(await postForm(path, body));
+      });
+    }
+
+    /** POST a form body to `path`, asserting it is blocked (redirect to
+     * /read-only) by the read-only guard AND that it posted no ledger leg — the
+     * guard runs before the handler, so a blocked ledger-mutating correction
+     * (decision 14) must never reach the transfers table. */
+    const expectBlockedNoLedgerLeg = async (path: string): Promise<void> => {
+      expectReadOnlyRedirect(await postForm(path, "income=5.00"));
+      // The correction was blocked before it could post a writeoff adjustment.
+      expect((await allTransfers()).length).toBe(0);
+    };
+
+    test("POST /admin/listing/42/income is blocked and posts no ledger leg", async () => {
+      await expectBlockedNoLedgerLeg("/admin/listing/42/income");
+    });
+
+    test("POST /admin/modifiers/7/revenue is blocked and posts no ledger leg", async () => {
+      await expectBlockedNoLedgerLeg("/admin/modifiers/7/revenue");
+    });
+
+    test("POST /admin/attendees/42 (balance correction) redirects to /read-only", async () => {
+      // The unified attendee edit posts a writeoff balance correction, so it
+      // must be blocked read-only. The bare-id pattern ends in `$`, so it matches
+      // only the edit endpoint, not its `/merge` or `/refresh-payment` sub-routes.
+      await expectBlockedNoLedgerLeg("/admin/attendees/42");
+    });
+
+    const ledgerMutationPaths = [
+      "/admin/ledger/attendee/42/add",
+      "/admin/ledger/entries/9/edit",
+      "/admin/ledger/entries/9/delete",
+    ];
+    for (const path of ledgerMutationPaths) {
+      test(`POST ${path} is blocked and posts no ledger leg`, async () => {
+        await expectBlockedNoLedgerLeg(path);
+      });
+    }
+
+    test("GET / is not blocked by read-only guard", async () => {
+      const res = await handleRequest(mockRequest("/"));
+      // May redirect to /admin/login if public site is disabled, but not to /read-only
+      expect(res.headers.get("location")).not.toBe("/read-only");
+    });
+
+    test("GET /listings is not blocked by read-only guard", async () => {
+      const res = await handleRequest(mockRequest("/listings"));
+      expect(res.headers.get("location")).not.toBe("/read-only");
+    });
+
+    test("groups on listings page show Registration Closed in read-only mode", async () => {
+      const { groups } = await import("#db/groups.ts");
+      const { assignListingsToGroup } = await import(
+        "#db/groups/membership/package-writes.ts"
+      );
+      const { listingsTable } = await import("#db/listings/records.ts");
+      const { hmacHash } = await import("#crypto/hashing.ts");
+      await enablePublicSite();
+      const slugIndex = await hmacHash("ro-group");
+      const group = await groups.table.insert({
+        hidden: false,
+        maxAttendees: 0,
+        name: "Read Only Group",
+        slug: "ro-group",
+        slugIndex,
+        termsAndConditions: "",
+      });
+      const roListing = await listingsTable.insert({
+        maxAttendees: 50,
+        maxPrice: 0,
+        name: "RO Listing",
+        slug: "ro-listing",
+        slugIndex: await hmacHash("ro-listing"),
+      });
+      await assignListingsToGroup([roListing.id], group.id);
+      const res = await handleRequest(mockRequest("/listings"));
+      const html = await res.text();
+      expectIncludesAll(html, ["Read Only Group", "Registration Closed"]);
+    });
+
+    test("GET /ticket/my-listing is allowed (view form)", async () => {
+      const res = await handleRequest(mockRequest("/ticket/my-listing"));
+      // 404 (no such listing) is fine — not blocked by read-only
+      expect(res.status).not.toBe(302);
+    });
+
+    test("POST /admin/login is not blocked (safe list)", async () => {
+      const res = await handleRequest(
+        mockRequest("/admin/login", {
+          body: "password=test",
+          headers: { "content-type": "application/x-www-form-urlencoded" },
+          method: "POST",
+        }),
+      );
+      expect(res.headers.get("location")).not.toBe("/read-only");
+    });
+
+    // Default-deny: routes not on the safe list are now blocked even when they
+    // were not explicitly listed in the old blocklist.
+    const newlyBlockedPostPaths = [
+      "/admin/servicing/new",
+      "/admin/settings/email",
+      "/admin/users",
+    ];
+    for (const path of newlyBlockedPostPaths) {
+      test(`POST ${path} is blocked by default-deny`, async () => {
+        expectReadOnlyRedirect(await postForm(path));
+      });
+    }
+
+    // DELETE mutations (non-API) are now blocked by default-deny.
+    const deleteBlockedPaths = [
+      "/admin/listing/1/delete",
+      "/admin/attendees/2/delete",
+    ];
+    for (const path of deleteBlockedPaths) {
+      test(`DELETE ${path} is blocked by default-deny`, async () => {
+        expectReadOnlyRedirect(
+          await handleRequest(mockRequest(path, { method: "DELETE" })),
+        );
+      });
+    }
+
+    // Safe-list routes must pass through the guard even in read-only mode.
+    // The response may be 4xx (no auth / bad payload) but must not be 302 → /read-only.
+    const safePostPaths = [
+      "/admin/logout",
+      "/renew",
+      "/pay/some-token",
+      "/payment/webhook",
+      "/v1/devices/abc/registrations/pass.com/tok",
+      "/v1/log",
+      "/sms/webhook",
+      "/join/some-code",
+      "/unsubscribe",
+      "/contact",
+      "/admin/debug/sentry",
+      "/admin/support",
+      "/instance/site-credentials",
+      "/admin/backup/create",
+      "/checkin/abc123+def456",
+      "/admin/listing/42/attendee/99/checkin",
+      "/admin/listing/42/scan",
+      "/admin/attendees/99/refresh-payment",
+      "/admin/deliveries/mark",
+    ];
+    for (const path of safePostPaths) {
+      test(`POST ${path} is not blocked by read-only guard`, async () => {
+        const res = await postForm(path);
+        expect(res.headers.get("location")).not.toBe("/read-only");
+      });
+    }
+
+    test("DELETE /v1/devices/abc/registrations/pass.com/tok is not blocked (wallet protocol)", async () => {
+      const res = await handleRequest(
+        mockRequest("/v1/devices/abc/registrations/pass.com/tok", {
+          method: "DELETE",
+        }),
+      );
+      expect(res.headers.get("location")).not.toBe("/read-only");
+    });
+
+    // POST /read-only serves no route (the page is GET-only), so the
+    // pre-routing fast-404 gate answers it with a bare 404 before the
+    // read-only guard runs. The mutation still never reaches a handler. The
+    // default-deny guard itself stays covered by the /admin/* posts above.
+    test("POST /read-only is fast-404'd before the guard", async () => {
+      const res = await handleRequest(
+        mockRequest("/read-only", {
+          body: "test=1",
+          headers: { "content-type": "application/x-www-form-urlencoded" },
+          method: "POST",
+        }),
+      );
+      expect(res.status).toBe(404);
+      expect(await res.text()).toBe("");
+    });
+
+    // HEAD is not a mutating method, so it passes the guard and reaches the
+    // /read-only prefix handler, which only handles GET — returning null → 404.
+    test("HEAD /read-only returns 404 (handler only handles GET)", async () => {
+      const res = await handleRequest(
+        mockRequest("/read-only", { method: "HEAD" }),
+      );
+      expect(res.status).toBe(404);
+    });
+  },
+);
+
+describeWithEnv(
+  "update mode (UPDATE_IN_PROGRESS set)",
+  { db: true, env: { READ_ONLY_FROM: undefined, UPDATE_IN_PROGRESS: "1" } },
+  () => {
+    test("GET /read-only shows the update message and the marker", async () => {
+      const res = await handleRequest(mockRequest("/read-only"));
+      expect(res.status).toBe(200);
+      const html = await res.text();
+      expectIncludesAll(html, [
+        "The site is being updated.",
+        'name="update-in-progress" content="active"',
+      ]);
+    });
+
+    test("a mutating /api/ request returns 503 with the update message", async () => {
+      const res = await handleRequest(
+        jsonRequest("/api/admin/listings", {
+          body: { name: "test" },
+          method: "POST",
+        }),
+      );
+      expect(res.status).toBe(503);
+      const body = await res.json();
+      expect(body.error).toBe(
+        "The site is being updated. Please try again in a few minutes.",
+      );
+    });
+
+    test("POST /payment/webhook returns the retryable 503", async () => {
+      // The webhook endpoints take JSON only; the guard runs before the
+      // handler, so the delivery gets the 503 its sender redelivers.
+      const res = await handleRequest(
+        jsonRequest("/payment/webhook", { body: {}, method: "POST" }),
+      );
+      expect(res.status).toBe(503);
+    });
+
+    test("POST /sms/webhook returns the retryable 503", async () => {
+      const res = await handleRequest(
+        jsonRequest("/sms/webhook", { body: {}, method: "POST" }),
+      );
+      expect(res.status).toBe(503);
+    });
+
+    test("update mode refuses the public writes read-only mode allows, with the redirect", async () => {
+      expectReadOnlyRedirect(await postForm("/renew"));
+      expectReadOnlyRedirect(await postForm("/join/some-code"));
+      expectReadOnlyRedirect(await postForm("/contact"));
+    });
+
+    test("the admin can still sign in and read pages", async () => {
+      const login = await postForm("/admin/login", "password=test");
+      expect(login.headers.get("location")).not.toBe("/read-only");
+      const page = await handleRequest(mockRequest("/admin/listings"));
+      expect(page.headers.get("location")).not.toBe("/read-only");
+    });
+
+    test("update mode refuses the listed admin writes, with the redirect", async () => {
+      // The migration must see a still database, so even the operations
+      // ordinary read-only mode allows stop while an update runs. The scan
+      // API takes JSON; the check-in form takes a form post.
+      expectReadOnlyRedirect(
+        await postForm("/admin/listing/42/attendee/99/checkin"),
+      );
+      expectReadOnlyRedirect(
+        await handleRequest(
+          jsonRequest("/admin/listing/42/scan", {
+            body: {},
+            method: "POST",
+          }),
+        ),
+      );
+    });
+    test("an admin mutation still redirects to /read-only", async () => {
+      expectReadOnlyRedirect(await postForm("/admin/listing"));
+    });
+  },
+);
+
+describeWithEnv(
+  "update mode takes over an expired site's message",
+  {
+    db: true,
+    env: {
+      READ_ONLY_FROM: "2020-01-01T00:00:00.000Z",
+      UPDATE_IN_PROGRESS: "1",
+    },
+  },
+  () => {
+    test("the page shows the update message, not the expired one", async () => {
+      const res = await handleRequest(mockRequest("/read-only"));
+      const html = await res.text();
+      assertStringIncludes(html, "The site is being updated.");
+      assert(!html.includes("This site is in read-only mode."));
+    });
+  },
+);
+
+describeWithEnv(
+  "the expired read-only page keeps the update marker",
+  { db: true, env: { READ_ONLY_FROM: "2020-01-01T00:00:00.000Z" } },
+  () => {
+    test("the marker says supported, so a later deploy's wait can run", async () => {
+      const res = await handleRequest(mockRequest("/read-only"));
+      const html = await res.text();
+      expectIncludesAll(html, [
+        "This site is in read-only mode.",
+        'name="update-in-progress" content="supported"',
+      ]);
+    });
+  },
+);

@@ -1,0 +1,89 @@
+/**
+ * Shared types and validation for the custom questions tables.
+ *
+ * Questions and answers are encrypted at rest using symmetric encryption
+ * (DB_ENCRYPTION_KEY). Listing-question and attendee-answer mappings use
+ * integer foreign keys.
+ */
+
+import * as v from "valibot";
+import { guardFor } from "#shared/validation/guard.ts";
+
+/** A custom multiple-choice question */
+export const QUESTION_DISPLAY_TYPES = ["radio", "select", "free_text"] as const;
+export const QuestionDisplayTypeSchema = v.picklist(QUESTION_DISPLAY_TYPES);
+export type QuestionDisplayType = v.InferOutput<
+  typeof QuestionDisplayTypeSchema
+>;
+
+export const isQuestionDisplayType = guardFor(QuestionDisplayTypeSchema);
+
+export const questionDisplayTypeError =
+  "Display as must be radio buttons, a select box, or free text";
+
+export const requireQuestionDisplayType = (
+  value: string,
+): QuestionDisplayType => {
+  if (isQuestionDisplayType(value)) return value;
+  throw new Error(questionDisplayTypeError);
+};
+
+export interface Question {
+  assign_all: boolean;
+  display_type: QuestionDisplayType;
+  id: number;
+  text: string; // encrypted
+}
+
+/** An answer option for a question */
+export interface Answer {
+  /** Deactivated answers are hidden on the public booking form. The admin
+   * edit form still shows one an attendee already selected, so it isn't
+   * silently dropped on the next save. */
+  active: boolean;
+  id: number;
+  question_id: number;
+  sort_order: number;
+  text: string; // encrypted
+}
+
+/** Question with its answer options (decrypted). Every read carries
+ *  `assign_all`; a hand-built row says which switch state it stands for. */
+export type QuestionWithAnswers = Question & {
+  answers: Answer[];
+};
+
+/** One question on one attendee: its wording and answer now and at booking.
+ * `question` is null when the question was deleted. `askedAs` is null when
+ * the booking did not ask it. */
+export type BookedAnswer = {
+  questionId: number;
+  question: string | null;
+  askedAs: string | null;
+  answer: string | null;
+  answerAtBooking: string | null;
+  changed: boolean;
+  changesPrice: boolean;
+};
+
+/** A set of custom questions plus which answers the attendee has picked: the
+ *  chosen option ids, and any free-text answers keyed by question id. Produced
+ *  by the attendee page loader and consumed by the admin edit form.
+ *  `atBooking` is empty for an attendee with no record of its booking. */
+export type SelectedQuestionAnswers = {
+  questions: QuestionWithAnswers[];
+  selectedAnswerIds: number[];
+  selectedTextAnswers: Map<number, string>;
+  atBooking: BookedAnswer[];
+};
+
+/** A free-text answer submitted for a question (plaintext, pre-string-interning). */
+export type TextAnswer = { questionId: number; text: string };
+
+/** A free-text answer resolved to its interned string id. */
+export type TextAnswerId = { questionId: number; stringId: number };
+
+/** Outcome of parsing a form's submitted answers. */
+export type ParsedQuestionAnswers =
+  | { ok: true; answerIds: number[]; textAnswers: TextAnswer[] }
+  | { ok: false; error: string };

@@ -1,0 +1,338 @@
+import { assert } from "@std/assert";
+import { Lexer, type Token, type Tokens } from "marked";
+
+export interface ProseBlock {
+  columns: number[];
+  lines: number[];
+  text: string;
+}
+
+type MarkdownToken =
+  | Tokens.Blockquote
+  | Tokens.Br
+  | Tokens.Code
+  | Tokens.Codespan
+  | Tokens.Checkbox
+  | Tokens.Def
+  | Tokens.Del
+  | Tokens.Em
+  | Tokens.Escape
+  | Tokens.Heading
+  | Tokens.Hr
+  | Tokens.HTML
+  | Tokens.Image
+  | Tokens.Link
+  | Tokens.List
+  | Tokens.ListItem
+  | Tokens.Paragraph
+  | Tokens.Space
+  | Tokens.Strong
+  | Tokens.Table
+  | Tokens.Text;
+
+/** How one kind of Markdown token is read: skipped, walked into, read as
+ * prose, or blanked as a machine-owned span. */
+type Policy =
+  | "omit"
+  | "container"
+  | "list"
+  | "prose"
+  | "inline"
+  | "text"
+  | "span";
+
+const POLICY: Record<MarkdownToken["type"], Policy> = {
+  blockquote: "container",
+  br: "span",
+  checkbox: "span",
+  code: "omit",
+  codespan: "span",
+  def: "omit",
+  del: "inline",
+  em: "inline",
+  escape: "text",
+  heading: "prose",
+  hr: "omit",
+  html: "span",
+  image: "inline",
+  link: "inline",
+  list: "list",
+  list_item: "container",
+  paragraph: "prose",
+  space: "omit",
+  strong: "inline",
+  table: "omit",
+  text: "text",
+};
+
+/** Marked only emits the types `POLICY` names for the documents this check
+ * reads. A type outside that record crashes loudly. */
+const policyOf = (token: Token): Policy =>
+  POLICY[token.type as MarkdownToken["type"]];
+
+// Marked removes container prefixes, so a container's text is its lines
+// without the markers: locate each line of `text` in `source`, in order.
+const locateParts = (source: ProseBlock) => {
+  let cursor = 0;
+  return (text: string): ProseBlock => {
+    const lines: number[] = [];
+    const columns: number[] = [];
+    for (const part of text.match(/[^\n]*\n|[^\n]+$/g) ?? []) {
+      const index = source.text.indexOf(part, cursor);
+      assert(
+        index >= 0,
+        `Cannot locate Markdown source: ${JSON.stringify(part)}`,
+      );
+      lines.push(...source.lines.slice(index, index + part.length));
+      columns.push(...source.columns.slice(index, index + part.length));
+      cursor = index + part.length;
+    }
+    return { columns, lines, text };
+  };
+};
+
+/** Every token the policies walk into carries its children and its own
+ * text. */
+const childrenOf = (token: MarkdownToken): Token[] =>
+  (token as unknown as { tokens: Token[] }).tokens;
+
+const textOf = (token: MarkdownToken): string =>
+  (token as unknown as { text: string }).text;
+
+const replacement = (source: ProseBlock, text: string): ProseBlock => ({
+  columns: Array.from({ length: text.length }, () => source.columns[0]!),
+  lines: Array.from({ length: text.length }, () => source.lines[0]!),
+  text,
+});
+
+const joinText = (parts: ProseBlock[]): ProseBlock => ({
+  columns: parts.flatMap((part) => part.columns),
+  lines: parts.flatMap((part) => part.lines),
+  text: parts.map((part) => part.text).join(""),
+});
+
+/** Escape literal marker characters so prose cannot copy an exempt span's identity. */
+const escapedText = (source: ProseBlock): ProseBlock =>
+  joinText(
+    source.text.split("").map((text, index) =>
+      replacement(
+        {
+          columns: [source.columns[index]!],
+          lines: [source.lines[index]!],
+          text,
+        },
+        /[%\\]/.test(text) ? `\\${text}` : text,
+      ),
+    ),
+  );
+
+const readTokens = <T>(
+  tokens: Token[],
+  source: ProseBlock,
+  read: (token: MarkdownToken, locate: (text: string) => ProseBlock) => T,
+): T[] => {
+  const locate = locateParts(source);
+  return tokens.map((token) => read(token as MarkdownToken, locate));
+};
+
+/** A token's own raw, located by the shared cursor: readers that use the raw
+ * call this, and readers that skip the token (a checkbox, a code block)
+ * leave the cursor for the next one. */
+const readChildren = <T>(
+  read: (tokens: Token[], source: ProseBlock) => T,
+  token: MarkdownToken,
+  locate: (text: string) => ProseBlock,
+): T => read(childrenOf(token), locateParts(locate(token.raw))(textOf(token)));
+
+/** The ways one inline Markdown token turns into prose parts. */
+const INLINE_READERS: Record<
+  "inline" | "text" | "span",
+  (token: MarkdownToken, locate: (text: string) => ProseBlock) => ProseBlock
+> = {
+  inline: (token, locate) =>
+    token.type === "link" && !token.raw.startsWith("[")
+      ? replacement(locate(token.raw), "%")
+      : readChildren(inlineText, token, locate),
+  span: (_token, locate) => replacement(locate(_token.raw), "%"),
+  text: (token, locate) => {
+    if (token.type === "escape" && textOf(token) === '"') {
+      // An escaped double quote opens and closes no quoted span, so it
+      // reads as the machine placeholder.
+      return replacement(locate(token.raw), "%");
+    }
+    return escapedText(
+      token.type === "escape"
+        ? locateParts(locate(token.raw))(textOf(token))
+        : locate(token.raw),
+    );
+  },
+};
+
+/** The prose of one run of inline Markdown. */
+const inlineText = (tokens: Token[], source: ProseBlock): ProseBlock =>
+  joinText(
+    readTokens(tokens, source, (token, locate) =>
+      INLINE_READERS[policyOf(token) as "inline" | "text" | "span"](
+        token,
+        locate,
+      ),
+    ),
+  );
+
+/** One shared reader for paragraph prose and a list item's text: the same
+ * inline children, read and normalised. */
+const readAsProse = (
+  token: MarkdownToken,
+  locate: (text: string) => ProseBlock,
+): ProseBlock[] => [normalizeInBlock(readChildren(inlineText, token, locate))];
+
+/** The ways one block Markdown token turns into prose blocks. */
+const BLOCK_READERS: Record<
+  "list" | "container" | "prose" | "text" | "span" | "omit",
+  (token: MarkdownToken, locate: (text: string) => ProseBlock) => ProseBlock[]
+> = {
+  container: (token, locate) => readChildren(blocksFrom, token, locate),
+  list: (token, locate) =>
+    blocksFrom(
+      (token as unknown as Tokens.List).items as unknown as Token[],
+      locate(token.raw),
+    ),
+  omit: () => [],
+  prose: readAsProse,
+  span: () => [],
+  text: readAsProse,
+};
+
+const blocksFrom = (tokens: Token[], source: ProseBlock): ProseBlock[] =>
+  readTokens(tokens, source, (token, locate) =>
+    BLOCK_READERS[policyOf(token) as keyof typeof BLOCK_READERS](token, locate),
+  ).flat();
+
+/** Whether a still-open error constructor call holds the end of `before`:
+ * the last `new XError(` in it with every parenthesis it opened still
+ * unclosed. A call the prose already closed owns nothing after it. */
+const insideErrorCall = (before: string): boolean => {
+  const calls = [...before.matchAll(/\bnew\s+[A-Za-z]*Error\s*\(/gi)];
+  if (calls.length === 0) return false;
+  const call = calls[calls.length - 1]!;
+  let depth = 0;
+  for (
+    let index = call.index + call[0].length;
+    index < before.length;
+    index += 1
+  ) {
+    const character = before[index];
+    if (character === "(") depth += 1;
+    if (character === ")") depth -= 1;
+    if (depth < 0) return false;
+  }
+  return true;
+};
+
+/** The one linking token that may sit between the noun and the quotation:
+ * the noun names the span, "e.g." introduces it, and no other word may. A
+ * double quote between noun and token ends the construction. */
+const NOUN_THROUGH_EG = /\b(?:error|message)\b[^"]*\be\.g\.\s*$/i;
+
+/** The rule for a double-quoted span: it is machine-owned only when it
+ * names an error message or code. The text before it decides — a still
+ * open error constructor call holds it, the words "error" or "message"
+ * sit before it, a colon does, or the noun links it through the one
+ * linking token "e.g.". A quotation behind any other word is prose, and
+ * the rules judge it. */
+const errorOrCodeQuote = (before: string): boolean =>
+  insideErrorCall(before) ||
+  /\b(?:error|message)\s*$/i.test(before) ||
+  /:\s*$/.test(before) ||
+  NOUN_THROUGH_EG.test(before);
+
+/** One prose part at its own source position: a whitespace run becomes one
+ * space, any other text stays whole, and `as` overrides the text whole. */
+const partOf = (
+  source: ProseBlock,
+  text: string,
+  at: number,
+  as?: string,
+): ProseBlock =>
+  replacement(
+    { columns: [source.columns[at]!], lines: [source.lines[at]!], text },
+    as ?? (/\s/.test(text) ? " " : text),
+  );
+
+/** The parts one quoted span adds. A machine-owned span becomes one
+ * placeholder at the opening quote — and when the noun links it through
+ * "e.g.", the linking token is blanked too, or the wordy rule would judge
+ * the token that made the span exempt. A prose span keeps its words, each
+ * whitespace run as one space, each part at its own source position. */
+const quotedPartsOf = (
+  source: ProseBlock,
+  text: string,
+  at: number,
+  parts: ProseBlock[],
+  eGPart: number,
+): ProseBlock[] => {
+  if (!errorOrCodeQuote(source.text.slice(0, at))) {
+    return [...text.matchAll(/\s+|[^\s]/g)].map((inner) =>
+      partOf(source, inner[0], at + inner.index!),
+    );
+  }
+  if (eGPart >= 0 && NOUN_THROUGH_EG.test(source.text.slice(0, at))) {
+    parts[eGPart] = replacement(parts[eGPart]!, "%");
+  }
+  return [partOf(source, text, at, "%")];
+};
+
+/** Collapse whitespace, so the block's identity is stable under rewrapping
+ * and exempt-span length changes. */
+const normalizeInBlock = (source: ProseBlock): ProseBlock => {
+  const parts: ProseBlock[] = [];
+  // The parts index of the last "e.g." token: the linking exemption swaps
+  // it for the placeholder. No quote can reuse an older token's index,
+  // because the exemption's tail test only holds while whitespace
+  // separates the token from the quote.
+  let eGPart = -1;
+  for (const match of source.text.matchAll(
+    /"(?:[^"\\]|\\[\s\S])*"|\s+|\b[eE]\.[gG]\.|[^\s]/g,
+  )) {
+    const text = match[0];
+    const at = match.index;
+    if (text.startsWith('"') && text.length > 1) {
+      parts.push(...quotedPartsOf(source, text, at, parts, eGPart));
+      continue;
+    }
+    if (/^[eE]\.[gG]\.$/.test(text)) eGPart = parts.length;
+    parts.push(partOf(source, text, at));
+  }
+  const joined = joinText(parts);
+  const start = joined.text.length - joined.text.trimStart().length;
+  const end = joined.text.trimEnd().length;
+  return {
+    columns: joined.columns.slice(start, end),
+    lines: joined.lines.slice(start, end),
+    text: joined.text.slice(start, end),
+  };
+};
+
+export const proseBlocks = (content: string): ProseBlock[] => {
+  let text = "";
+  let line = 1;
+  let column = 1;
+  let visualColumn = 0;
+  const columns: number[] = [];
+  const lines: number[] = [];
+  for (const character of content.replace(/\r\n?/g, "\n").split("")) {
+    const expanded =
+      character === "\t" ? " ".repeat(4 - (visualColumn % 4)) : character;
+    text += expanded;
+    lines.push(...Array.from({ length: expanded.length }, () => line));
+    columns.push(...Array.from({ length: expanded.length }, () => column));
+    column++;
+    visualColumn += expanded.length;
+    if (character === "\n") {
+      line++;
+      column = 1;
+      visualColumn = 0;
+    }
+  }
+  return blocksFrom(Lexer.lex(text), { columns, lines, text });
+};

@@ -1,0 +1,338 @@
+/**
+ * The pure, total functional core of the site-pages feature. Every function
+ * here is deterministic and side-effect
+ * free: plain data in → plain data out. No DB, no crypto, no JSX, no `Request`.
+ *
+ * The acquire ring loads rows + resolves leaf targets; this core turns them
+ * into the forest, the nav view model, reorder plans, and the cycle/eligibility
+ * decisions; the apply ring writes or renders. All the logic worth testing
+ * lives here and is exercised by plain-object unit tests.
+ */
+
+import { identity, mapById, range, requiredMapValue } from "#fp";
+import {
+  sitePageItemTargets,
+  targetOfPageItem,
+} from "#shared/site-pages/target.ts";
+import type {
+  Forest,
+  NavModel,
+  NavNode,
+  TargetKey,
+  TargetMap,
+} from "#shared/site-pages/types.ts";
+import type { SitePageItem, SitePageItemType, SitePageNavRow } from "#types";
+
+const pageTarget = sitePageItemTargets.of("page");
+
+const pageKey = (id: number): TargetKey =>
+  sitePageItemTargets.key(pageTarget(id));
+
+/** Order comparator for pages/items: by `sort_order`, then a stable tiebreak. */
+const bySortThen =
+  <T>(sortOf: (t: T) => number, tieOf: (t: T) => number) =>
+  (a: T, b: T): number =>
+    sortOf(a) - sortOf(b) || tieOf(a) - tieOf(b);
+
+const bySortOrderThenId = bySortThen<SitePageNavRow>(
+  (p) => p.sort_order,
+  (p) => p.id,
+);
+
+const itemOrder = bySortThen<SitePageItem>(
+  (i) => i.sort_order,
+  (i) => i.item_id,
+);
+
+/** The child → parent map over raw `page`-type edges (first edge wins — the
+ * app guarantees at most one parent). The in-transaction cycle guard's
+ * projection: inside the write transaction the edge set is the app-enforced
+ * single-parent tree with no dangling parents (deletes cascade atomically),
+ * so no page-row filtering or edge ordering is needed. */
+export const pageParentMapFromEdges = (
+  edges: readonly SitePageItem[],
+): ReadonlyMap<number, number> => {
+  const parentByChild = new Map<number, number>();
+  for (const edge of edges) {
+    if (edge.item_type === "page" && !parentByChild.has(edge.item_id)) {
+      parentByChild.set(edge.item_id, edge.page_id);
+    }
+  }
+  return parentByChild;
+};
+
+/**
+ * Build the adjacency model from raw rows. Sorts the inputs itself, so it is
+ * independent of DB row order (tests feed unordered fixtures). A page is a root
+ * iff no `page`-type edge names it as a child.
+ */
+export const buildForest = (
+  pages: readonly SitePageNavRow[],
+  items: readonly SitePageItem[],
+): Forest => {
+  const byId = mapById(identity<SitePageNavRow>)(pages);
+
+  const itemsByPage = new Map<number, SitePageItem[]>();
+  for (const item of items) {
+    const list = itemsByPage.get(item.page_id);
+    if (list) list.push(item);
+    else itemsByPage.set(item.page_id, [item]);
+  }
+  for (const list of itemsByPage.values()) list.sort(itemOrder);
+
+  // First page-parent wins (the app guarantees at most one). An edge
+  // whose parent page is not in `byId` is ignored — the child stays a root —
+  // so a dangling edge (reads straddling a delete, or a stale add) degrades
+  // gracefully instead of breaking every consumer that dereferences a parent.
+  const parentByChild = pageParentMapFromEdges(
+    [...itemsByPage]
+      .filter(([pageId]) => byId.has(pageId))
+      .flatMap(([, list]) => list),
+  );
+
+  const rootIds = [...byId.values()]
+    .filter((p) => !parentByChild.has(p.id))
+    .sort(bySortOrderThenId)
+    .map((p) => p.id);
+
+  return { byId, itemsByPage, parentByChild, rootIds };
+};
+
+/** The minimal projection the ancestry/cycle walks read — a full {@link Forest}
+ * satisfies it, and the in-transaction cycle guard builds just this. */
+export type ParentLinks = Pick<Forest, "parentByChild">;
+
+/**
+ * The ancestor page ids of `pageId`, root-first, excluding the node itself.
+ * A chain can use each stored parent link at most once, so a walk still going
+ * after that many steps proves a corrupt cyclic edge set: it throws loudly —
+ * the app guarantees an acyclic tree, so a cycle here is an impossible state
+ * to surface, not to absorb.
+ */
+export const ancestorsOf = (forest: ParentLinks, pageId: number): number[] => {
+  const chain: number[] = [];
+  let cursor = forest.parentByChild.get(pageId);
+  for (const _step of range(0, forest.parentByChild.size)) {
+    if (cursor === undefined) break;
+    chain.push(cursor);
+    cursor = forest.parentByChild.get(cursor);
+  }
+  if (cursor !== undefined) {
+    throw new Error(`site_pages: cycle detected above page ${pageId}`);
+  }
+  return chain.reverse();
+};
+
+/** The descendant page ids of `pageId` (excluding itself). */
+export const descendantsOf = (forest: Forest, pageId: number): Set<number> => {
+  const out = new Set<number>();
+  const walk = (id: number): void => {
+    for (const item of forest.itemsByPage.get(id) ?? []) {
+      if (item.item_type !== "page" || out.has(item.item_id)) continue;
+      out.add(item.item_id);
+      walk(item.item_id);
+    }
+  };
+  walk(pageId);
+  return out;
+};
+
+/**
+ * Would placing `candidatePageId` under `parentPageId` create a cycle? It does
+ * iff the candidate is the parent itself or an ancestor of the parent (adding
+ * the edge would close a loop back to the candidate). A descendant is *not*
+ * a cycle risk here; it's blocked by the single-parent rule instead.
+ */
+export const wouldCreateCycle = (
+  forest: ParentLinks,
+  parentPageId: number,
+  candidatePageId: number,
+): boolean =>
+  candidatePageId === parentPageId ||
+  ancestorsOf(forest, parentPageId).includes(candidatePageId);
+
+/**
+ * The pages that may be added as a child of `currentPageId`: unparented pages
+ * (single-parent rule) that aren't the page itself and wouldn't form a cycle.
+ * Ordered by `(sort_order, id)` for a stable picker.
+ */
+export const eligibleChildPages = (
+  forest: Forest,
+  currentPageId: number,
+): SitePageNavRow[] =>
+  [...forest.byId.values()]
+    .filter(
+      (p) =>
+        p.id !== currentPageId &&
+        !forest.parentByChild.has(p.id) &&
+        !wouldCreateCycle(forest, currentPageId, p.id),
+    )
+    .sort(bySortOrderThenId);
+
+/**
+ * Plan an adjacent-swap reorder: the two keys whose `sort_order` to exchange to
+ * move `target` one step in `dir`, or null at a boundary / when absent. One
+ * function both root-page and within-page reorder flow through; the apply ring
+ * executes the swap.
+ */
+/** Slugs that would shadow a core route or nav label — rejected for a page. */
+const RESERVED_SLUGS: ReadonlySet<string> = new Set([
+  "admin",
+  "api",
+  "contact",
+  "home",
+  "listings",
+  "news",
+  "order",
+  "page",
+  "terms",
+  "ticket",
+]);
+
+/** Is `slug` a reserved word a page must not take (nav/route confusion)? */
+export const isReservedSlug = (slug: string): boolean =>
+  RESERVED_SLUGS.has(slug.trim().toLowerCase());
+
+// ─── Nav model ──────────────────────────────────────────────────
+
+/** Find the page that anchors the contextual nav for `current`. For a page
+ * target it's the page itself; for a leaf it's the containing page, tie-broken
+ * deterministically by the occurrence's edge `sort_order`, then page id (N6).
+ * Null when the target isn't on the tree. */
+const anchorPageId = (
+  forest: Forest,
+  current: TargetKey | null,
+): number | null => {
+  if (current === null) return null;
+  const { kind, id } = sitePageItemTargets.fromKey(current);
+  if (kind === "page") return forest.byId.has(id) ? id : null;
+  // A leaf may sit under several pages. Pick by the occurrence's own edge
+  // `sort_order` (its meaningful position — not the parent page's root order,
+  // which is unused while the page is nested), then page id.
+  const candidates: { edgeOrder: number; pageId: number }[] = [];
+  for (const [pid, list] of forest.itemsByPage) {
+    const match = list.find((i) => i.item_type === kind && i.item_id === id);
+    if (match && forest.byId.has(pid)) {
+      candidates.push({ edgeOrder: match.sort_order, pageId: pid });
+    }
+  }
+  candidates.sort((x, y) => x.edgeOrder - y.edgeOrder || x.pageId - y.pageId);
+  return candidates[0]?.pageId ?? null;
+};
+
+/** The page ids of the active nav chain, root-first: the anchor page and its
+ * ancestors. Empty when `current` is null or sits on no page. Only these
+ * pages' items render in the model, so the leaf resolution for a target can
+ * stop at them instead of the whole tree. */
+export const navChainPageIds = (
+  forest: Forest,
+  current: TargetKey | null,
+): number[] => {
+  const anchor = anchorPageId(forest, current);
+  return anchor === null ? [] : [...ancestorsOf(forest, anchor), anchor];
+};
+
+/**
+ * Build the public nav view model: root page nodes (shallow — the top row), the
+ * stacked submenu levels for the active chain (root-first), and which root to
+ * highlight. Pure: forest + resolved leaves + "where am I" → the whole model.
+ *
+ * Active is marked **per level**, not by a global key: at most one node per
+ * level is active (the next chain page, or — in the deepest level — the current
+ * leaf). A leaf attached to several pages therefore highlights only the
+ * occurrence on the chosen N6 path, never every occurrence of its `listing:id`.
+ */
+export const buildNavModel = (
+  forest: Forest,
+  targets: TargetMap,
+  current: TargetKey | null,
+): NavModel => {
+  const chain = navChainPageIds(forest, current);
+  const activeRootId = chain[0] ?? null;
+  const deepest = chain.length - 1;
+  const currentIsLeaf =
+    current !== null && sitePageItemTargets.fromKey(current).kind !== "page";
+
+  // The single node key to highlight in level `i`: the next chain page for the
+  // levels above the deepest, and the current leaf in the deepest level itself.
+  const activeKeyAt = (i: number): TargetKey | null =>
+    i < deepest
+      ? pageKey(chain[i + 1] as number)
+      : currentIsLeaf
+        ? current
+        : null;
+
+  const leafNode = (item: SitePageItem, active: boolean): NavNode | null => {
+    const key = sitePageItemTargets.key(targetOfPageItem(item));
+    const t = targets.get(key);
+    return t
+      ? {
+          active,
+          children: [],
+          href: t.href,
+          key,
+          label: t.label,
+          live: t.live,
+        }
+      : null;
+  };
+
+  const pageNode = (id: number, active: boolean): NavNode | null => {
+    const row = forest.byId.get(id);
+    return row
+      ? {
+          active,
+          children: [],
+          href: `/page/${row.slug}`,
+          key: pageKey(id),
+          label: row.name,
+          live: true,
+        }
+      : null;
+  };
+
+  // Exhaustive per-type dispatch (schema spine): leaves resolve from the
+  // TargetMap; a page resolves from the forest. Every node is shallow — the
+  // levels carry the depth, not nested children.
+  const NODE_BUILDERS: Record<
+    SitePageItemType,
+    (item: SitePageItem, active: boolean) => NavNode | null
+  > = {
+    group: leafNode,
+    listing: leafNode,
+    page: (item, active) => pageNode(item.item_id, active),
+  };
+
+  const levelOf = (pageId: number, i: number): NavNode[] => {
+    const activeKey = activeKeyAt(i);
+    return (forest.itemsByPage.get(pageId) ?? [])
+      .map((item) => {
+        const key = sitePageItemTargets.key(targetOfPageItem(item));
+        return NODE_BUILDERS[item.item_type](item, key === activeKey);
+      })
+      .filter((n): n is NavNode => n !== null);
+  };
+
+  // Each chain page yields one labelled level; an item-less level (only ever
+  // the deepest — every level above holds the next chain page) is dropped:
+  // there is nothing to render, and an empty <ul>/nav bar is invalid markup.
+  const rawLevels = chain.map((pageId, i) => ({
+    label: requiredMapValue(forest.byId, pageId, `Site page ${pageId} missing`)
+      .name,
+    nodes: levelOf(pageId, i),
+  }));
+
+  return {
+    activeRootId,
+    // A page current's own items are the deepest level's nodes (N7); a leaf
+    // current's deepest level lists its siblings, which are not children.
+    currentChildren:
+      currentIsLeaf || rawLevels.length === 0
+        ? []
+        : rawLevels[rawLevels.length - 1]!.nodes,
+    rootPageNodes: forest.rootIds
+      .map((id) => pageNode(id, id === activeRootId))
+      .filter((n): n is NavNode => n !== null),
+    submenuLevels: rawLevels.filter((level) => level.nodes.length > 0),
+  };
+};

@@ -1,0 +1,302 @@
+/**
+ * Pure validators and small field builders shared across the form-field modules.
+ *
+ * Everything here is data-in/data-out: no settings reads, no HTTP. The few
+ * field builders (`getUsernameFieldBase`, `buildDescriptionField`,
+ * `buildHiddenField`) are shared because more than one form needs the same
+ * field, and a builder keeps them from drifting.
+ */
+
+import * as v from "valibot";
+import { isUpdateTier } from "#db/built-sites/types.ts";
+import { t } from "#i18n";
+import { VALID_DAY_NAMES } from "#shared/day-names.ts";
+import type {
+  ChoiceField,
+  Field,
+  InputField,
+  TextareaField,
+} from "#shared/forms/field.ts";
+import { MAX_INPUT_LENGTH, MAX_TEXTAREA_LENGTH } from "#shared/limits.ts";
+import { normalizeSlug, validateSlug } from "#shared/slug.ts";
+import { commaParts } from "#shared/split.ts";
+import { isValidDatetime } from "#shared/timezone.ts";
+import { validateSafeServerFetchUrl } from "#shared/url-safety.ts";
+import { isIsoDate } from "#shared/validation/date-string.ts";
+import { EmailFormatSchema } from "#shared/validation/email.ts";
+import { parseOptionalMinorUnits } from "#shared/validation/money.ts";
+import { parseSignedInt } from "#shared/validation/number.ts";
+import { validatorFor } from "#shared/validation/parse.ts";
+import { isContactField } from "#types";
+
+/**
+ * Validate a user-saved URL that must point at a public https:// domain.
+ */
+export const validateHttpsDomainUrl = (value: string): string | null =>
+  validateSafeServerFetchUrl(value, t("fields.validation.url_https"));
+
+/**
+ * Validate a required non-negative price for the active currency. A blank, a
+ * negative, or a non-numeric value is refused. So is an amount with more
+ * decimal places than the currency allows. `1.005` in GBP is a validation
+ * error, not a value that later rounds to 101 pence.
+ */
+export const validateNonNegativePrice = (value: string): string | null =>
+  parseOptionalMinorUnits(value) === null
+    ? t("fields.validation.price_min")
+    : null;
+
+/** One field's answer to a submitted value: why it was refused, or null. */
+type ValueCheck = (value: string) => string | null;
+
+/** Refuse anything but a plain whole number, so a fraction and an exponent
+ *  fail. The field supplies its own copy, for a rule the shared wording does
+ *  not fit. The message is a function so the copy is read inside the request,
+ *  not when the field is built. */
+export const wholeNumberCheck =
+  (message: () => string): ValueCheck =>
+  (value) =>
+    parseSignedInt(value) === null ? message() : null;
+
+/** Refuse anything but a plain whole number, naming the field. */
+export const validateWholeNumber = (label: string): ValueCheck =>
+  wholeNumberCheck(() => t("fields.validation.whole_number", { label }));
+
+/** The one way to declare a whole-number form field: the parser that refuses
+ *  a malformed value, the check that names the field, and the number input.
+ *  The field declares its own label, bounds, and whether it is required, and
+ *  its bounds refuse the range and speak for it. */
+export const wholeNumberFieldShape = (label: string) =>
+  ({
+    parse: parseSignedInt,
+    type: "number",
+    validate: validateWholeNumber(label),
+  }) as const;
+
+/** Refuses a value the schema turns down, with the message that says why. */
+const checkedBy =
+  <TSchema extends v.GenericSchema>(
+    schema: TSchema,
+    messageKey: string,
+    values?: Record<string, number>,
+  ): ValueCheck =>
+  (value) =>
+    v.is(schema, value) ? null : t(messageKey, values);
+
+/** Refuses a value a plain format check turns down, with the message that
+ * says why. The schema-free sibling of {@link checkedBy}. */
+const matchedBy =
+  (format: (value: string) => boolean, messageKey: string): ValueCheck =>
+  (value) =>
+    format(value) ? null : t(messageKey);
+
+/** Refuses text longer than a field allows, naming the limit in the message. */
+const atMostLong = (max: number, messageKey: string): ValueCheck =>
+  checkedBy(v.pipe(v.string(), v.maxLength(max)), messageKey, { max });
+
+/**
+ * Max length for a buyer's phone number. Square packs the phone into one
+ * 255-character metadata entry TOGETHER with the other small fields (see
+ * PACKED_KEYS), so the number must stay short enough that the mounted JSON
+ * fits — well under the 250 the top-level contact entries allow.
+ */
+export const PHONE_FIELD_LENGTH = 32;
+
+/** The phone's format: a digit (or plus) first, then digits, spaces, hyphens,
+ *  parentheses, at least six characters in total. */
+const PhoneSchema = v.pipe(v.string(), v.regex(/^[+\d][\d\s\-()]{5,}$/));
+
+/** A contact-field validator: refuse a value past its length limit with the
+ *  message that names the limit, then check the value's format — a too-long
+ *  value answered by the format message would misname its own problem. */
+const lengthThenFormat =
+  (
+    maxLength: number,
+    lengthMessageKey: string,
+    formatSchema: v.GenericSchema<string>,
+    formatMessageKey: string,
+  ): ValueCheck =>
+  (value) =>
+    value.length > maxLength
+      ? t(lengthMessageKey, { max: maxLength })
+      : checkedBy(formatSchema, formatMessageKey)(value);
+
+/** Checks the email's format and keeps it inside the metadata entry budget. */
+export const validateEmail = lengthThenFormat(
+  MAX_INPUT_LENGTH,
+  "fields.validation.email_length",
+  EmailFormatSchema,
+  "fields.validation.email",
+);
+
+/** Checks the phone number's format and keeps it inside the packed metadata
+ *  entry it rides at Square. */
+export const validatePhone = lengthThenFormat(
+  PHONE_FIELD_LENGTH,
+  "fields.validation.phone_length",
+  PhoneSchema,
+  "fields.validation.phone",
+);
+
+/** Usernames permit letters, digits, hyphens, and underscores, but no initial punctuation. */
+const UsernameSchema = v.pipe(
+  v.string(),
+  v.nonEmpty(() => t("fields.validation.username_min")),
+  v.maxLength(MAX_INPUT_LENGTH, () =>
+    t("fields.validation.username_max", { max: MAX_INPUT_LENGTH }),
+  ),
+  v.regex(/^[a-zA-Z0-9_-]+$/, () => t("fields.validation.username_chars")),
+  v.check(
+    (s) => !s.startsWith("-") && !s.startsWith("_"),
+    () => t("fields.validation.username_start"),
+  ),
+);
+
+export const validateUsername = validatorFor(UsernameSchema);
+
+/** Base username field shared across login and invite forms */
+export const getUsernameFieldBase = (): InputField<"username"> & {
+  required: true;
+} => ({
+  label: t("common.username"),
+  maxlength: MAX_INPUT_LENGTH,
+  minlength: 1,
+  name: "username",
+  pattern: "[a-zA-Z0-9][a-zA-Z0-9_\\-]*",
+  required: true,
+  title: t("fields.login.username_title"),
+  type: "text",
+});
+
+/** Validate listing fields setting (comma-separated contact field names) */
+export const validateListingFields = (value: string): string | null => {
+  for (const part of commaParts(value)) {
+    if (!isContactField(part)) {
+      return t("fields.validation.invalid_contact_field", { part });
+    }
+  }
+  return null;
+};
+
+/** Validate a built site's update channel (alpha/beta/release) */
+export const validateUpdateTier = matchedBy(
+  isUpdateTier,
+  "fields.validation.update_tier",
+);
+
+/** Check if a string is a valid day name */
+const isValidDayName = (s: string): boolean =>
+  (VALID_DAY_NAMES as readonly string[]).includes(s);
+
+/** Validate bookable days (comma-separated day names) */
+export const validateBookableDays = (value: string): string | null => {
+  const days = commaParts(value);
+  if (days.length === 0) return t("fields.validation.days_required");
+  for (const day of days) {
+    if (!isValidDayName(day)) {
+      return t("fields.validation.invalid_day", {
+        day,
+        valid: VALID_DAY_NAMES.join(", "),
+      });
+    }
+  }
+  return null;
+};
+
+/** Validate description length */
+export const validateDescription = atMostLong(
+  MAX_TEXTAREA_LENGTH,
+  "fields.validation.description_max",
+);
+
+export const buildDescriptionField = (
+  hint: string,
+  hintHtml?: string,
+): TextareaField<"description"> => ({
+  hint,
+  ...(hintHtml !== undefined && { hintHtml }),
+  label: t("fields.listing.description"),
+  markdown: true,
+  maxlength: MAX_TEXTAREA_LENGTH,
+  name: "description",
+  placeholder: t("fields.listing.description_placeholder"),
+  type: "textarea",
+  validate: validateDescription,
+});
+
+/** Validate a datetime value is parseable */
+export const validateDatetime = matchedBy(
+  isValidDatetime,
+  "fields.validation.datetime",
+);
+
+/** Build a "hidden" visibility checkbox field for a listing or group. */
+export const buildHiddenField = (
+  kind: "Listing" | "Group",
+): ChoiceField<"checkbox-group", "1", "hidden"> => ({
+  hint:
+    kind === "Listing"
+      ? t("fields.listing.hidden_hint")
+      : t("fields.listing.hidden_hint_group"),
+  label:
+    kind === "Listing"
+      ? t("fields.listing.hidden")
+      : t("fields.listing.hidden_group"),
+  name: "hidden",
+  options: [{ label: t("fields.listing.hidden_label"), value: "1" }],
+  type: "checkbox-group",
+});
+
+/** Validate date format (YYYY-MM-DD) */
+export const validateDate = matchedBy(isIsoDate, "fields.validation.date");
+
+/** Shared slug field skeleton: name, pattern, validation, label, title.
+ * Callers spread this and add their own `hint` (or `publicLinkPath`) on top —
+ * the listing/group edit page uses one hint, the SEO content editor another,
+ * so each keeps its own copy of just the thing that differs. */
+export const slugFieldBase = () =>
+  ({
+    label: t("common.slug"),
+    name: "slug",
+    pattern: "[a-z0-9_\\-]+",
+    required: true,
+    title: t("fields.listing.slug_title"),
+    type: "text",
+    validate: (value: string) => validateSlug(normalizeSlug(value)),
+  }) as const satisfies Field;
+
+/** Slug field for listing/group edit pages */
+export const getSlugField = (): InputField<"slug"> => ({
+  ...slugFieldBase(),
+  hint: t("fields.listing.slug_hint_field"),
+});
+
+/** The limit the two contact textareas (address and special instructions)
+ *  answer to. They declare the 250-character contact budget, but like every
+ *  textarea their limit is bounded by the configured textarea ceiling — a
+ *  smaller ceiling must tighten the public form and the admin attendee
+ *  editor the same amount, or the two paths for the same stored value would
+ *  accept different lengths. Both renderers and both validators read this
+ *  one constant. */
+export const CONTACT_TEXTAREA_LIMIT = Math.min(
+  MAX_INPUT_LENGTH,
+  MAX_TEXTAREA_LENGTH,
+);
+
+/** Validate address length */
+export const validateAddress = atMostLong(
+  CONTACT_TEXTAREA_LIMIT,
+  "fields.validation.address_max",
+);
+
+/** Validate a buyer's contact name (must fit in payment metadata) */
+export const validateName = atMostLong(
+  MAX_INPUT_LENGTH,
+  "fields.validation.name_max",
+);
+
+/** Validate special instructions length */
+export const validateSpecialInstructions = atMostLong(
+  CONTACT_TEXTAREA_LIMIT,
+  "fields.validation.special_instructions_max",
+);

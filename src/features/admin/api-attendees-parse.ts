@@ -1,0 +1,449 @@
+/** Body parsing for POST /api/admin/attendees. It validates the create
+ * request: contact PII, at least one booking line, the payments already
+ * received, the named one-off adjustments, and the buyer's answers. Each line
+ * can carry an optional agreed per-unit price. Pure data-in/data-out. The
+ * route owns the writes. */
+
+import * as v from "valibot";
+import {
+  type AttendeeStatus,
+  attendeeStatuses,
+  publicDefaultStatusOf,
+} from "#db/attendee-statuses.ts";
+import { hasDuplicateBookingSlot } from "#db/attendees/booking-slot.ts";
+import { getListingsById } from "#db/listings/records.ts";
+import type { QuestionWithAnswers } from "#db/question-types.ts";
+import { getQuestionsWithListingIds } from "#db/questions/queries.ts";
+import {
+  parseAdjustments,
+  parseEach,
+  parseLinePrice,
+  parsePayments,
+  quantityOverCap,
+} from "#shared/booking-inputs.ts";
+import { countsPerDate } from "#shared/capacity-rules.ts";
+import type { CreateAdjustment } from "#shared/checkout-complete.ts";
+import { MAX_INPUT_LENGTH, MAX_TEXTAREA_LENGTH } from "#shared/limits.ts";
+import { errorResult, okResult, type Result } from "#shared/result.ts";
+import { isIsoDate } from "#shared/validation/date-string.ts";
+import { integerAtLeast } from "#shared/validation/number.ts";
+import {
+  epochMsToIso,
+  instantToEpochMs,
+  isInstant,
+} from "#shared/validation/timestamp.ts";
+import {
+  validateAddress,
+  validateEmail,
+  validateName,
+  validatePhone,
+  validateSpecialInstructions,
+} from "#templates/fields/validators.ts";
+import {
+  type ContactInfo,
+  clampDurationDays,
+  type ListingWithCount,
+  MAX_DURATION_DAYS,
+} from "#types";
+
+/** One validated booking line: its listing, the quantities the caller chose,
+ * and the optional per-unit price override (minor units) they agreed. */
+export type ApiLine = {
+  date: string | null;
+  durationDays: number;
+  listing: ListingWithCount;
+  price: number | undefined;
+  quantity: number;
+};
+
+/** The ids of the listings the lines book, in line order. */
+export const lineListingIds = (lines: ApiLine[]): number[] =>
+  lines.map((line) => line.listing.id);
+
+/** One answer a create body carries: a chosen option, or free text. */
+export type ApiAnswer =
+  | { answerId: number; questionId: number }
+  | { freeText: string; questionId: number };
+
+/** The validated create body. It holds the contact PII, the resolved status,
+ * the optional retry token, and at least one booking line. It also holds the
+ * payments received now, the named one-off adjustments, and the answers. */
+export type ParsedApiCreate = ContactInfo & {
+  adjustments: CreateAdjustment[];
+  answers: ApiAnswer[];
+  /** The business time the booking happened, when the caller stamps a
+   * historical one. Absent means now at insert. */
+  created: string | undefined;
+  lines: ApiLine[];
+  payments: number[];
+  statusId: number;
+  ticketToken: string | undefined;
+};
+
+const LINE_SCHEMA = v.object({
+  date: v.optional(v.union([v.string(), v.null()])),
+  durationDays: v.optional(
+    v.pipe(integerAtLeast(1), v.maxValue(MAX_DURATION_DAYS)),
+  ),
+  listingId: integerAtLeast(1),
+  quantity: integerAtLeast(1),
+});
+
+/** A text field, "" when absent. A non-text value is refused, never dropped. */
+const optionalText = (raw: unknown, label: string): Result<string> =>
+  raw === undefined
+    ? okResult("")
+    : typeof raw === "string"
+      ? okResult(raw)
+      : errorResult(`${label} must be text`);
+
+/** One optional contact field: parse the text, then validate when non-empty.
+ *  An empty value passes (the manual-add form accepts blank contact fields). */
+const optionalContactField = (
+  raw: unknown,
+  label: string,
+  validate: (value: string) => string | null,
+): Result<string> => {
+  const parsed = optionalText(raw, label);
+  if (!parsed.ok) return parsed;
+  if (parsed.value) {
+    const error = validate(parsed.value);
+    if (error) return errorResult(error);
+  }
+  return parsed;
+};
+
+/** The contact block's refusal, or the validated contact fields. */
+const parseContact = (body: Record<string, unknown>): Result<ContactInfo> => {
+  const name = body.name;
+  if (typeof name !== "string" || name === "") {
+    return errorResult("name is required");
+  }
+  const nameError = validateName(name);
+  if (nameError) return errorResult(nameError);
+  const email = optionalContactField(body.email, "email", validateEmail);
+  if (!email.ok) return email;
+  const phone = optionalContactField(body.phone, "phone", validatePhone);
+  if (!phone.ok) return phone;
+  const address = optionalContactField(
+    body.address,
+    "address",
+    validateAddress,
+  );
+  if (!address.ok) return address;
+  const instructions = optionalContactField(
+    body.special_instructions,
+    "special_instructions",
+    validateSpecialInstructions,
+  );
+  if (!instructions.ok) return instructions;
+  return okResult({
+    address: address.value,
+    email: email.value,
+    name,
+    phone: phone.value,
+    special_instructions: instructions.value,
+  });
+};
+
+/** The standard-line refusal, or null when the line carries none of the
+ *  daily-only fields. */
+const standardLineRefusal = (
+  line: v.InferOutput<typeof LINE_SCHEMA>,
+  at: string,
+): string | null => {
+  if (line.date !== undefined) {
+    return `${at}.date only applies to daily listings`;
+  }
+  if (line.durationDays !== undefined) {
+    return `${at}.durationDays only applies to daily listings`;
+  }
+  return null;
+};
+
+/** The line's booking day, or the refusal. Date-less listings carry none. */
+const resolveLineDate = (
+  isDaily: boolean,
+  line: v.InferOutput<typeof LINE_SCHEMA>,
+  at: string,
+): Result<string | null> => {
+  const date = line.date ?? null;
+  if (isDaily && (typeof date !== "string" || !isIsoDate(date))) {
+    return errorResult(`${at}.date must be a booking day as YYYY-MM-DD`);
+  }
+  return okResult(date);
+};
+
+/** One line's refusal, or the validated line. */
+const parseLine = (
+  raw: unknown,
+  listingsById: Map<number, ListingWithCount>,
+  index: number,
+): Result<ApiLine> => {
+  const at = `lines[${index}]`;
+  const price = parseLinePrice(
+    (raw as Record<string, unknown> | null)?.price,
+    at,
+  );
+  if (!price.ok) return price;
+  const parsed = v.safeParse(LINE_SCHEMA, raw);
+  if (!parsed.success) {
+    return errorResult(
+      `${at} needs a positive listingId and quantity, and a whole durationDays from 1 to ${MAX_DURATION_DAYS}`,
+    );
+  }
+  const line = parsed.output;
+  const listing = listingsById.get(line.listingId);
+  if (!listing) return errorResult(`${at} references an unknown listing`);
+  if (quantityOverCap(line.quantity, listing.max_quantity)) {
+    return errorResult(`${at}.quantity is more than the listing allows`);
+  }
+  const isDaily = countsPerDate(listing.listing_type);
+  if (!isDaily) {
+    const refusal = standardLineRefusal(line, at);
+    if (refusal !== null) return errorResult(refusal);
+  }
+  const date = resolveLineDate(isDaily, line, at);
+  if (!date.ok) return date;
+  return okResult({
+    date: date.value,
+    durationDays: isDaily ? clampDurationDays(line.durationDays ?? 1) : 1,
+    listing,
+    price: price.value,
+    quantity: line.quantity,
+  });
+};
+
+/** The business time the booking happened, when the caller stamps a
+ *  historical one. An absent value keeps the create-time clock. A supplied
+ *  instant is normalised to the canonical UTC millisecond form the clock
+ *  writes, so every stored `created` sorts the same way in date-ordered
+ *  lists. */
+const parseCreated = (raw: unknown): Result<string | undefined> => {
+  if (raw === undefined) return okResult(undefined);
+  return typeof raw === "string" && isInstant(raw)
+    ? okResult(epochMsToIso(instantToEpochMs(raw)))
+    : errorResult("created must be a valid instant as 2026-09-01T09:00:00Z");
+};
+
+/** The status a create body asks for. A named status resolves by name. When
+ * the body names none, the attendee takes the public default, the same
+ * coercion the manual-add form makes. A site with no public default is a
+ * broken setup and fails loudly, never a silent status-less booking. */
+const resolveStatusId = (
+  name: string | undefined,
+  statuses: AttendeeStatus[],
+): Result<number> => {
+  if (name !== undefined) {
+    const status = statuses.find((candidate) => candidate.name === name);
+    return status === undefined
+      ? errorResult(`Unknown status '${name}'`)
+      : okResult(status.id);
+  }
+  return okResult(publicDefaultStatusOf(statuses).id);
+};
+
+/** One JSON body read: the parsed value, or the field refusal. */
+type BodyRead<Parsed> = (
+  body: Record<string, unknown>,
+) => Promise<Result<Parsed>>;
+
+/** The status and retry token a body asks for, or the refusal. */
+const parseStatusAndToken: BodyRead<{
+  statusId: number;
+  ticketToken: string | undefined;
+}> = async (body) => {
+  const status = body.status;
+  if (status !== undefined && (typeof status !== "string" || status === "")) {
+    return errorResult("status must be text");
+  }
+  const ticketToken = body.ticketToken;
+  if (
+    ticketToken !== undefined &&
+    !v.is(v.pipe(v.string(), v.minLength(1)), ticketToken)
+  ) {
+    return errorResult("ticketToken must be non-empty text");
+  }
+  // The token names the buyer's ticket page and sits inside the encrypted
+  // PII blob. It shares the length cap every other create-body text field
+  // carries, so it stays bounded.
+  if (
+    typeof ticketToken === "string" &&
+    ticketToken.length > MAX_INPUT_LENGTH
+  ) {
+    return errorResult(
+      `ticketToken must be ${MAX_INPUT_LENGTH} characters or fewer`,
+    );
+  }
+  const statuses = await attendeeStatuses.getAll();
+  const statusId = resolveStatusId(status as string | undefined, statuses);
+  if (!statusId.ok) return statusId;
+  return okResult({
+    statusId: statusId.value,
+    ticketToken: ticketToken as string | undefined,
+  });
+};
+
+/** A strict positive whole id, or null. JSON ids are numbers. A string or a
+ * fraction is refused, never coerced. */
+const positiveIntegerId = (raw: unknown): number | null =>
+  typeof raw === "number" && Number.isSafeInteger(raw) && raw >= 1 ? raw : null;
+
+/** One answer's value: the free text, or the chosen option id. The caller has
+ * already refused a kind the question does not ask for, so only the matching
+ * branch runs. */
+const parseAnsweredValue = (
+  entry: Record<string, unknown>,
+  question: QuestionWithAnswers,
+  at: string,
+): Result<ApiAnswer> => {
+  if (question.display_type === "free_text") {
+    const freeText = entry.freeText;
+    if (typeof freeText !== "string" || freeText.trim() === "") {
+      return errorResult(`${at}.freeText must be non-empty text`);
+    }
+    const trimmed = freeText.trim();
+    if (trimmed.length > MAX_TEXTAREA_LENGTH) {
+      return errorResult(
+        `${at}.freeText must be ${MAX_TEXTAREA_LENGTH} characters or fewer`,
+      );
+    }
+    return okResult({ freeText: trimmed, questionId: question.id });
+  }
+  const answerId = positiveIntegerId(entry.answerId);
+  const answer =
+    answerId === null
+      ? undefined
+      : question.answers.find((candidate) => candidate.id === answerId);
+  if (!answer) {
+    return errorResult(`${at}.answerId is not one of the question's answers`);
+  }
+  if (!answer.active) {
+    return errorResult(`${at}.answerId is a deactivated answer`);
+  }
+  return okResult({ answerId: answer.id, questionId: question.id });
+};
+
+/** One answer entry's refusal, or the validated answer. The question must be
+ * one the booking asks: `assign_all` questions apply to every listing, others
+ * only when a booked line links them. `at` names the entry in the body, like
+ * `answers[0]`. */
+const parseAnswer = (
+  raw: unknown,
+  questionsById: Map<number, QuestionWithAnswers>,
+  at: string,
+): Result<ApiAnswer> => {
+  if (typeof raw !== "object" || raw === null || Array.isArray(raw)) {
+    return errorResult(`${at} must name a question and an answer`);
+  }
+  const entry = raw as Record<string, unknown>;
+  const questionId = positiveIntegerId(entry.questionId);
+  if (questionId === null) {
+    return errorResult(`${at}.questionId must be a positive whole number`);
+  }
+  const question = questionsById.get(questionId);
+  if (!question) {
+    return errorResult(`${at} names a question this booking does not ask`);
+  }
+  const hasAnswerId = entry.answerId !== undefined;
+  const hasFreeText = entry.freeText !== undefined;
+  if (hasAnswerId === hasFreeText) {
+    return errorResult(`${at} must name an answerId or a freeText, not both`);
+  }
+  if (hasAnswerId && question.display_type === "free_text") {
+    return errorResult(`${at}.answerId only applies to choice questions`);
+  }
+  if (!hasAnswerId && question.display_type !== "free_text") {
+    return errorResult(`${at}.freeText only applies to free-text questions`);
+  }
+  return parseAnsweredValue(entry, question, at);
+};
+
+/** The answers a create body carries, or the refusal. An absent `answers`
+ * means none. The questions are validated against the ones the booked lines
+ * ask, so every answer lands on a question the answers-at-booking snapshot
+ * records. */
+const parseAnswers = async (
+  raw: unknown,
+  listingIds: number[],
+): Promise<Result<ApiAnswer[]>> => {
+  if (raw === undefined) return okResult([]);
+  const { questions } = await getQuestionsWithListingIds(listingIds);
+  const questionsById = new Map(questions.map((q) => [q.id, q]));
+  const answers = parseEach(raw, "answers", (item, at) =>
+    parseAnswer(item, questionsById, at),
+  );
+  if (!answers.ok) return answers;
+  // One entry per question. The save keeps only the last of two answers to
+  // the same question. A body that names a question twice hides an answer
+  // instead of recording both.
+  const seen = new Set<number>();
+  for (const [index, answer] of answers.value.entries()) {
+    if (seen.has(answer.questionId)) {
+      return errorResult(
+        `answers[${index}] answers question ${answer.questionId} twice`,
+      );
+    }
+    seen.add(answer.questionId);
+  }
+  return answers;
+};
+
+/** Every line's refusal, or the validated lines. The listings are resolved
+ * from the database once and shared across the lines. */
+const parseLines = async (linesRaw: unknown[]): Promise<Result<ApiLine[]>> => {
+  const listingsById = await getListingsById();
+  const lines: ApiLine[] = [];
+  for (const [index, rawLine] of linesRaw.entries()) {
+    const parsed = parseLine(rawLine, listingsById, index);
+    if (!parsed.ok) return parsed;
+    lines.push(parsed.value);
+  }
+  return okResult(lines);
+};
+
+/** Parse and validate a create body. A body with no lines, an unknown listing,
+ *  or an unknown status is refused before anything is written. */
+export const parseCreateBody: BodyRead<ParsedApiCreate> = async (body) => {
+  const contact = parseContact(body);
+  if (!contact.ok) return contact;
+
+  const linesRaw = body.lines;
+  if (linesRaw === undefined) return errorResult("lines is required");
+  if (!Array.isArray(linesRaw)) return errorResult("lines must be an array");
+  if (linesRaw.length === 0) {
+    return errorResult("Add at least one booking line");
+  }
+  const statusAndToken = await parseStatusAndToken(body);
+  if (!statusAndToken.ok) return statusAndToken;
+  const created = parseCreated(body.created);
+  if (!created.ok) return created;
+  const payments = parsePayments(body.payments);
+  if (!payments.ok) return payments;
+  const adjustments = parseAdjustments(body.adjustments);
+  if (!adjustments.ok) return adjustments;
+
+  const linesResult = await parseLines(linesRaw);
+  if (!linesResult.ok) return linesResult;
+  const lines = linesResult.value;
+  if (
+    hasDuplicateBookingSlot(
+      lines.map((line) => ({ date: line.date, listingId: line.listing.id })),
+    )
+  ) {
+    return errorResult("Two lines book the same slot");
+  }
+  const answers = await parseAnswers(body.answers, lineListingIds(lines));
+  if (!answers.ok) return answers;
+
+  return okResult({
+    ...contact.value,
+    adjustments: adjustments.value,
+    answers: answers.value,
+    created: created.value,
+    lines,
+    payments: payments.value,
+    statusId: statusAndToken.value.statusId,
+    ticketToken: statusAndToken.value.ticketToken,
+  });
+};

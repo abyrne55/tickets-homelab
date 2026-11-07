@@ -1,0 +1,138 @@
+import { assertStringIncludes } from "@std/assert";
+import { expect } from "@std/expect";
+import { it as test } from "@std/testing/bdd";
+import { countRows, execute } from "#db/client.ts";
+import { assignListingsToGroup } from "#db/groups/membership/package-writes.ts";
+import { listingParents } from "#db/listing-parents.ts";
+import { requireListingWithCount } from "#db/listings/records.ts";
+import { getAllModifiers, modifierListings } from "#db/modifiers.ts";
+import { importCatalog } from "#routes/admin/catalog-transfer/import.ts";
+import { expectIncludesAll } from "#test-utils/assertions.ts";
+import { requireEntityImport } from "#test-utils/catalog-import.ts";
+import { describeWithEnv } from "#test-utils/db.ts";
+import { createTestGroup } from "#test-utils/db-helpers/groups.ts";
+import { createTestListing } from "#test-utils/db-helpers/listings.ts";
+import {
+  insertModifier,
+  optInAddOnForGroups,
+  patchModifier,
+} from "#test-utils/modifiers.ts";
+
+// Child add-on reachability on import lives in its own file: the setup creates
+// listings, a group, and an opt-in modifier, and folding it into
+// catalog-transfer.test.ts would tip that file's per-request read count past
+// the N+1 guard.
+
+describeWithEnv(
+  "catalog-transfer child add-on reachability",
+  { db: true },
+  () => {
+    test("rejects a child import that orphans a group-scoped add-on", async () => {
+      // The add-on is scoped to a group whose only would-be member is the imported
+      // child. A child has no standalone page, and its parent isn't in the group,
+      // so the add-on would be reachable only through the suppressed child — the
+      // dead-end the edge editor rejects.
+      const group = await createTestGroup({ name: "Extra Group" });
+      await createTestListing({ name: "Base Parent" });
+      await optInAddOnForGroups("Group Extra", [group.id]);
+
+      const result = await importCatalog({
+        groups: [{ group: "Extra Group" }],
+        kind: "listing",
+        listing: { maxAttendees: 1, name: "Orphan Kid" },
+        parents: ["Base Parent"],
+        version: 1,
+      });
+      expect(result.ok).toBe(false);
+      if (result.ok) throw new Error("unreachable");
+      // The edge editor's own child-add-on message (its {addon}/{name}
+      // placeholders are quote-escaped in the locale, so assert its stable prose).
+      expectIncludesAll(result.error, [
+        "opt-in add-on",
+        "offering it as a child",
+      ]);
+    });
+
+    test("accepts a bookable-alone child even when only it reaches the add-on", async () => {
+      // Same orphaning shape as above, but the child keeps its own /ticket page
+      // (bookable_alone), so the group-scoped add-on is still reachable there —
+      // the edge editor exempts a bookable_alone child, and so must the import.
+      const group = await createTestGroup({ name: "Alone Group" });
+      const parent = await createTestListing({ name: "Alone Base Parent" });
+      await optInAddOnForGroups("Alone Extra", [group.id]);
+
+      const result = await importCatalog({
+        groups: [{ group: "Alone Group" }],
+        kind: "listing",
+        listing: { bookableAlone: true, maxAttendees: 1, name: "Alone Kid" },
+        parents: ["Alone Base Parent"],
+        version: 1,
+      });
+      const imported = requireEntityImport(result);
+      expect(imported).toMatchObject({ kind: "listing", name: "Alone Kid" });
+      expect(await requireListingWithCount(imported.id)).toMatchObject({
+        bookable_alone: true,
+        name: "Alone Kid",
+      });
+      expect(await listingParents.getIds(imported.id)).toEqual([parent.id]);
+    });
+
+    test("accepts a child import when the parent's page also reaches the add-on", async () => {
+      // The parent is in the same group, so the group-scoped add-on reaches the
+      // parent's own booking page — not a dead end.
+      const group = await createTestGroup({ name: "Shared Group" });
+      const parent = await createTestListing({ name: "Shared Parent" });
+      await assignListingsToGroup([parent.id], group.id);
+      await optInAddOnForGroups("Shared Extra", [group.id]);
+
+      const result = await importCatalog({
+        groups: [{ group: "Shared Group" }],
+        kind: "listing",
+        listing: { maxAttendees: 1, name: "Fine Kid" },
+        parents: ["Shared Parent"],
+        version: 1,
+      });
+      const imported = requireEntityImport(result);
+      expect(imported).toMatchObject({ kind: "listing", name: "Fine Kid" });
+      expect(await listingParents.getIds(imported.id)).toEqual([parent.id]);
+    });
+
+    test("rolls back when an add-on activates during import", async () => {
+      await createTestListing({ name: "Race import parent" });
+      const modifier = await insertModifier({
+        active: false,
+        name: "Imported race extra",
+      });
+      await patchModifier(modifier.id, {
+        scope: "listings",
+        trigger: "optional",
+      });
+      await execute(
+        `CREATE TRIGGER activate_imported_child_add_on
+           AFTER INSERT ON listings
+           BEGIN
+             UPDATE modifiers SET active = 1 WHERE id = ${modifier.id};
+             INSERT INTO modifier_listings (modifier_id, listing_id)
+             VALUES (${modifier.id}, NEW.id);
+           END`,
+      );
+      const before = await countRows("listings");
+
+      const result = await importCatalog({
+        kind: "listing",
+        listing: { maxAttendees: 1, name: "Race import child" },
+        parents: ["Race import parent"],
+        version: 1,
+      });
+
+      expect(result.ok).toBe(false);
+      if (result.ok) throw new Error("The import should be rejected");
+      assertStringIncludes(result.error, "Imported race extra");
+      expect(await countRows("listings")).toBe(before);
+      expect(await modifierListings.getIds(modifier.id)).toEqual([]);
+      expect(
+        (await getAllModifiers()).find(({ id }) => id === modifier.id)?.active,
+      ).toBe(false);
+    });
+  },
+);

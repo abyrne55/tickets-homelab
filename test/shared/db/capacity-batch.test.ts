@@ -1,0 +1,415 @@
+import { assert, assertStringIncludes } from "@std/assert";
+import { expect } from "@std/expect";
+import { describe, it as test } from "@std/testing/bdd";
+import { dateToRange } from "#db/capacity.ts";
+import {
+  addDemandToBucket,
+  buildCartCapacitySql,
+  type CapacityBucket,
+  type CartDemand,
+  getOrCreateBucket,
+} from "#db/capacity-batch.ts";
+import { addDays } from "#shared/dates.ts";
+import { expectIncludesAll } from "#test-utils/assertions.ts";
+import { testDate } from "#test-utils/dates.ts";
+import { flatSql, occurrences } from "#test-utils/sql-text.ts";
+
+/**
+ * Pure unit tests for the cart read preflight's SQL builder. Behaviour
+ * against a real database lives in the availability suites; these lock the
+ * clause shape — one clause per listing and per group, whatever the day
+ * count — and the argument order the preflight and the diagnosis probes
+ * embed.
+ */
+
+const LISTING = 7;
+const QTY = 2;
+const DAY = "2026-05-01";
+const { startAt, endAt } = dateToRange(DAY);
+
+describe("buildCartCapacitySql", () => {
+  /** A bucket as the demand fold produces it: every unit in `everyDay` is a
+   * date-less line, so the running total and its last-undated snapshot both
+   * hold the bucket's whole demand. */
+  const bucket = (
+    perDay: [string, number][],
+    undated: number,
+  ): CapacityBucket => {
+    const perDayMap = new Map(perDay);
+    const datedTotal = [...perDayMap.values()].reduce(
+      (sum, qty) => sum + qty,
+      0,
+    );
+    return {
+      everyDay: undated,
+      perDay: perDayMap,
+      runningTotal: datedTotal + undated,
+      throughLastUndated: datedTotal + undated,
+      undatedOnly: 0,
+    };
+  };
+
+  /** A cart demand carrying only listing buckets — the common shape. */
+  const demandWith = (listing: Map<number, CapacityBucket>): CartDemand => ({
+    groupDemand: new Map(),
+    listingDemand: listing,
+  });
+
+  test("no demand at all trivially fits", () => {
+    expect(buildCartCapacitySql(demandWith(new Map()))).toEqual({
+      args: [],
+      sql: "SELECT 1 AS fits",
+    });
+  });
+
+  test("an empty bucket produces no clause", () => {
+    expect(
+      buildCartCapacitySql(demandWith(new Map([[LISTING, bucket([], 0)]]))),
+    ).toEqual({ args: [], sql: "SELECT 1 AS fits" });
+  });
+
+  test("date-less listing demand checks the running total against the cap", () => {
+    const { sql, args } = buildCartCapacitySql(
+      demandWith(new Map([[LISTING, bucket([], QTY)]])),
+    );
+    expect(args).toEqual([LISTING]);
+    expectIncludesAll(sql, [
+      `+ ${QTY} <=`,
+      "id = ?1 AND active = 1",
+      ") AS fits",
+    ]);
+  });
+
+  test("a single remaining unit of demand still gets its clause", () => {
+    const { sql } = buildCartCapacitySql(
+      demandWith(new Map([[LISTING, bucket([], 1)]])),
+    );
+    assertStringIncludes(sql, "+ 1 <=");
+  });
+
+  test("a single undated unit on either demand component gets its clause", () => {
+    // One undated unit is undated demand: the bucket must not silently
+    // produce no clause at exactly one, on the every-day side or on the
+    // date-less side of a per-date listing.
+    for (const component of [
+      {
+        everyDay: 1,
+        perDay: new Map(),
+        runningTotal: 1,
+        throughLastUndated: 1,
+        undatedOnly: 0,
+      },
+      {
+        everyDay: 0,
+        perDay: new Map(),
+        runningTotal: 1,
+        throughLastUndated: 1,
+        undatedOnly: 1,
+      },
+    ]) {
+      const { sql } = buildCartCapacitySql(
+        demandWith(new Map([[LISTING, component]])),
+      );
+      assertStringIncludes(sql, "+ 1 <=");
+    }
+  });
+
+  test("the undated clause reads the running total as of the last date-less line, not the whole bucket", () => {
+    // A two-day dated unit bumps the running total once, and a date-less
+    // unit after it reads that total — not the dated unit once per occupied
+    // day. The whole bucket would say 5; the undated statements see 3.
+    const { sql } = buildCartCapacitySql(
+      demandWith(
+        new Map([
+          [
+            LISTING,
+            {
+              everyDay: 0,
+              perDay: new Map([
+                [DAY, 2],
+                ["2026-05-02", 2],
+              ]),
+              runningTotal: 3,
+              throughLastUndated: 3,
+              undatedOnly: 1,
+            },
+          ],
+        ]),
+      ),
+    );
+    assertStringIncludes(sql, "+ 3 <=");
+    assert(!sql.includes("+ 5 <="));
+  });
+
+  test("per-day listing demand is one clause carrying a VALUES row per day", () => {
+    const other = dateToRange("2026-05-02");
+    const { args, sql } = buildCartCapacitySql(
+      demandWith(
+        new Map([
+          [
+            LISTING,
+            bucket(
+              [
+                [DAY, 1],
+                ["2026-05-02", 3],
+              ],
+              0,
+            ),
+          ],
+        ]),
+      ),
+    );
+    expect(args).toEqual([LISTING, startAt, endAt, other.startAt, other.endAt]);
+    expect(occurrences(flatSql(sql), "dayDemand.column3")).toBe(1);
+    expect(occurrences(flatSql(sql), "VALUES")).toBe(1);
+    expect(occurrences(flatSql(sql), ") AND (")).toBe(0);
+    // The rows of one day-demand table are comma-separated tuples of
+    // (start_at, end_at, qty), each column read by its own reference.
+    assertStringIncludes(sql, "), (");
+    expect(occurrences(flatSql(sql), "dayDemand.column2")).toBe(1);
+    assertStringIncludes(sql, "max_attendees");
+  });
+
+  test("many listings sharing the same days stay under the bind cap", () => {
+    // 200 buckets with 90 shared days: the old one-slot-per-bind scheme
+    // needed 200 x (1 + 90 x 2) = 36,200 variables, past SQLite's 32,766
+    // cap. Interning keeps the id per bucket and one pair per distinct day.
+    const days = Array.from({ length: 90 }, (_, index) =>
+      addDays(testDate(DAY), index),
+    );
+    const perDay = days.map((day) => [day, 1] as [string, number]);
+    const listing = new Map(
+      Array.from({ length: 200 }, (_, index) => [index + 1, bucket(perDay, 0)]),
+    );
+    const { args, sql } = buildCartCapacitySql(demandWith(listing));
+    expect(args.length).toBe(200 + 90 * 2);
+    for (const match of sql.matchAll(/\?(\d+)/g)) {
+      expect(Number(match[1])).toBeLessThanOrEqual(args.length);
+    }
+    expect(occurrences(flatSql(sql), "NOT EXISTS")).toBe(200);
+  });
+
+  test("two demanding buckets join their clauses with AND", () => {
+    const demand: CartDemand = {
+      groupDemand: new Map([[9, bucket([], 3)]]),
+      listingDemand: new Map([[LISTING, bucket([], 2)]]),
+    };
+    const { sql } = buildCartCapacitySql(demand);
+    // One AND joins the two buckets' clauses; the other sits inside the
+    // violation expression itself.
+    expect(occurrences(flatSql(sql), " AND ")).toBe(2);
+    expect(occurrences(flatSql(sql), "dayDemand.column1")).toBe(0);
+  });
+
+  test("a dated clause reads its day range from the day-demand columns", () => {
+    const { sql } = buildCartCapacitySql(
+      demandWith(new Map([[LISTING, bucket([[DAY, 2]], 0)]])),
+    );
+    // The count subquery's window is the VALUES row's own columns.
+    expect(occurrences(flatSql(sql), "dayDemand.column1")).toBe(1);
+    expect(occurrences(flatSql(sql), "dayDemand.column2")).toBe(1);
+  });
+
+  test("group demand folds the cart's date-less units into every day and keeps the running-total clause", () => {
+    const { args, sql } = buildCartCapacitySql({
+      groupDemand: new Map([[9, bucket([[DAY, 2]], 3)]]),
+      listingDemand: new Map(),
+    });
+    // The per-day clause carries the day's 2 booked units beside the 3
+    // date-less units that occupy the group every day; the undated clause
+    // counts the whole 5-unit bucket against the group's running total.
+    expectIncludesAll(sql, [
+      "+ 5 <=",
+      "(SELECT max_attendees FROM groups WHERE id = ?1)",
+      "= 0 OR",
+    ]);
+    expect(args).toEqual([9, startAt, endAt]);
+  });
+
+  test("several group days share one VALUES table and one group id slot", () => {
+    const other = dateToRange("2026-05-02");
+    const { args, sql } = buildCartCapacitySql({
+      groupDemand: new Map([
+        [
+          9,
+          bucket(
+            [
+              [DAY, 2],
+              ["2026-05-02", 1],
+            ],
+            0,
+          ),
+        ],
+      ]),
+      listingDemand: new Map(),
+    });
+
+    expect(args).toEqual([9, startAt, endAt, other.startAt, other.endAt]);
+    expect(sql.match(/group_id = \?1/gu)).toHaveLength(2);
+    expect(sql.match(/VALUES/gu)).toHaveLength(1);
+  });
+
+  test("listings sharing dates bind each day range once, under the variable cap", () => {
+    // 182 daily listings each staying the same 90 days used to bind
+    // 182 x (1 + 90 x 2) = 32,942 variables — past SQLite's 32,766 default
+    // variable cap, so the refused order threw a bind error instead of
+    // answering with the plain capacity refusal.
+    const days = Array.from({ length: 90 }, (_, day) =>
+      new Date(Date.UTC(2026, 4, 1 + day)).toISOString().slice(0, 10),
+    );
+    const listings = new Map(
+      Array.from({ length: 182 }, (_, index) => [
+        1000 + index,
+        bucket(
+          days.map((day) => [day, QTY]),
+          0,
+        ),
+      ]),
+    );
+    const { args, sql } = buildCartCapacitySql(demandWith(listings));
+
+    // 90 shared day ranges bind once each, beside one bind per listing id.
+    expect(args).toHaveLength(90 * 2 + 182);
+    // Every listing keeps its own clause, so the verdict still covers them all.
+    expect(occurrences(flatSql(sql), "NOT EXISTS")).toBe(182);
+    expect([...listings.keys()].every((id) => args.includes(id))).toBe(true);
+  });
+
+  test("distinct day ranges still bind one pair each", () => {
+    const other = dateToRange("2026-05-02");
+    const { args } = buildCartCapacitySql(
+      demandWith(
+        new Map([
+          [1, bucket([[DAY, QTY]], 0)],
+          [2, bucket([["2026-05-02", QTY]], 0)],
+        ]),
+      ),
+    );
+    expect(args).toEqual([1, startAt, endAt, 2, other.startAt, other.endAt]);
+  });
+
+  test("date-less-only group demand emits a single total clause", () => {
+    const { args, sql } = buildCartCapacitySql({
+      groupDemand: new Map([[9, bucket([], 3)]]),
+      listingDemand: new Map(),
+    });
+    assertStringIncludes(sql, "+ 3 <=");
+    assert(!sql.includes("start_at"));
+    expect(args).toEqual([9]);
+  });
+
+  test("answers one cart demand's fit in one column", () => {
+    const { args, sql } = buildCartCapacitySql(
+      demandWith(
+        new Map([
+          [
+            LISTING,
+            {
+              everyDay: 0,
+              perDay: new Map(),
+              runningTotal: 2,
+              throughLastUndated: 2,
+              undatedOnly: 2,
+            },
+          ],
+        ]),
+      ),
+    );
+    expectIncludesAll(sql, ["AS fits", "+ 2 <="]);
+    expect(args).toEqual([LISTING]);
+  });
+});
+
+/** One cart line as the demand fold feeds it. */
+const item = (quantity: number, durationDays?: number) => ({
+  ...(durationDays === undefined ? {} : { durationDays }),
+  listingId: LISTING,
+  quantity,
+});
+
+describe("addDemandToBucket", () => {
+  const freshBucket = (): CapacityBucket =>
+    getOrCreateBucket(new Map<number, CapacityBucket>(), 5);
+
+  test("the bucket's last date-less line replaces, not adds to, the snapshot it pins", () => {
+    // Two date-less lines on a total-counted listing: the snapshot the write's
+    // last undated statement reads is the running total AT that line (3),
+    // never an accumulator of earlier snapshots (0 + 1 + 3).
+    const bucket = freshBucket();
+    addDemandToBucket(bucket, { listing_type: "standard" }, item(1), undefined);
+    addDemandToBucket(bucket, { listing_type: "standard" }, item(2), undefined);
+    expect(bucket).toEqual({
+      everyDay: 3,
+      perDay: new Map(),
+      runningTotal: 3,
+      throughLastUndated: 3,
+      undatedOnly: 0,
+    });
+  });
+
+  test("a date-less line on a per-date listing pins the same snapshot on its own side", () => {
+    const bucket = freshBucket();
+    addDemandToBucket(bucket, { listing_type: "daily" }, item(2), null);
+    expect(bucket).toEqual({
+      everyDay: 0,
+      perDay: new Map(),
+      runningTotal: 2,
+      throughLastUndated: 2,
+      undatedOnly: 2,
+    });
+  });
+
+  test("a dated line booked after the last date-less line never raises the pinned snapshot", () => {
+    const bucket = freshBucket();
+    addDemandToBucket(bucket, { listing_type: "daily" }, item(1), null);
+    addDemandToBucket(bucket, { listing_type: "daily" }, item(2), DAY);
+    expect(bucket.runningTotal).toBe(3);
+    expect(bucket.throughLastUndated).toBe(1);
+    expect([...bucket.perDay]).toEqual([[DAY, 2]]);
+  });
+
+  test("a zero-quantity line demands nothing", () => {
+    // getOrCreateBucket's fields stay untouched by the zero line — the
+    // initializer's zeros are visible to the demand fold's caller.
+    const bucket = freshBucket();
+    addDemandToBucket(bucket, { listing_type: "standard" }, item(0), undefined);
+    expect(bucket).toEqual({
+      everyDay: 0,
+      perDay: new Map(),
+      runningTotal: 0,
+      throughLastUndated: 0,
+      undatedOnly: 0,
+    });
+  });
+
+  test("a multi-day line occupies each of its days once", () => {
+    const bucket = freshBucket();
+    addDemandToBucket(bucket, { listing_type: "daily" }, item(1, 2), DAY);
+    expect([...bucket.perDay]).toEqual([
+      [DAY, 1],
+      ["2026-05-02", 1],
+    ]);
+  });
+
+  test("two date-less lines on a per-date listing replace the pinned snapshot", () => {
+    // The undated snapshot on a per-date listing is the same replace-not-add
+    // rule: the write's last undated statement reads the running total AT
+    // that line (3), not an accumulator of the earlier snapshot (1 + 3).
+    const bucket = freshBucket();
+    addDemandToBucket(bucket, { listing_type: "daily" }, item(1), null);
+    addDemandToBucket(bucket, { listing_type: "daily" }, item(2), null);
+    expect(bucket.throughLastUndated).toBe(3);
+    expect(bucket.undatedOnly).toBe(3);
+  });
+
+  test("a bucket created for one key is stored and handed back on the next visit", () => {
+    const buckets = new Map<number, CapacityBucket>();
+    const first = getOrCreateBucket(buckets, 5);
+    first.everyDay = 9;
+    expect(getOrCreateBucket(buckets, 5)).toBe(first);
+    expect(getOrCreateBucket(buckets, 5).everyDay).toBe(9);
+    // Another key gets its own bucket, leaving the first untouched.
+    expect(getOrCreateBucket(buckets, 6).everyDay).toBe(0);
+    expect(getOrCreateBucket(buckets, 5).everyDay).toBe(9);
+  });
+});

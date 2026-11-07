@@ -1,0 +1,185 @@
+import { Given, Then, When } from "@cucumber/cucumber";
+import { assert, assertStringIncludes } from "@std/assert";
+import { expect } from "@std/expect";
+import {
+  answerInListDownload,
+  answerOffersMoveUp,
+  askedQuestion,
+  offeredAnswersInOrder,
+  ownerAddsAnswer,
+  ownerAsksAnotherChoiceQuestion,
+  ownerAsksChoiceQuestion,
+  ownerAsksWrittenQuestion,
+  ownerLastTold,
+  ownerMovesAnswerUp,
+  ownerTakesQuestionDown,
+  questionFieldOn,
+  questionPageOffersChoices,
+  visitorBooksAnswering,
+  visitorOpensBooking,
+} from "#test/specs/support/buyer-questions.ts";
+import type { TicketsWorld } from "#test/specs/support/world.ts";
+import { expectIncludesAll } from "#test-utils/assertions.ts";
+
+Given(
+  "the owner asks {word} buyers {string} offering {word} or {word}",
+  function (
+    this: TicketsWorld,
+    listingName: string,
+    text: string,
+    first: string,
+    second: string,
+  ): Promise<void> {
+    return ownerAsksChoiceQuestion(this, listingName, text, [first, second]);
+  },
+);
+
+Given(
+  "the owner asks {word} buyers to write {string}",
+  function (
+    this: TicketsWorld,
+    listingName: string,
+    text: string,
+  ): Promise<void> {
+    return ownerAsksWrittenQuestion(this, text, listingName);
+  },
+);
+
+Given(
+  "the owner asks buyers to write {string}",
+  function (this: TicketsWorld, text: string): Promise<void> {
+    return ownerAsksWrittenQuestion(this, text);
+  },
+);
+
+Then(
+  "a visitor booking the {word} is offered {string} with {word} and {word}",
+  async function (
+    this: TicketsWorld,
+    listingName: string,
+    text: string,
+    first: string,
+    second: string,
+  ): Promise<void> {
+    const browser = await visitorOpensBooking(this, listingName);
+    assertStringIncludes(browser.pageText, text);
+    questionFieldOn(this, browser);
+    expectIncludesAll(browser.pageText, [first, second]);
+  },
+);
+
+Then(
+  "a visitor booking the {word} is not asked {string}",
+  async function (
+    this: TicketsWorld,
+    listingName: string,
+    text: string,
+  ): Promise<void> {
+    const browser = await visitorOpensBooking(this, listingName);
+    assert(!browser.pageText.includes(text));
+  },
+);
+
+When(
+  "a visitor books the {word} answering {string}",
+  function (
+    this: TicketsWorld,
+    listingName: string,
+    answer: string,
+  ): Promise<void> {
+    return visitorBooksAnswering(this, listingName, answer);
+  },
+);
+
+Then(
+  "the owner reads {string} against that booking",
+  async function (this: TicketsWorld, answer: string): Promise<void> {
+    // The question was asked of exactly one listing in these stories, so the
+    // booking it produced is on that listing's own list.
+    expect(await answerInListDownload(this, "Pottery")).toBe(answer);
+  },
+);
+
+Then(
+  "the owner is offered no way to add answer choices",
+  async function (this: TicketsWorld): Promise<void> {
+    expect(await questionPageOffersChoices(this)).toBe(false);
+  },
+);
+
+When(
+  "the owner takes the question away, typing {string}",
+  function (this: TicketsWorld, typed: string): Promise<void> {
+    return ownerTakesQuestionDown(this, typed);
+  },
+);
+
+Then(
+  "the owner is told the question's text does not match",
+  function (this: TicketsWorld): void {
+    assertStringIncludes(ownerLastTold(this), "Question text does not match");
+    // Still there to be asked: the page the owner is on is the question's own
+    // delete page, which only exists while the question does.
+    assertStringIncludes(ownerLastTold(this), askedQuestion(this).text);
+  },
+);
+
+Then(
+  "the owner is told the question is deleted",
+  function (this: TicketsWorld): void {
+    assertStringIncludes(ownerLastTold(this), "Question deleted");
+  },
+);
+
+Given(
+  "the owner also asks {word} buyers {string} offering {word} or {word}",
+  function (
+    this: TicketsWorld,
+    listingName: string,
+    text: string,
+    first: string,
+    second: string,
+  ): Promise<void> {
+    return ownerAsksAnotherChoiceQuestion(this, listingName, text, [
+      first,
+      second,
+    ]);
+  },
+);
+
+When(
+  "the owner adds {string} to {string} and moves it to the top",
+  async function (
+    this: TicketsWorld,
+    answer: string,
+    _text: string,
+  ): Promise<void> {
+    await ownerAddsAnswer(this, answer);
+    // The answer lands last of three, so two steps take it to the top.
+    for (let moved = 0; moved < 2; moved++) {
+      await ownerMovesAnswerUp(this, answer);
+    }
+  },
+);
+
+Then(
+  "a visitor booking the {word} sees {string} offering {string} in that order",
+  async function (
+    this: TicketsWorld,
+    listingName: string,
+    text: string,
+    offered: string,
+  ): Promise<void> {
+    const expected = offered.split(", ").map((answer) => answer.trim());
+    expect(await offeredAnswersInOrder(this, listingName, text)).toEqual(
+      expected,
+    );
+  },
+);
+
+Then(
+  "{string} offers no move up on the question's page",
+  async function (this: TicketsWorld, answer: string): Promise<void> {
+    expect(await answerOffersMoveUp(this, answer)).toBe(false);
+  },
+);

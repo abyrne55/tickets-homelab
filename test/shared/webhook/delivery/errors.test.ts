@@ -1,0 +1,458 @@
+import { assert, assertArrayIncludes, assertStringIncludes } from "@std/assert";
+import { expect } from "@std/expect";
+import { it as test } from "@std/testing/bdd";
+import { execute, queryOne } from "#db/client.ts";
+import { assignListingsToGroup } from "#db/groups/membership/package-writes.ts";
+import { PRICE_TYPE_GROUP } from "#db/price-types.ts";
+import { ALL_SETTINGS_KEYS, settings } from "#db/settings.ts";
+import { t, withMessageGroups } from "#i18n";
+import { flushPendingWork } from "#shared/pending-work.ts";
+import {
+  RegistrationDeliveryError,
+  type RegistrationPackageFacts,
+} from "#shared/registration-package-facts.ts";
+import { initSentry } from "#shared/sentry.ts";
+import {
+  runWithSubrequestBudget,
+  withSubrequestAllowance,
+} from "#shared/subrequest-budget.ts";
+import {
+  logAndNotifyRegistration,
+  sendRegistrationWebhooks,
+} from "#shared/webhook/delivery.ts";
+import { reportRegistrationDeliveryError } from "#shared/webhook/report.ts";
+import {
+  expectOneError,
+  flushAsync,
+  setBrokenConfirmationTemplate,
+  stubWebhookFetch,
+  withErrorSpy,
+} from "#test/shared/webhook/helpers.ts";
+import { activityMessages } from "#test-utils/activity-log.ts";
+import { expectIncludesAll } from "#test-utils/assertions.ts";
+import { describeWithEnv } from "#test-utils/db.ts";
+import { bookTestAttendeeWithFlags } from "#test-utils/db-helpers/attendees.ts";
+import { createTestGroup } from "#test-utils/db-helpers/groups.ts";
+import { createTestListing } from "#test-utils/db-helpers/listings.ts";
+import { configureTestEmail } from "#test-utils/email.ts";
+import { withEnv } from "#test-utils/env.ts";
+import { makeTestEntry as makeEntry } from "#test-utils/factories.ts";
+import { withRequestContext } from "#test-utils/request-context.ts";
+import { resetSentry } from "#test-utils/sentry.ts";
+
+const registrationLogs = (
+  entries: ReturnType<typeof makeEntry>[],
+  packageFacts?: RegistrationPackageFacts,
+) =>
+  withErrorSpy(async (errorSpy) => {
+    await withRequestContext(() =>
+      logAndNotifyRegistration(entries, { packageFacts, source: "public" }),
+    );
+    return errorSpy.calls.map(({ args }) => String(args[0]));
+  });
+
+/** Expect exactly one delivery-failure activity line from this run. */
+const expectOneFailureActivity = async (): Promise<void> => {
+  expect(
+    (await activityMessages()).filter(
+      (message) => message === "Registration notification delivery failed.",
+    ),
+  ).toHaveLength(1);
+};
+
+/** Run one request body, flush the queued work, and return every error log
+ * line the run emitted. */
+const requestErrorLogs = async (body: () => Promise<void>): Promise<string> => {
+  const logs = await withErrorSpy(async (errorSpy) => {
+    await withRequestContext(body);
+    await flushPendingWork();
+    return errorSpy.calls.map(({ args }) => String(args[0]));
+  });
+  return logs.join("\n");
+};
+
+describeWithEnv("registration delivery errors", { db: true }, () => {
+  const fetchSpy = stubWebhookFetch();
+
+  test("records failure activity with catalog copy", async () => {
+    fetchSpy.reply(() => new Response("refused", { status: 503 }));
+
+    await withRequestContext(() =>
+      logAndNotifyRegistration(
+        [makeEntry({ webhook_url: "https://failed-hook.com" })],
+        { source: "public" },
+      ),
+    );
+
+    const expected = await withMessageGroups(["activity-log"], () =>
+      t("admin.log.registration_delivery_failed"),
+    );
+    assertArrayIncludes(await activityMessages(), [expected]);
+  });
+
+  test("reports an unexpected failure from pending registration work", async () => {
+    fetchSpy.reply(() => Promise.reject(new Error("private failure detail")));
+    const entries = [
+      makeEntry({ webhook_url: "https://private-webhook.example.com" }),
+    ];
+
+    const logs = await registrationLogs(entries);
+
+    assert(
+      !(expectOneError(logs, "E_REGISTRATION_DELIVERY") ?? "").includes(
+        "private",
+      ),
+    );
+  });
+
+  test("reports one incident for unexpected failures in both delivery channels", async () => {
+    await configureTestEmail();
+    fetchSpy.reply(() =>
+      Promise.reject(new Error("unexpected delivery error")),
+    );
+
+    const logs = await registrationLogs([
+      makeEntry({ webhook_url: "https://failed-hook.com" }),
+    ]);
+
+    expectOneError(logs, "E_REGISTRATION_DELIVERY");
+  });
+
+  test("reports template fallbacks as one registration incident", async () => {
+    await configureTestEmail();
+    await setBrokenConfirmationTemplate();
+    fetchSpy.reply(() => new Response("{}"));
+
+    const logs = await registrationLogs([makeEntry()]);
+
+    expectOneError(logs, "E_REGISTRATION_DELIVERY");
+    expect(fetchSpy.calls).toHaveLength(1);
+    await expectOneFailureActivity();
+  });
+
+  test("rejects an unknown stored email provider before sending", async () => {
+    await configureTestEmail();
+    await execute("UPDATE settings SET value = ? WHERE key = ?", [
+      "unknown-provider",
+      "email_provider",
+    ]);
+    settings.invalidateCache();
+    await settings.loadKeys(ALL_SETTINGS_KEYS);
+
+    const logs = await registrationLogs([makeEntry()]);
+
+    expectOneError(logs, "E_REGISTRATION_DELIVERY");
+    expect(fetchSpy.calls).toEqual([]);
+    await expectOneFailureActivity();
+  });
+
+  test("a failed failure-activity write keeps the report standing", async () => {
+    // The report's own activity write can refuse. The helper logs the
+    // database failure, and the report still goes on to queue the owner's
+    // ntfy and Sentry fan-out: the write failure may not replace the
+    // delivery error the report exists for.
+    await execute(
+      `CREATE TRIGGER reject_activity_log BEFORE INSERT ON activity_log
+       BEGIN SELECT RAISE(ABORT, 'activity log rejected'); END`,
+      [],
+    );
+    try {
+      const report = await requestErrorLogs(() =>
+        reportRegistrationDeliveryError(true),
+      );
+      expectIncludesAll(report, [
+        "E_REGISTRATION_DELIVERY",
+        "E_DB_QUERY",
+        "Registration delivery failure activity write",
+      ]);
+    } finally {
+      await execute("DROP TRIGGER IF EXISTS reject_activity_log", []);
+    }
+  });
+
+  test("a failed release keeps the original refusal and still reports it", async () => {
+    // A recovery's provider refusal throws before any send. The claim's
+    // release then fails too, because the database refuses the restore. The
+    // boundary must log the release failure, still report the delivery
+    // refusal, and still throw the original error: neither failure may
+    // swallow the other.
+    await configureTestEmail();
+    const { attendee } = await bookTestAttendeeWithFlags("Masked Buyer", 2, 1);
+    // The claim has already run: it zeroed both flags and captured these
+    // values, which is the state the boundary's release meets.
+    await execute(
+      "UPDATE attendees SET email_pending = 0, webhooks_pending = 0 WHERE id = ?",
+      [attendee.id],
+    );
+    await execute(
+      `CREATE TRIGGER reject_flag_restore BEFORE UPDATE ON attendees
+       WHEN NEW.email_pending = 2 AND OLD.email_pending = 0
+       BEGIN
+         SELECT RAISE(ABORT, 'restore rejected');
+       END`,
+      [],
+    );
+    await settings.update.email.provider("unknown-provider");
+    try {
+      const report = await requestErrorLogs(async () => {
+        await logAndNotifyRegistration(
+          [
+            makeEntry(
+              { webhook_url: "https://hook.example.com/registration" },
+              { email: attendee.email, id: attendee.id },
+            ),
+          ],
+          {
+            clearPendingFlagsFor: [attendee.id],
+            recoverSides: [
+              { previous: 2, side: "email" },
+              { previous: 1, side: "webhooks" },
+            ],
+            source: "public",
+          },
+        );
+      });
+      // The delivery refusal is still reported, and the release failure is
+      // reported with its name beside it.
+      expectIncludesAll(report, [
+        "E_REGISTRATION_DELIVERY",
+        "A recovery's flag restore failed",
+      ]);
+      // The refused restore leaves the claimed flags at zero: the raised
+      // values could not land, and the logged incident names the state.
+      const row = await queryOne<{
+        email_pending: number;
+        webhooks_pending: number;
+      }>("SELECT email_pending, webhooks_pending FROM attendees WHERE id = ?", [
+        attendee.id,
+      ]);
+      expect(row).toEqual({ email_pending: 0, webhooks_pending: 0 });
+    } finally {
+      await execute("DROP TRIGGER IF EXISTS reject_flag_restore", []);
+      await settings.update.email.provider("resend");
+    }
+  });
+
+  test("reports an error while a notification channel is prepared", async () => {
+    await configureTestEmail();
+    const privateValue = "PRIVATE-CHANNEL-PREPARATION-ERROR";
+    const displays = new Map();
+    displays.get = () => {
+      throw new Error(privateValue);
+    };
+
+    const logs = await registrationLogs(
+      [makeEntry({}, { package_group_id: 1 })],
+      { displays, pricingByGroup: new Map() },
+    );
+
+    assert(
+      !(expectOneError(logs, "E_REGISTRATION_DELIVERY") ?? "").includes(
+        privateValue,
+      ),
+    );
+    await expectOneFailureActivity();
+  });
+
+  test("records an email refusal when the webhook throws", async () => {
+    await configureTestEmail();
+    fetchSpy.reply((url) =>
+      url === "https://failed-hook.com"
+        ? Promise.reject(new Error("unexpected webhook error"))
+        : new Response("refused", { status: 503 }),
+    );
+
+    await withErrorSpy(() =>
+      withRequestContext(() =>
+        logAndNotifyRegistration(
+          [makeEntry({ webhook_url: "https://failed-hook.com" })],
+          { source: "public" },
+        ),
+      ),
+    );
+
+    assertArrayIncludes(await activityMessages(), [
+      "Registration notification delivery failed.",
+    ]);
+  });
+
+  test("records a refused sibling when another webhook throws", async () => {
+    fetchSpy.reply((url) =>
+      url === "https://refused-hook.com"
+        ? new Response("refused", { status: 503 })
+        : Promise.reject(new Error("unexpected webhook error")),
+    );
+
+    await withErrorSpy(() =>
+      withRequestContext(() =>
+        logAndNotifyRegistration(
+          [
+            makeEntry({ id: 1, webhook_url: "https://refused-hook.com" }),
+            makeEntry({ id: 2, webhook_url: "https://failed-hook.com" }),
+          ],
+          { source: "public" },
+        ),
+      ),
+    );
+
+    await expectOneFailureActivity();
+  });
+
+  test("keeps raw delivery errors out of the incident fan-out", async () => {
+    const privateValue = "PRIVATE-DELIVERY-ERROR";
+    using _env = withEnv({
+      NTFY_URL: "https://ntfy.example.test/delivery",
+      SENTRY_URL: "https://key@bugs.example.test/2",
+    });
+    await configureTestEmail();
+    await initSentry();
+    fetchSpy.reply((url) =>
+      url.includes("ntfy.example.test") || url.includes("bugs.example.test")
+        ? new Response("{}")
+        : Promise.reject(new Error(privateValue)),
+    );
+
+    try {
+      const logs = await registrationLogs([
+        makeEntry({ webhook_url: "https://failed-hook.com" }),
+      ]);
+      const sentryCall = fetchSpy.calls.find(({ args }) =>
+        String(args[0]).includes("bugs.example.test"),
+      );
+      if (!sentryCall) throw new Error("Sentry request was not sent");
+      const body = (sentryCall.args[1] as RequestInit).body;
+      const sentryBody =
+        typeof body === "string"
+          ? body
+          : new TextDecoder().decode(body as Uint8Array);
+
+      assert(
+        !(expectOneError(logs, "E_REGISTRATION_DELIVERY") ?? "").includes(
+          privateValue,
+        ),
+      );
+      assertStringIncludes(
+        sentryBody,
+        "Registration notification delivery failed",
+      );
+      assert(!sentryBody.includes(privateValue));
+      expect(
+        fetchSpy.calls.filter(({ args }) =>
+          String(args[0]).includes("ntfy.example.test"),
+        ),
+      ).toHaveLength(1);
+      expect(
+        fetchSpy.calls.filter(({ args }) =>
+          String(args[0]).includes("bugs.example.test"),
+        ),
+      ).toHaveLength(1);
+    } finally {
+      resetSentry();
+    }
+  });
+
+  test("waits for sibling sends before rejecting an unexpected failure", async () => {
+    const slow = Promise.withResolvers<Response>();
+    const unexpected = new Error("Unexpected send failure");
+    fetchSpy.reply((url) =>
+      url === "https://slow-hook.com"
+        ? slow.promise
+        : Promise.reject(unexpected),
+    );
+    const entries = [
+      makeEntry({ id: 1, webhook_url: "https://failed-hook.com" }),
+      makeEntry({ id: 2, webhook_url: "https://slow-hook.com" }),
+    ];
+
+    await withErrorSpy(async () => {
+      let rejected = false;
+      const outcome = Promise.withResolvers<unknown>();
+      const sending = (async () => {
+        try {
+          await sendRegistrationWebhooks(entries, "GBP", "public");
+          outcome.resolve(null);
+        } catch (error) {
+          rejected = true;
+          outcome.resolve(error);
+        }
+      })();
+      await flushAsync();
+      try {
+        expect(rejected).toBe(false);
+      } finally {
+        slow.resolve(new Response());
+        await sending;
+      }
+      const error = await outcome.promise;
+      expect(error).toBeInstanceOf(RegistrationDeliveryError);
+      if (!(error instanceof RegistrationDeliveryError)) throw error;
+      expect(error.reasons).toEqual([unexpected]);
+    });
+  });
+
+  test("records one activity when webhook and both emails fail", async () => {
+    await configureTestEmail({ businessEmail: "admin@example.com" });
+    fetchSpy.reply(() => new Response("refused", { status: 503 }));
+    const entries = [makeEntry({ webhook_url: "https://failed-hook.com" })];
+
+    const logs = await withErrorSpy(async (errorSpy) => {
+      await withRequestContext(() =>
+        logAndNotifyRegistration(entries, { source: "public" }),
+      );
+      return errorSpy.calls;
+    });
+
+    expect(fetchSpy.calls).toHaveLength(3);
+    expect(logs).toEqual([]);
+    await expectOneFailureActivity();
+  });
+
+  test("reports a failure-activity write error locally", async () => {
+    const entries = [
+      makeEntry({ webhook_url: "http://unsafe-webhook.example.com" }),
+    ];
+
+    const logs = await withErrorSpy(async (errorSpy) => {
+      await runWithSubrequestBudget(() =>
+        withSubrequestAllowance({ database: 1, external: 0, total: 1 }, () =>
+          withRequestContext(() =>
+            logAndNotifyRegistration(entries, { source: "public" }),
+          ),
+        ),
+      );
+      return errorSpy.calls.map(({ args }) => String(args[0]));
+    });
+
+    // The detail names the write that failed, so an operator can tell a
+    // broken delivery write from every other database error.
+    assertStringIncludes(
+      expectOneError(logs, "E_DB_QUERY") ?? "",
+      "Registration delivery failure activity write",
+    );
+  });
+
+  test("prices the notification from the loaded package facts", async () => {
+    // Webhooks on: the queue loads the package pricing and hands it to the
+    // send, so the payload's ticket price is the package's flat override
+    // (2500), not the member listing's own price.
+    const group = await createTestGroup({ isPackage: true });
+    const listing = await createTestListing();
+    await assignListingsToGroup([listing.id], group.id);
+    await execute(
+      "INSERT INTO listing_prices (listing_id, price_type, price_id, unit_price) VALUES (?, ?, ?, ?)",
+      [listing.id, PRICE_TYPE_GROUP, String(group.id), 2500],
+    );
+    const entry = makeEntry(
+      { id: listing.id, webhook_url: "https://hook.example.com" },
+      { package_group_id: group.id },
+    );
+
+    await withErrorSpy(() =>
+      withRequestContext(() =>
+        logAndNotifyRegistration([entry], { source: "public" }),
+      ),
+    );
+
+    expect(fetchSpy.firstBody().tickets[0]!.unit_price).toBe(2500);
+  });
+});

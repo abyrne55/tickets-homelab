@@ -1,0 +1,377 @@
+/**
+ * Shared read-only view of the `transfers` ledger. Three admin surfaces use it:
+ * the transfer list, a single account's running-balance statement, and the
+ * per-attendee statement panel on the edit-attendee page.
+ *
+ * Render-only: the feature layer builds the {@link LedgerNames} lookup, and
+ * decrypts attendee names with the session key, so this module never touches
+ * the database. An id absent from that lookup is a deleted entity that still
+ * keeps its ledger rows, so it renders as plain text with no link. A linked
+ * account points at the record it belongs to: the attendee or service event,
+ * the listing, or the modifier.
+ */
+
+import {
+  isRowAccountType,
+  isSingletonAccountType,
+  type RowAccountType,
+  type SingletonAccountType,
+} from "#accounting/accounts.ts";
+import {
+  isManualLedgerTransfer,
+  manualLedgerEntryOptionsFor,
+} from "#accounting/manual-entries.ts";
+import { t } from "#i18n";
+import { adminRecordPath } from "#shared/admin-surface.ts";
+import {
+  type AttendeeLinkRefs,
+  attendeeAdminPath,
+} from "#shared/attendee-links.ts";
+import { formatCurrency, formatSignedCurrency } from "#shared/currency.ts";
+import { formatDatetimeShort } from "#shared/dates.ts";
+import { isReadOnly } from "#shared/env.ts";
+import type { AccountRef, Transfer } from "#shared/ledger/types.ts";
+import { ledgerEntryEditHref } from "#shared/ledger-links.ts";
+import type { TableColumn } from "#shared/tables/column.ts";
+import { defineTable } from "#shared/tables/definition.ts";
+import { renderAdminPage } from "#templates/admin/admin-page.tsx";
+import type { DetailRow } from "#templates/admin/detail-rows.tsx";
+import {
+  LedgerDateRange,
+  type LedgerFilterData,
+  LedgerViewToggle,
+  ScopeFilter,
+} from "#templates/admin/ledger/filter.tsx";
+import {
+  humanAmount,
+  humanDescription,
+  transferEventLabel,
+} from "#templates/admin/ledger/formatting.tsx";
+import { GuideFooter } from "#templates/components/actions.tsx";
+import { DetailTable } from "#templates/components/detail-table.tsx";
+import { PageBlock } from "#templates/components/page-structure.tsx";
+import { renderTable } from "#templates/components/table.tsx";
+import type { ColumnKind } from "#templates/components/table-columns.ts";
+import type { AdminSession } from "#types";
+
+/**
+ * Display names for the row-backed account legs the ledger renders. Each entry
+ * is a bounded id→name lookup that the feature layer builds. It decrypts
+ * attendee names with the session key, and it reads listing and modifier names
+ * from their loaders. An id missing from a lookup is a deleted entity whose
+ * ledger rows survive, so its leg renders as plain text with no link.
+ */
+export interface LedgerNames {
+  attendees: AttendeeLinkRefs;
+  listings: Map<number, string>;
+  modifiers: Map<number, string>;
+}
+
+/** The resolved presentation of one account leg: the text to show, and its link
+ * to the record that owns the account (absent for singletons and deleted
+ * entities). */
+type AccountLabel = { text: string; href?: string };
+
+/** One row-backed account type's resolver config: which names map to read, the
+ * detail page for the record the account belongs to, and the i18n key for the
+ * "#<id>" deleted-entity fallback. Currying over this keeps the three
+ * row-backed types identical. */
+type RowAccountKind = {
+  names: (refs: LedgerNames) => Map<number, string>;
+  href: (id: number, refs: LedgerNames) => string;
+  fallbackKey: string;
+};
+
+/** Row-backed account resolvers keyed by ledger account type — exhaustive over
+ * {@link RowAccountType}, so a new row-backed type cannot render without
+ * deciding its label source and link target here. Every target is the record's
+ * own admin page, never the ledger again. Each target comes from the one route
+ * declaration, not a path written here. */
+/** Both `cost` and `revenue` legs are backed by a listing, so they read the
+ * same names, link to the same listing page, and share one fallback key. */
+const listingBackedKind: RowAccountKind = {
+  fallbackKey: "admin.ledger.fallback.revenue",
+  href: (id) => adminRecordPath("listing", id),
+  names: (refs) => refs.listings,
+};
+
+const ROW_ACCOUNT_KINDS: Record<RowAccountType, RowAccountKind> = {
+  attendee: {
+    fallbackKey: "admin.ledger.fallback.attendee",
+    // A service event is an attendee row of its own kind, so the kind picks
+    // between the attendee page and the service event page.
+    href: (id, refs) =>
+      attendeeAdminPath({ id, kind: refs.attendees.kinds.get(id) }),
+    names: (refs) => refs.attendees.names,
+  },
+  cost: listingBackedKind,
+  modifier: {
+    fallbackKey: "admin.ledger.fallback.modifier",
+    href: (id) => adminRecordPath("modifier", id),
+    names: (refs) => refs.modifiers,
+  },
+  revenue: listingBackedKind,
+};
+
+/** The bounded id→name lookup for one row-backed account type — the accessor
+ * the route layer's existence checks read. */
+export const ledgerNamesForAccountType = (
+  type: RowAccountType,
+  names: LedgerNames,
+): Map<number, string> => ROW_ACCOUNT_KINDS[type].names(names);
+
+/** Singleton accounts get a friendly, link-free name from i18n, matched on the
+ * account type alone (`writeoff:*` is one logical account regardless of id).
+ * Exhaustive over {@link SingletonAccountType}. */
+const SINGLETON_LABEL_KEYS: Record<SingletonAccountType, string> = {
+  external: "admin.ledger.account.external",
+  fee_income: "admin.ledger.account.fee_income",
+  tax: "admin.ledger.account.tax",
+  writeoff: "admin.ledger.account.writeoff",
+};
+
+/**
+ * Resolve an account reference to its display text and optional ledger link.
+ * Singletons (`external:world`, `fee_income:booking`, `writeoff:*`) get a
+ * friendly i18n name and never link. Row-backed accounts link to their entity by
+ * name; when the id is absent from `names` (a deleted entity that kept its ledger
+ * rows) the leg degrades to plain "<Entity> #<id>" with no link.
+ */
+const resolveAccountLabel = (
+  account: AccountRef,
+  names: LedgerNames,
+): AccountLabel => {
+  if (isSingletonAccountType(account.type)) {
+    return { text: t(SINGLETON_LABEL_KEYS[account.type]) };
+  }
+  if (!isRowAccountType(account.type)) {
+    throw new Error(`Unknown money account type: ${account.type}`);
+  }
+  const kind = ROW_ACCOUNT_KINDS[account.type];
+  const id = Number(account.id);
+  const name = kind.names(names).get(id);
+  return name === undefined
+    ? { text: t(kind.fallbackKey, { id }) }
+    : { href: kind.href(id, names), text: name };
+};
+
+/** The plain display text for an account (no link), for headings/captions. */
+export const accountLabelText = (
+  account: AccountRef,
+  names: LedgerNames,
+): string => resolveAccountLabel(account, names).text;
+
+/** One resolved account leg as cell content: a link when the entity exists,
+ * plain (escaped) text otherwise. Interpolated (`{accountCell(...)}`) rather than
+ * a `<Component/>` so the plain-text case can stay un-wrapped, like the activity
+ * log's bare link cells. */
+export const accountCellFor =
+  (names: LedgerNames) =>
+  (account: AccountRef): JSX.Element | string => {
+    const { text, href } = resolveAccountLabel(account, names);
+    return href === undefined ? text : <a href={href}>{text}</a>;
+  };
+
+export const canAddLedgerEntry = (
+  account: AccountRef,
+  names: LedgerNames,
+): boolean =>
+  !isReadOnly() &&
+  manualLedgerEntryOptionsFor(account).length > 0 &&
+  resolveAccountLabel(account, names).href !== undefined;
+
+export const amountCell = (
+  transfer: Transfer,
+  label: string,
+  returnUrl?: string,
+): JSX.Element | string =>
+  !returnUrl || isReadOnly() || !isManualLedgerTransfer(transfer) ? (
+    label
+  ) : (
+    <a href={ledgerEntryEditHref(transfer.id, returnUrl)}>{label}</a>
+  );
+
+/** One column of a ledger-style table: its header key, how a row renders into
+ *  its cell, and an optional alignment class applied to both. */
+export type LedgerColumn<Row> = {
+  headerKey: string;
+  cell: (row: Row) => JSX.Element | string;
+  class?: ColumnKind;
+  key: string;
+};
+
+/** The right-aligned money column shape shared by every ledger table. */
+export const amountColumn = <Row,>(
+  key: string,
+  headerKey: string,
+  cell: (row: Row) => JSX.Element | string,
+): LedgerColumn<Row> => ({ cell, class: "amount", headerKey, key });
+
+/**
+ * Render a scrollable table from a column spec — the one place a ledger
+ * table's header row, body rows, and empty-state row are assembled. The
+ * empty-state colspan derives from the spec's length, so it can never drift
+ * from the column count the way a hand-written `colspan="4"` could.
+ */
+export const LedgerColumnsTable = <Row,>({
+  columns,
+  rows,
+}: {
+  columns: LedgerColumn<Row>[];
+  rows: Row[];
+}): JSX.Element =>
+  renderTable(
+    defineTable(
+      columns.map((column) => {
+        const base: Omit<TableColumn<Row>, "class"> = {
+          cell: (row) => column.cell(row),
+          header: t(column.headerKey),
+          key: column.key,
+        };
+        return column.class === undefined
+          ? base
+          : { ...base, class: column.class };
+      }),
+    ),
+    rows,
+    { empty: t("admin.ledger.empty") },
+  );
+
+/** The shared leading column: a transfer's business time. */
+export const timeColumn = <Row,>(
+  occurredAt: (row: Row) => string,
+): LedgerColumn<Row> => ({
+  cell: (row) => formatDatetimeShort(occurredAt(row)),
+  headerKey: "admin.ledger.col.time",
+  key: "time",
+});
+
+/**
+ * The historical transfer list: every leg as From → To with its kind, time, and
+ * amount. Scrollable on narrow screens like the other admin tables.
+ */
+type TransferTableData = {
+  transfers: Transfer[];
+  names: LedgerNames;
+  returnUrl?: string;
+};
+
+type TransferColumns = (
+  accountCell: (account: AccountRef) => JSX.Element | string,
+  returnUrl: string | undefined,
+) => LedgerColumn<Transfer>[];
+
+const makeTransferTable =
+  (columns: TransferColumns) =>
+  ({ transfers, names, returnUrl }: TransferTableData): JSX.Element =>
+    LedgerColumnsTable({
+      columns: columns(accountCellFor(names), returnUrl),
+      rows: transfers,
+    });
+
+const transferColumns = (
+  activity: LedgerColumn<Transfer>[],
+  amountLabel: (transfer: Transfer) => string,
+  returnUrl: string | undefined,
+): LedgerColumn<Transfer>[] => [
+  timeColumn((transfer: Transfer) => transfer.occurredAt),
+  ...activity,
+  amountColumn<Transfer>("amount", "admin.ledger.col.amount", (transfer) =>
+    amountCell(transfer, amountLabel(transfer), returnUrl),
+  ),
+];
+
+const LedgerTable = makeTransferTable((accountCell, returnUrl) =>
+  transferColumns(
+    [
+      {
+        cell: transferEventLabel,
+        headerKey: "admin.ledger.col.event",
+        key: "event",
+      },
+      {
+        cell: (transfer) => (
+          <>
+            {accountCell(transfer.source)} &rarr;{" "}
+            {accountCell(transfer.destination)}
+          </>
+        ),
+        headerKey: "admin.ledger.col.from_to",
+        key: "from_to",
+      },
+    ],
+    (transfer) => formatCurrency(transfer.amount),
+    returnUrl,
+  ),
+);
+
+const HumanLedgerTable = makeTransferTable((accountCell, returnUrl) =>
+  transferColumns(
+    [
+      {
+        cell: (transfer) => humanDescription(transfer, accountCell),
+        headerKey: "admin.ledger.col.activity",
+        key: "activity",
+      },
+    ],
+    (transfer) => formatSignedCurrency(humanAmount(transfer)),
+    returnUrl,
+  ),
+);
+
+/** Everything the (render-only) ledger page needs: the visible transfers and
+ *  their name lookup, the range-scoped stats, the current filter state, and the
+ *  data the two date pickers + listing select render from. */
+export type LedgerPageData = LedgerFilterData & {
+  transfers: Transfer[];
+  names: LedgerNames;
+  truncated: boolean;
+  stats: DetailRow[];
+  /** Scope heading above the stats table — the listing name when scoped to one,
+   *  null for the whole-business view (which needs no heading). */
+  statsHeading: string | null;
+  returnUrl: string;
+};
+
+/** The range-scoped stats table: a key/value figure table, headed by the
+ *  listing name when scoped to one listing (the whole-business view needs no
+ *  heading — the page title already says "Ledger"). */
+const LedgerStats = ({ data }: { data: LedgerPageData }): JSX.Element => (
+  <>
+    {data.statsHeading && <h2>{data.statsHeading}</h2>}
+    <DetailTable rows={data.stats} />
+  </>
+);
+
+/**
+ * The operator ledger page: range-scoped stats, dates, listing/group scope, then
+ * the visible transfer list (newest first, cash legs
+ * hidden). `truncated` surfaces a "showing recent" note when older transfers
+ * were dropped, like the global log.
+ */
+export const adminLedgerPage = (
+  data: LedgerPageData,
+  session: AdminSession,
+): string =>
+  renderAdminPage(
+    "/admin/ledger",
+    session,
+    t("admin.ledger.heading"),
+    <>
+      <LedgerStats data={data} />
+      <PageBlock>
+        <LedgerDateRange data={data} />
+        <ScopeFilter data={data} />
+        <LedgerViewToggle data={data} />
+        {(data.filters.view === "dual" ? LedgerTable : HumanLedgerTable)({
+          names: data.names,
+          returnUrl: data.returnUrl,
+          transfers: data.transfers,
+        })}
+        {data.truncated && <p>{t("admin.ledger.recent")}</p>}
+      </PageBlock>
+      <GuideFooter href="/admin/guide#ledger">
+        {t("admin.ledger.guide")}
+      </GuideFooter>
+    </>,
+  );

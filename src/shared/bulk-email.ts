@@ -1,0 +1,360 @@
+/**
+ * Bulk email domain logic — recipient resolution, drafts and the marketing
+ * unsubscribe footer.
+ *
+ * *Who* a message goes to (the audience/listing/attendee target registry)
+ * lives in `#shared/bulk-email-targets/`. Sending itself lives in
+ * `#shared/email/bulk.ts` (`sendBulkEmails`). This module turns a target into a
+ * de-duplicated address list, validates drafts, and builds the send payload
+ * plus unsubscribe footer.
+ */
+
+import { decryptPiiBlob } from "#db/attendees/pii.ts";
+import { hashEmail } from "#db/contact-preferences.ts";
+import type { ImageUrls } from "#db/image-urls.ts";
+import {
+  filter,
+  flatMap,
+  map,
+  mapNotNullish,
+  pipe,
+  sort,
+  sum,
+  sumOf,
+  unique,
+  uniqueBy,
+} from "#fp";
+import { loadTargetPiiBlobs } from "#shared/bulk-email-targets/registry.ts";
+import {
+  type BulkEmailTarget,
+  isBulkEmailTarget,
+} from "#shared/bulk-email-targets/types.ts";
+import { getEffectiveDomain } from "#shared/config.ts";
+import {
+  type BatchMessageOutcome,
+  BULK_UNSUBSCRIBE_PLACEHOLDER,
+  type BulkBatchResponse,
+  type BulkEmailPayload,
+  type BulkRecipient,
+} from "#shared/email/bulk.ts";
+import { cappedReply } from "#shared/email.ts";
+import { MAX_INPUT_LENGTH, MAX_TEXTAREA_LENGTH } from "#shared/limits.ts";
+import {
+  rewriteImageDestinations,
+  shortFormImageId,
+} from "#shared/markdown.ts";
+import { nowMs } from "#shared/now.ts";
+import { parseEmail } from "#shared/validation/email.ts";
+import { isRecord } from "#types";
+
+// ── Recipient resolution ────────────────────────────────────────────
+
+/** Trim, drop blanks, de-duplicate case-insensitively, and sort a list of emails. */
+const dedupeEmails = (emails: string[]): string[] =>
+  pipe(
+    map((e: string) => e.trim()),
+    filter((e) => e !== ""),
+    uniqueBy((e) => e.toLowerCase()),
+    sort((a, b) => a.toLowerCase().localeCompare(b.toLowerCase())),
+  )(emails);
+
+/**
+ * Resolve the de-duplicated recipient email list for a target. Requires the
+ * admin private key to decrypt attendee PII. `now` is injectable for tests.
+ */
+export const resolveRecipientEmails = async (
+  target: BulkEmailTarget,
+  privateKey: CryptoKey,
+  now: number = nowMs(),
+): Promise<string[]> => {
+  const blobs = await loadTargetPiiBlobs(target, now);
+  const decrypted = await Promise.all(
+    blobs.map((blob) => decryptPiiBlob(blob, privateKey, false)),
+  );
+  return dedupeEmails(map((d: { email: string }) => d.email)(decrypted));
+};
+
+// ── Drafts ──────────────────────────────────────────────────────────
+
+/** A composed-but-not-yet-sent bulk email, persisted between compose → preview → send. */
+export type BulkEmailDraft = {
+  readonly subject: string;
+  readonly body: string;
+  readonly marketing: boolean;
+  readonly target: BulkEmailTarget;
+};
+
+const isBulkEmailDraft = (val: unknown): val is BulkEmailDraft =>
+  isRecord(val) &&
+  typeof val.subject === "string" &&
+  typeof val.body === "string" &&
+  typeof val.marketing === "boolean" &&
+  isBulkEmailTarget(val.target);
+
+/** Serialize a draft for storage in settings. */
+export const serializeDraft = (draft: BulkEmailDraft): string =>
+  JSON.stringify(draft);
+
+/** Parse a stored draft, returning null for missing or malformed values. */
+export const parseDraft = (raw: string): BulkEmailDraft | null => {
+  if (!raw) return null;
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    return null;
+  }
+  return isBulkEmailDraft(parsed) ? parsed : null;
+};
+
+type DraftValidation =
+  | { valid: true; draft: BulkEmailDraft }
+  | { valid: false; error: string };
+
+/** Validate composed form values into a draft (subject + body required, length-capped). */
+export const validateDraftInput = (input: {
+  subject: string;
+  body: string;
+  marketing: boolean;
+  target: BulkEmailTarget;
+}): DraftValidation => {
+  const subject = input.subject.trim();
+  if (!subject) return { error: "Subject is required", valid: false };
+  if (subject.length > MAX_INPUT_LENGTH) {
+    return {
+      error: `Subject must be ${MAX_INPUT_LENGTH} characters or fewer`,
+      valid: false,
+    };
+  }
+
+  const body = input.body.trim();
+  if (!body) return { error: "Message body is required", valid: false };
+  if (body.length > MAX_TEXTAREA_LENGTH) {
+    return {
+      error: `Message body must be ${MAX_TEXTAREA_LENGTH} characters or fewer`,
+      valid: false,
+    };
+  }
+
+  return {
+    draft: { body, marketing: input.marketing, subject, target: input.target },
+    valid: true,
+  };
+};
+
+// ── Marketing footer + unsubscribe links ────────────────────────────
+
+/** Absolute unsubscribe URL carrying the recipient's opaque email hash. */
+const unsubscribeUrl = (hash: string): string =>
+  `https://${getEffectiveDomain()}/unsubscribe?email=${encodeURIComponent(
+    hash,
+  )}`;
+
+/** The image-url table an email body needs: email clients cannot read
+ * root-relative sources, so every uid URL carries the site's origin. The
+ * loaders build every entry with getImageProxyUrl, so each URL is
+ * root-relative by construction. */
+export const absoluteEmailImageUrls = (imageUrls: ImageUrls): ImageUrls =>
+  new Map(
+    [...imageUrls].map(([id, url]) => [
+      id,
+      `https://${getEffectiveDomain()}${url}`,
+    ]),
+  );
+
+/** Replace a plain-text body's short-form image references
+ * (`![alt](img#N)`) with the absolute URLs from the table, the text
+ * counterpart of renderMarkdown's image resolution. A reference-style
+ * picture (`![alt][name]` with `[name]: img#N`) resolves the same way, and
+ * its definition's address resolves with it. Only a real reference carries
+ * the rewrite. A web address, a link or prose that merely names an image
+ * keeps its written form. A reference inside a code span or a fenced code
+ * block keeps its written form. A picture in a table cell that holds an
+ * escaped pipe keeps its written form too. The table rewrite skips that
+ * cell, and the HTML render resolves the picture. The alt text keeps the
+ * escapes a bracketed name carries. A reference the table lacks keeps its
+ * written form: the HTML render shows the alt text. */
+export const resolveImageReferences = (
+  text: string,
+  imageUrls: ImageUrls,
+): string =>
+  rewriteImageDestinations(text, (href) => {
+    const id = shortFormImageId(href);
+    return id === undefined ? undefined : imageUrls.get(id);
+  });
+
+const FOOTER_INTRO =
+  "You're receiving this because you registered for one of our listings.";
+
+/** HTML unsubscribe footer appended to marketing emails. */
+const marketingFooterHtml = (url: string): string =>
+  `<hr><p style="font-size:12px;color:#666">${FOOTER_INTRO} ` +
+  `<a href="${url}">Unsubscribe or manage your preferences</a>.</p>`;
+
+/** Plain-text unsubscribe footer appended to marketing emails. */
+const marketingFooterText = (url: string): string =>
+  `\n\n---\n${FOOTER_INTRO}\nUnsubscribe or manage your preferences: ${url}`;
+
+/**
+ * Build a bulk send payload from a recipient list.
+ *
+ * For marketing sends, unsubscribed addresses are dropped and each remaining
+ * recipient gets an unsubscribe URL (carrying that address's hash); the shared
+ * template's footer holds BULK_UNSUBSCRIBE_PLACEHOLDER, which the email layer
+ * fills in per recipient. Transactional sends go to everyone with no footer.
+ */
+export const buildBulkPayload = async (params: {
+  subject: string;
+  recipients: string[];
+  bodyHtml: string;
+  bodyText: string;
+  marketing: boolean;
+  unsubscribed: Set<string>;
+}): Promise<BulkEmailPayload> => {
+  // Recipients come from validated, stored addresses; parse them through the
+  // canonical validator so each carries the ValidEmail type the send API
+  // requires, dropping any that somehow fail rather than sending blind.
+  const validRecipients = mapNotNullish(parseEmail)(params.recipients);
+  if (!params.marketing) {
+    return {
+      html: params.bodyHtml,
+      recipients: validRecipients.map((to) => ({ to })),
+      subject: params.subject,
+      text: params.bodyText,
+    };
+  }
+  const recipients: BulkRecipient[] = [];
+  for (const to of validRecipients) {
+    const hash = await hashEmail(to);
+    if (params.unsubscribed.has(hash)) continue;
+    recipients.push({ to, unsubscribeUrl: unsubscribeUrl(hash) });
+  }
+  return {
+    html: params.bodyHtml + marketingFooterHtml(BULK_UNSUBSCRIBE_PLACEHOLDER),
+    recipients,
+    subject: params.subject,
+    text: params.bodyText + marketingFooterText(BULK_UNSUBSCRIBE_PLACEHOLDER),
+  };
+};
+
+// ── Contact-frequency insight ───────────────────────────────────────
+
+/**
+ * One-line summary of how often a set of recipients has been contacted, from
+ * their per-email contact counts. Empty when there are no recipients.
+ */
+export const contactFrequencySummary = (counts: number[]): string => {
+  if (counts.length === 0) return "";
+  const total = sum(counts);
+  if (total === 0) {
+    return "These attendees have never been contacted through this page.";
+  }
+  const average = total / counts.length;
+  return Number.isInteger(average)
+    ? `These attendees have been contacted through this page ${average} times each.`
+    : `These attendees have been contacted through this page an average of ${average.toFixed(
+        1,
+      )} times each.`;
+};
+
+// ── Provider reply ──────────────────────────────────────────────────
+
+const messageNoun = (count: number): string =>
+  count === 1 ? "message" : "messages";
+
+/** A sentence about one kind of message across every batch, or nothing at
+ * all when the reply held none of that kind. */
+const noteOn =
+  (
+    pick: (outcome: BatchMessageOutcome) => number,
+    say: (count: number, batches: BulkBatchResponse[]) => string,
+  ) =>
+  (batches: BulkBatchResponse[]): string => {
+    const count = sumOf((r: BulkBatchResponse) => pick(r.outcome))(batches);
+    return count === 0 ? "" : say(count, batches);
+  };
+
+/** What the provider refused, said plainly after the reply itself. Silent
+ * when it refused nothing, so a clean send reads as it always did. */
+const refusedNote = noteOn(
+  (outcome) => outcome.refused,
+  (count, batches) => {
+    const reasons = pipe(
+      flatMap((r: BulkBatchResponse) => r.outcome.reasons),
+      unique,
+    )(batches);
+    const why =
+      reasons.length === 0 ? "" : ` ${cappedReply(reasons.join("; "))}.`;
+    return ` It refused ${count} ${messageNoun(count)}.${why}`;
+  },
+);
+
+/** Messages the provider took but did not report on. The operator must not
+ * read this as a failure and send them all again. */
+const unconfirmedNote = noteOn(
+  (outcome) => outcome.unconfirmed,
+  (count) =>
+    ` It did not confirm ${count} ${messageNoun(count)}.` +
+    " They may still have been sent. Check the provider before you send them" +
+    " again.",
+);
+
+/**
+ * One-line, human-readable summary of what the email provider said in reply to
+ * a bulk send. Providers acknowledge a batch with queued message IDs or, on
+ * failure, a reason — both worth surfacing to the sender and storing in the
+ * log. Distinct per-batch replies are de-duplicated and the result is
+ * length-capped. What the reply said about the messages inside an accepted
+ * batch follows it.
+ */
+export const summarizeProviderResponse = (
+  responses: readonly BulkBatchResponse[],
+): string => {
+  if (responses.length === 0) return "The email provider sent no response.";
+  const batches = responses as BulkBatchResponse[];
+  const parts = pipe(
+    map((r: BulkBatchResponse) => {
+      const body = r.body.trim();
+      return body ? `HTTP ${r.status}: ${body}` : `HTTP ${r.status}`;
+    }),
+    unique,
+  )(batches);
+  const replied = `The email provider responded with ${cappedReply(parts.join("; "))}.`;
+  return `${replied}${refusedNote(batches)}${unconfirmedNote(batches)}`;
+};
+
+// ── mailto fallback ─────────────────────────────────────────────────
+
+/**
+ * Build a `mailto:` link with the subject and body prefilled.
+ *
+ * A lone recipient is addressed directly in the `To:` field — there's no one
+ * to hide them from, so no BCC. Multiple recipients go in BCC so they can't
+ * see each other, and the draft is addressed to the owner's own
+ * `businessEmail` (when set) so the `To:` field isn't left empty. Used as a
+ * fallback for admins without a configured (bulk-capable) email provider, and
+ * offered alongside provider sending in all cases.
+ */
+export const buildMailtoLink = (
+  emails: string[],
+  subject: string,
+  body: string,
+  businessEmail = "",
+): string => {
+  const parts: string[] = [];
+  let to = "";
+  if (emails.length === 1) {
+    to = emails[0]!;
+  } else if (emails.length > 1) {
+    to = businessEmail;
+    parts.push(`bcc=${emails.map((e) => encodeURIComponent(e)).join(",")}`);
+  }
+  if (subject) parts.push(`subject=${encodeURIComponent(subject)}`);
+  if (body) {
+    // Normalise CRLF/CR to LF first so every line break encodes to a single
+    // %0A rather than %0D%0A, which some mail clients render as a stray ^M.
+    const normalizedBody = body.replace(/\r\n?/g, "\n");
+    parts.push(`body=${encodeURIComponent(normalizedBody)}`);
+  }
+  return `mailto:${encodeURIComponent(to)}?${parts.join("&")}`;
+};

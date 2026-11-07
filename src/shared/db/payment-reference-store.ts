@@ -1,0 +1,155 @@
+/** Owner-key storage and blind indexes for provider payment references. */
+
+import { hmacHash } from "#crypto/hashing.ts";
+import {
+  decryptWithOwnerKey,
+  encryptWithOwnerKey,
+  HYBRID_PREFIX,
+} from "#crypto/hybrid.ts";
+
+import type { OwnerKeyEncrypted } from "#crypto/sealed.ts";
+import { inPlaceholders } from "#db/client.ts";
+import { settings } from "#db/settings.ts";
+import { CLAIM_MIRROR } from "#payment/admit-move.ts";
+import {
+  type PaymentReference,
+  paymentReferenceIndexInput,
+  readPaymentReference,
+  type TaggedPaymentReference,
+} from "#payment/provider-reference.ts";
+import { PaymentProviderSchema } from "#types";
+
+/** The two columns that must always be written together. */
+export type StoredPaymentReference = {
+  readonly encrypted: OwnerKeyEncrypted;
+  readonly index: string;
+};
+
+export type PaymentReferenceClaimGuard = {
+  readonly args: readonly string[];
+  readonly sql: string;
+};
+
+export type PreparedPaymentReferenceWrite = {
+  readonly claim: PaymentReferenceClaimGuard;
+  readonly stored: StoredPaymentReference | null;
+};
+
+/** The blind stable identity of one provider charge. */
+export const paymentReferenceIndex = (
+  reference: PaymentReference,
+): Promise<string> => hmacHash(paymentReferenceIndexInput(reference));
+
+/** Blind identities an unauthenticated writer can derive for one reference.
+ * Tagged writes also check the old raw spelling. Two known providers stay
+ * distinct because neither provider's tagged index appears in the other set. */
+export const matchingPaymentReferenceIndexes = async (
+  reference: PaymentReference,
+): Promise<readonly string[]> => {
+  const identities: PaymentReference[] =
+    reference.kind === "tagged"
+      ? [reference, { kind: "untagged", reference: reference.reference }]
+      : [
+          reference,
+          ...PaymentProviderSchema.options.map((provider) => ({
+            kind: "tagged" as const,
+            provider,
+            reference: reference.reference,
+          })),
+        ];
+  return [...new Set(await Promise.all(identities.map(paymentReferenceIndex)))];
+};
+
+/** SQL fact used by reference-bearing finalizers inside their own write. */
+export const unclaimedPaymentReference = async (
+  reference: TaggedPaymentReference,
+): Promise<PaymentReferenceClaimGuard> => {
+  const indexes = await matchingPaymentReferenceIndexes(reference);
+  return {
+    args: indexes,
+    sql: `NOT EXISTS (
+      SELECT 1 FROM processed_payments AS referenceHolder
+       WHERE referenceHolder.payment_reference_index IN (${inPlaceholders(
+         indexes,
+       )})
+         AND referenceHolder.protected_state = '${CLAIM_MIRROR}'
+    )`,
+  };
+};
+
+/** Encrypt a reference and calculate its matching index as one value. */
+export const storePaymentReference = async (
+  reference: TaggedPaymentReference,
+): Promise<StoredPaymentReference> => ({
+  encrypted: await encryptWithOwnerKey(
+    paymentReferenceIndexInput(reference),
+    settings.publicKey,
+  ),
+  index: await paymentReferenceIndex(reference),
+});
+
+const paymentReferencePlaintextFrom = (
+  stored: string,
+  privateKey: CryptoKey,
+  context: string,
+): Promise<string> => {
+  if (!stored.startsWith(HYBRID_PREFIX)) {
+    throw new Error(`${context} is not owner-key encrypted`);
+  }
+  return decryptWithOwnerKey(stored as OwnerKeyEncrypted, privateKey);
+};
+
+/** Decrypt one owner-key value and parse its tagged or untagged identity. */
+export const loadPaymentReference = async (
+  stored: string,
+  privateKey: CryptoKey,
+  context: string,
+): Promise<PaymentReference> =>
+  readPaymentReference(
+    await paymentReferencePlaintextFrom(stored, privateKey, context),
+    context,
+  );
+
+/** The encrypted value and live-claim guard one finalize must write together. */
+export const preparePaymentReferenceWrite = async (
+  reference: TaggedPaymentReference | null,
+): Promise<PreparedPaymentReferenceWrite> =>
+  reference === null
+    ? { claim: { args: [], sql: "1 = 1" }, stored: null }
+    : {
+        claim: await unclaimedPaymentReference(reference),
+        stored: await storePaymentReference(reference),
+      };
+
+export type IndexedPaymentReferenceSource = {
+  readonly payment_reference: string;
+  readonly payment_reference_index: string;
+  readonly payment_session_id: string;
+};
+
+/** Decrypt one processed-payment row's stored reference. */
+export const loadRowPaymentReference = async (
+  row: IndexedPaymentReferenceSource,
+  privateKey: CryptoKey,
+): Promise<PaymentReference> =>
+  loadPaymentReference(
+    row.payment_reference,
+    privateKey,
+    "processed_payments.payment_reference",
+  );
+
+/** Decrypt a row reference and verify any index it already carries. */
+export const loadIndexedPaymentReference = async (
+  row: IndexedPaymentReferenceSource,
+  privateKey: CryptoKey,
+): Promise<{ readonly index: string; readonly payment: PaymentReference }> => {
+  const payment = await loadRowPaymentReference(row, privateKey);
+  const index = await paymentReferenceIndex(payment);
+  if (
+    row.payment_reference_index !== "" &&
+    row.payment_reference_index !== index
+  ) {
+    throw new Error("Payment reference index does not match stored reference");
+  }
+  return { index, payment };
+};

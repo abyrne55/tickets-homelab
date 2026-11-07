@@ -1,0 +1,282 @@
+name: Test
+
+# A merge queue builds its branch by pushing it, so `push` and `merge_group`
+# both fire on one queue branch and the suite runs twice on the same commit.
+# `merge_group` reports both check names on the queue ref. The `push` run there
+# only adds cost, and one more chance for a stalled runner to time the queue
+# out.
+#
+# The merge queue gates on these three checks. Ruleset 21611101 ("Deletions,
+# pushes & merges") marks `checks`, `specs`, and `test` as required status
+# checks for `main`, with a strict policy. A red run here holds the merge
+# until it passes. The manifest scripts/required-checks/checks.json records
+# the three names, and `deno task check:required-checks` fails when this
+# ruleset and the manifest disagree (issue #2671).
+on:
+  push:
+    branches-ignore: [main, "gh-readonly-queue/**"]
+  merge_group:
+
+env:
+  STRIPE_MOCK_VERSION: "0.188.0"
+
+# Both jobs only read the checkout. Caching and artifact upload use the Actions
+# runtime token, not this one. The required-checks gate reads the branch
+# ruleset, which is public data, so `contents: read` carries it (issue
+# #2671).
+permissions:
+  contents: read
+
+# Every run step executes inside the `ci` devenv profile, evaluated by the
+# setup-devenv action. The profile gives the same tools developers get from
+# `devenv shell`, and leaves out the commit-time Git hook. The deno task
+# commands stay byte-identical to the local ones.
+defaults:
+  run:
+    shell: devenv --profile ci shell bash -- -e {0}
+
+# Three jobs that run side by side. The static checks and the suite mirror
+# `getSteps()` in scripts/precommit/steps.ts; the suite holds both sides to
+# that claim (test/scripts/precommit-steps.test.ts), so a step added there
+# must land in the job that runs it here. Nothing in the suite reads what the
+# static checks produce, so running them beside the suite instead of ahead of
+# it takes their time off the critical path. The specs job runs the Cucumber
+# journeys, which no precommit step runs, so the journeys pass or fail as
+# hosted evidence too (issue #2761).
+jobs:
+  checks:
+    runs-on: ubicloud-standard-4
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+          # The coverage exclusion ratchet diffs its list against the merge
+          # base on origin/main, which needs the branch's history.
+          fetch-depth: 0
+
+      - name: Set up devenv
+        uses: ./.github/actions/setup-devenv
+        with:
+          profile: ci
+
+      # Each check is its own step so a failure is attributed individually in
+      # the Actions UI.
+      - name: Lint
+        run: deno task lint:ci
+
+      - name: Typecheck
+        run: deno task typecheck
+
+      - name: Check unread exported fields
+        run: deno task check:unread-fields
+
+      - name: Check for code duplication (CPD)
+        run: deno task cpd
+
+      - name: Check user-facing copy
+        run: deno task check:copy
+
+      - name: Check comment size
+        run: deno task check:comments
+
+      - name: Check comment language
+        run: deno task check:comment-ste
+
+      - name: Check module import names
+        run: deno task check:imports
+
+
+      - name: Check the pure core against the effect table
+        run: deno task check:effects
+
+      - name: Check for alias exports
+        run: deno task check:alias-exports
+
+      - name: Check for empty catch blocks
+        run: deno task check:empty-catch
+
+      - name: Check for double casts
+        run: deno task check:double-casts
+
+      - name: Check file line counts
+        run: deno task check:file-lengths
+
+      - name: Check repeated call chains
+        run: deno task check:call-chains
+
+      # The exclusion ratchet diffs the list against origin/main, so the
+      # shallow checkout needs that one ref.
+      - name: Fetch main for the coverage exclusion ratchet
+        run: git fetch origin main
+
+      - name: Check the coverage exclusion list only shrinks
+        run: deno task check:coverage-exclusions
+
+      # Fails on every weak assertion a test file the branch touches carries
+      # against the merge base on origin/main (issue #2298).
+      - name: Check the test quality gate
+        run: deno task check:test-quality
+
+      # Holds every test file to its recorded toBeDefined() count in a
+      # registry that only falls (see "Test Quality Standards" in AGENTS.md).
+      - name: Check the presence-assertion registry
+        run: deno task check:presence-assertions
+
+      # A helper the branch adds is invisible to the base tree; running the
+      # dump against it here is what exercises that import (issue #2740).
+      - name: Check contract drift against the base tree
+        run: deno task contract:diff
+
+      - name: Check technical English in Markdown
+        run: deno task check:ste
+
+      - name: Check payment e2e labels against the catalog
+        run: deno task check:e2e-labels
+
+      - name: Check known-equivalent mutant records
+        run: deno task check:equivalents
+
+      - name: Check for import cycles
+        run: deno task cycles
+
+      # The manifest at scripts/required-checks/checks.json is the reviewable
+      # record of the merge queue's gate; this step fails when Settings and
+      # the manifest disagree (issue #2671).
+      - name: Check the required status checks match the manifest
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: deno task check:required-checks
+
+      - name: Check TLA model standards
+        run: deno task check:tla
+
+      - name: Check machine safety models
+        run: deno task verify:models
+
+      - name: Build edge bundle
+        run: deno task build:edge
+
+  test:
+    runs-on: ubicloud-standard-8
+    # A healthy full suite with coverage finishes in about seven minutes. A
+    # wedged test can hold a runner for hours with no failure text (issue
+    # #2225), so the job gives up loudly instead.
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+          # The contract-drift tests run the dump in a worktree at the merge
+          # base on origin/main, which a one-commit checkout does not hold
+          # (issue #2740). A full checkout also keeps the suite from fetching
+          # inside a test.
+          fetch-depth: 0
+
+      - name: Set up devenv
+        uses: ./.github/actions/setup-devenv
+        with:
+          profile: ci
+
+      # stripe-mock is downloaded, started, and stopped by scripts/run-tests.ts
+      # (invoked via the test:coverage step). Caching .bin just avoids
+      # re-downloading it on every run.
+      - name: Cache stripe-mock
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: .bin
+          key: stripe-mock-${{ env.STRIPE_MOCK_VERSION }}-linux-amd64
+
+      - name: Test with coverage
+        env:
+          DB_ENCRYPTION_KEY: MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY=
+        run: deno task test:coverage
+
+      - name: Generate HTML coverage report
+        if: always()
+        run: deno coverage coverage --html
+
+      - name: Upload coverage report
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: coverage-report
+          path: coverage/html/
+
+  # The served-page browser contracts need Chromium, and no other job runs
+  # `test:screenshot-contract`. This is the one place a broken or flaky
+  # journey on a served page goes red (issue #2743).
+  browser-contracts:
+    runs-on: ubicloud-standard-8
+    timeout-minutes: 20
+
+    # The browser profile carries Chromium, whose path the contracts read
+    # through CHROMIUM_EXECUTABLE.
+    defaults:
+      run:
+        shell: devenv --profile browser shell bash -- -e {0}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+
+      - name: Set up devenv
+        uses: ./.github/actions/setup-devenv
+        with:
+          profile: browser
+
+      # The task's test:files legs run through the test harness, which
+      # downloads and starts stripe-mock. Caching .bin avoids the download
+      # on every run.
+      - name: Cache stripe-mock
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: .bin
+          key: stripe-mock-${{ env.STRIPE_MOCK_VERSION }}-linux-amd64
+
+      - name: Run the browser contracts
+        run: deno task test:screenshot-contract
+
+  specs:
+    runs-on: ubicloud-standard-8
+    # The whole journey suite runs in seconds on a developer machine. A wedged
+    # scenario can hold a runner for hours with no failure text (issue #2225),
+    # so the job gives up loudly instead.
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+
+      - name: Set up devenv
+        uses: ./.github/actions/setup-devenv
+        with:
+          profile: ci
+
+      # stripe-mock is downloaded, started, and stopped by the harness inside
+      # scripts/run-specs.ts. Caching .bin just avoids re-downloading it on
+      # every run.
+      - name: Cache stripe-mock
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: .bin
+          key: stripe-mock-${{ env.STRIPE_MOCK_VERSION }}-linux-amd64
+
+      - name: Run the Cucumber journeys
+        run: deno task specs
+
+      # The progress output names the failed scenario; the message, JUnit, and
+      # HTML reports under reports/ hold the step-level detail.
+      - name: Upload spec reports
+        if: failure()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: spec-reports
+          path: reports/

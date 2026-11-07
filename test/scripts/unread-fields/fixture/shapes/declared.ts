@@ -1,0 +1,222 @@
+/**
+ * The first part of the fixture repository's shape file: how a shape is
+ * written down at all — an interface, a type alias, a base it extends, a
+ * class, an export list, and a type taken out of a list's typeof.
+ */
+export const declared = `
+export interface Sum {
+  total: number;
+  noOneReadsThis: number;
+  readOnlyFromOutside: number;
+  takenOutByPattern: number;
+}
+
+export type Report = {
+  headline: string;
+  onlyTestsRead: string;
+  nested: { deep: number };
+  [key: string]: unknown;
+};
+
+class BaseClass {
+  fromAClass = 1;
+}
+
+interface HiddenBase extends BaseClass {
+  fromABaseNobodySees: number;
+  shadowed: number;
+}
+
+import type { FarBase } from "./inner/index.ts";
+
+export interface ExtendsFarBase extends FarBase {}
+
+export interface Extends extends HiddenBase {
+  ofItsOwn: number;
+  shadowed: number;
+}
+
+export namespace Wrapped {
+  export import Self = Wrapped;
+
+  export interface Inner {
+    onlyInsideNamespace: number;
+  }
+}
+
+// Two namespaces of one shape name, each shape holding a field of one name.
+// The owner must say which shape a line means.
+export namespace First {
+  export interface Item {
+    sameNameInTwoNamespaces: number;
+  }
+}
+
+export namespace Second {
+  export interface Item {
+    sameNameInTwoNamespaces: number;
+  }
+}
+
+// The owner carries every namespace above the shape, not only the one that
+// holds it.
+export namespace Outer {
+  export namespace Inner {
+    export interface Deep {
+      onlyInsideNestedNamespace: number;
+    }
+  }
+}
+
+export interface Passed {
+  kept: number;
+  carriedBySpread: number;
+}
+
+interface NotExported {
+  hidden: number;
+}
+
+interface IntersectedBase {
+  fromAnIntersection: number;
+}
+
+export type Intersects = IntersectedBase & {
+  ofItsOwnAgain: number;
+};
+
+interface ListExported {
+  onlyInAList: number;
+}
+
+export type { ListExported };
+
+interface NamedDirectly {
+  reachedThroughAnAlias: number;
+}
+
+export type Renamed = NamedDirectly;
+
+interface AnsweredOnce {
+  answeredTwice: boolean;
+}
+
+export type AnsweredAgain = AnsweredOnce & { answeredTwice: boolean };
+
+export class NamedItsParameter extends Error {
+  constructor(
+    public onlyTheConstructorNamesIt: string,
+    public takenOutByADestructure: string,
+    public takenOutByAnAssignment: string,
+  ) {
+    super(onlyTheConstructorNamesIt);
+    let held = "";
+    ({ takenOutByAnAssignment: held } = this);
+    console.log(held);
+  }
+}
+
+export class Carrier {
+  onlyOnAClass = 1;
+  private notForOutside = 2;
+
+  constructor(
+    public heldByTheConstructor: number,
+    public readByThisInside: number,
+    plainParameter: number,
+  ) {
+    this.onlyOnAClass = plainParameter + this.readByThisInside;
+  }
+
+  keep(): number {
+    return this.notForOutside;
+  }
+}
+
+// A constructor input and a field of the same name are two fields, and each
+// holds an \`id\` of its own. The caller supplies the input through \`new ()\`,
+// so a read of the field never speaks for the input nothing reads.
+export class AcceptsOptionsOfItsOwn {
+  options: { id: string };
+
+  constructor(options: { id: number }) {}
+}
+
+export interface Borrowed {
+  onlyItsTypeIsUsed: number;
+  takenAwayByDelete?: number;
+}
+
+export class Answerer {
+  answersAQuestion(): number {
+    return 1;
+  }
+
+  get readsLikeAField(): number {
+    return 2;
+  }
+
+  private keptInside(): number {
+    return 3;
+  }
+}
+
+const MADE_UP_LIST = [{ writtenInAList: 1 }] as const;
+
+export type FromAList = (typeof MADE_UP_LIST)[number];
+
+export interface Described {
+  describedField: number;
+}
+
+export class RealDescribed implements Described {
+  describedField = 0;
+}
+
+export interface AlsoDescribed extends Described {}
+
+export class TwiceDescribed implements Described, AlsoDescribed {
+  describedField = 0;
+}
+
+export interface HoldsANestedShape {
+  nested: { deep: number };
+}
+
+export interface SqlRow {
+  sql: string;
+}
+
+export type SameArms = { shared: number } | { shared: number };
+
+export type WithNever = { only: number } | never;
+
+export interface LogLine {
+  text: string;
+}
+
+export interface NestedSlotSource {
+  outer: { deep: number };
+}
+
+export interface LoopSlot {
+  direct: number;
+}
+
+export interface ParenOnly {
+  slot: number;
+}
+
+export interface RestCarrier {
+  kept: number;
+  rest: number;
+}
+
+export interface CarriesTheField {
+  carried: number;
+}
+
+export class HoldsTheCarriedField implements CarriesTheField {
+  carried = 0;
+}
+`;

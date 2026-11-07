@@ -1,0 +1,442 @@
+/**
+ * TestBrowser - simulates a human browsing the app by following links and submitting forms.
+ *
+ * Navigates purely by link text and button text, never by knowing URLs directly.
+ * Maintains cookies across requests and follows redirects automatically.
+ */
+
+import { map, pipe } from "#fp";
+import { handleRequest as appHandler } from "#routes";
+import {
+  extractFormEntries,
+  type FormEntry,
+} from "#test-utils/test-browser/forms.ts";
+import {
+  decodeEntities,
+  findAllLinks,
+  findLinkByText,
+  type LinkMatch,
+  stripTags,
+} from "#test-utils/test-browser/parsing.ts";
+import {
+  appendFormValue,
+  findFormByButton,
+  findForms,
+  theWayToPost,
+  throwNoForm,
+  wayToPost,
+} from "#test-utils/test-browser/pressing.ts";
+
+/** Extract all cookies from a Set-Cookie header and merge into a cookie jar */
+const parseCookies = (response: Response, jar: Map<string, string>): void => {
+  for (const header of response.headers.getSetCookie()) {
+    const eqIdx = header.indexOf("=");
+    if (eqIdx === -1) continue;
+    const name = header.slice(0, eqIdx);
+    const rest = header.slice(eqIdx + 1);
+    // Value ends at first ; or end of string
+    const semiIdx = rest.indexOf(";");
+    const value = semiIdx === -1 ? rest : rest.slice(0, semiIdx);
+    if (value === "" || header.includes("Max-Age=0")) {
+      jar.delete(name);
+    } else {
+      jar.set(name, value);
+    }
+  }
+};
+
+/** Build a Cookie header string from the jar */
+const buildCookieHeader = (jar: Map<string, string>): string =>
+  [...jar.entries()].map(([k, v]) => `${k}=${v}`).join("; ");
+
+/** Format Set-Cookie headers for debug logging */
+const formatCookies = (response: Response): string => {
+  const setCookies = response.headers.getSetCookie();
+  return setCookies.length
+    ? ` cookies: ${setCookies.map((c) => c.split(";")[0]).join(", ")}`
+    : "";
+};
+
+const isRedirect = (status: number): boolean =>
+  status === 301 || status === 302 || status === 303;
+
+/** Extract pathname+search from a URL string (absolute or relative) */
+const toPath = (url: string): string =>
+  url.startsWith("http") ? new URL(url).pathname + new URL(url).search : url;
+
+/**
+ * A simulated browser that navigates by following links and submitting forms.
+ * It calls handleRequest directly (no network), maintains cookies, and follows redirects.
+ */
+export class TestBrowser {
+  /** Current page URL path */
+  currentUrl = "";
+  /** Current page HTML content */
+  currentHtml = "";
+  /** How the site answered the request that produced the page shown: the
+   * status of the page landed on, redirects followed. */
+  answered = 0;
+  /** The last redirect target exactly as the server sent it, origin and all.
+   * `currentUrl` keeps only the path, so this is what tells an off-site
+   * destination (a payment provider) from a same-path local one. Empty when the
+   * last request did not redirect. */
+  redirectedTo = "";
+  /** Turns a request into a response. The tests for this browser swap it for
+   * a stand-in that answers without the app; every other caller runs the
+   * app's own `handleRequest`. */
+  handleRequest: (request: Request) => Promise<Response> = appHandler;
+  /** Cookie jar persisted across requests */
+  private cookies = new Map<string, string>();
+
+  /** Enable debug logging */
+  debug = false;
+
+  /** Build a request with cookies */
+  private buildRequest(path: string, options: RequestInit = {}): Request {
+    const headers = new Headers(options.headers);
+    headers.set("host", "localhost");
+    const cookieStr = buildCookieHeader(this.cookies);
+    if (cookieStr) headers.set("cookie", cookieStr);
+    return new Request(`http://localhost${path}`, {
+      ...options,
+      headers,
+      redirect: "manual",
+    });
+  }
+
+  /** Send a request, log if debugging, and collect cookies */
+  private async send(req: Request, debugLabel: string): Promise<Response> {
+    const response = await this.handleRequest(req);
+    if (this.debug) {
+      console.log(
+        `[browser] ${debugLabel} -> ${response.status}${formatCookies(
+          response,
+        )}`,
+      );
+    }
+    parseCookies(response, this.cookies);
+    return response;
+  }
+
+  /** Make a request and follow redirects, updating state */
+  private async request(
+    path: string,
+    options: RequestInit = {},
+  ): Promise<Response> {
+    let currentPath = toPath(path);
+    this.redirectedTo = "";
+    const req = this.buildRequest(currentPath, options);
+    let response = await this.send(req, `${options.method ?? "GET"} ${path}`);
+
+    // Follow redirects (max 10 hops)
+    let hops = 0;
+    while (isRedirect(response.status) && hops < 10) {
+      hops++;
+      const location = response.headers.get("location");
+      if (!location) break;
+      this.redirectedTo = location;
+      const nextPath = toPath(location);
+      currentPath = nextPath;
+      response = await this.send(
+        this.buildRequest(nextPath),
+        `  -> redirect ${nextPath}`,
+      );
+    }
+
+    this.currentUrl = currentPath.split("?")[0]!;
+    const finalLocation = response.headers.get("location");
+    if (finalLocation && isRedirect(response.status)) {
+      this.redirectedTo = finalLocation;
+      this.currentUrl = toPath(finalLocation).split("?")[0]!;
+    }
+    this.currentHtml = await response.text();
+    this.answered = response.status;
+    return response;
+  }
+
+  /**
+   * Visit a page by path (GET request).
+   * Follows redirects and updates currentHtml/currentUrl.
+   * Answers with the status of the page landed on, so a caller wanting both
+   * the answer and the words gets them from the one visit.
+   */
+  async visit(path: string): Promise<number> {
+    const response = await this.request(path);
+    return response.status;
+  }
+
+  /**
+   * Ask for a page and return only what the site answered. Nothing is followed
+   * and no page state changes, so a caller can tell "you may not" apart from
+   * "there is no such page" without ending up somewhere else.
+   */
+  async statusOf(path: string): Promise<number> {
+    const response = await this.send(
+      this.buildRequest(toPath(path)),
+      `GET ${path}`,
+    );
+    return response.status;
+  }
+
+  /**
+   * Click a link by its visible text.
+   * Searches the current page HTML for an <a> tag whose text contains the given string.
+   * Throws if no matching link is found.
+   */
+  async clickLink(text: string): Promise<void> {
+    const link = findLinkByText(this.currentHtml, text);
+    if (!link) {
+      const available = pipe(
+        map((l: LinkMatch) => `  "${l.text}" -> ${l.href}`),
+      )(findAllLinks(this.currentHtml));
+      throw new Error(
+        `No link found with text "${text}". Available links:\n${available.join(
+          "\n",
+        )}`,
+      );
+    }
+    await this.visit(link.href);
+  }
+
+  /** Find a form by button text and extract its action + hidden fields */
+  private findForm(
+    buttonText?: string,
+    fieldNames: string[] = [],
+  ): {
+    action: string;
+    body: string;
+    entries: FormEntry[];
+    method: string;
+    buttonName?: string | undefined;
+    buttonValue?: string | undefined;
+  } {
+    const forms = findForms(this.currentHtml);
+    if (!buttonText) {
+      const form = forms[0] ?? throwNoForm();
+      return {
+        action: form.action,
+        body: form.body,
+        entries: extractFormEntries(form.body),
+        method: form.method,
+      };
+    }
+    const found = findFormByButton(forms, buttonText, fieldNames);
+    return {
+      action: found.action,
+      body: found.body,
+      buttonName: found.buttonName,
+      buttonValue: found.buttonValue,
+      entries: extractFormEntries(found.body),
+      method: found.method,
+    };
+  }
+
+  /**
+   * Submit a form by field data, identified by its submit button text.
+   * Auto-includes CSRF, hidden, and visible values like a real browser;
+   * user data overrides them. A `<button name="…" value="…">` pair rides
+   * along, and "all" selects every checkbox of an array field.
+   */
+  async submitForm(
+    data: Record<string, string | string[]>,
+    buttonText?: string,
+  ): Promise<void> {
+    await this.sendForm(this.findForm(buttonText, Object.keys(data)), data);
+  }
+
+  /**
+   * The body of the form a person pressing this button would send. Lets a
+   * caller check what they are about to fill in against that form alone: a
+   * control sitting in some other form on the same page is one this send could
+   * never carry, however present it looks on the page as a whole.
+   */
+  formBodyFor(buttonText: string, fieldNames: string[] = []): string {
+    return this.findForm(buttonText, fieldNames).body;
+  }
+
+  /**
+   * The body of the form that posts to `action`, for a caller that picks a
+   * form by where it goes rather than by the words on its button. The sibling
+   * of {@link formBodyFor}, so such a caller can check what it is about to
+   * fill in against that form alone. A page that offers no way there is
+   * refused here with the same words pressing it would give.
+   */
+  formBodyAt(action: string): string {
+    return theWayToPost(this.currentHtml, action).form.body;
+  }
+
+  /**
+   * Submit the one form on this page that posts to `action`, the way pressing
+   * its own button would: its hidden fields and CSRF token go with it. For a
+   * page that renders many identical forms — one arrow per row — where the
+   * button's words cannot tell them apart.
+   */
+  async submitFormAt(
+    action: string,
+    data: Record<string, string | string[]> = {},
+  ): Promise<void> {
+    const { form, pressed } = theWayToPost(this.currentHtml, action);
+    return await this.sendForm(
+      {
+        action,
+        body: form.body,
+        buttonName: pressed.name,
+        buttonValue: pressed.value,
+        entries: extractFormEntries(form.body),
+        method: pressed.sentBy,
+      },
+      data,
+    );
+  }
+
+  /**
+   * What the form posting to `action` would really send for one of its boxes,
+   * or null when it would send nothing for that name. Reads a `<select>` the
+   * way a browser does — the chosen option, not every option it offers — so a
+   * caller can prove a page put a stored value back rather than merely
+   * rendering it somewhere among the choices.
+   */
+  wouldSendAt(action: string, field: string): string | null {
+    const sent = extractFormEntries(this.formBodyAt(action)).find(
+      ([name]) => name === field,
+    );
+    return sent ? sent[1] : null;
+  }
+
+  /**
+   * Whether this page offers anybody a way to post to an address at all. A page
+   * whose only button for it is switched off, or which renders no such button,
+   * offers none — so a caller can ask whether an action is really open to the
+   * person looking at the page without trying it and reading the failure.
+   */
+  offersAWayToPost(action: string): boolean {
+    return wayToPost(this.currentHtml, action) !== null;
+  }
+
+  /** Build one form's submission the way a browser does — its own successful
+   * controls first, then the pressed button, then whatever the caller typed —
+   * and post it. */
+  private async sendForm(
+    form: {
+      action: string;
+      body: string;
+      entries: FormEntry[];
+      method: string;
+      buttonName?: string | undefined;
+      buttonValue?: string | undefined;
+    },
+    data: Record<string, string | string[]>,
+  ): Promise<void> {
+    const { action, body, entries, method, buttonName, buttonValue } = form;
+
+    // Build the form body as URLSearchParams
+    const params = new URLSearchParams();
+
+    // Add successful controls first (a real browser submits these in DOM order)
+    for (const [key, value] of entries) {
+      params.append(key, value);
+    }
+    // Then the clicked button's own name and value. It is added, never swapped
+    // in: a browser sends every successful control *and* the button, so a form
+    // carrying a hidden field of the same name sends both values, not one.
+    if (buttonName && buttonValue !== undefined) {
+      params.append(buttonName, buttonValue);
+    }
+
+    // Add user-provided data (overrides everything)
+    for (const [key, value] of Object.entries(data)) {
+      appendFormValue(params, key, value, body);
+    }
+
+    // A form sends the way it says it does. One that sends by GET carries its
+    // values in the address and no body at all — and the address it had keeps
+    // only its path, because a browser puts the whole form where the question
+    // marks used to be rather than adding to what was there.
+    if (method === "get") {
+      await this.request(`${action.split("?")[0]}?${params}`);
+      return;
+    }
+    // Only those two ways exist. A page saying anything else is a page with a
+    // mistake on it — a browser quietly sends such a form by GET, so guessing
+    // POST here would prove the site accepts something it never receives.
+    if (method !== "post") {
+      throw new Error(
+        `The form at "${action}" says it sends by "${method}", which is not a way a form can be sent`,
+      );
+    }
+    await this.request(action, {
+      body: params.toString(),
+      headers: { "content-type": "application/x-www-form-urlencoded" },
+      method: "POST",
+    });
+  }
+
+  /** Get the current page text content (HTML tags stripped) */
+  get pageText(): string {
+    return decodeEntities(stripTags(this.currentHtml));
+  }
+
+  /** Check if the current page contains the given text (tag-stripped, case-insensitive) */
+  containsText(text: string): boolean {
+    return this.pageText.toLowerCase().includes(text.toLowerCase());
+  }
+
+  /** Find a link's href by its visible text, without navigating */
+  findLink(text: string): string | null {
+    return findLinkByText(this.currentHtml, text)?.href ?? null;
+  }
+
+  /** Debug: expose cookie jar entries */
+  debugCookies(): Map<string, string> {
+    return new Map(this.cookies);
+  }
+
+  /** Find all links on the current page */
+  get links(): LinkMatch[] {
+    return findAllLinks(this.currentHtml);
+  }
+
+  /**
+   * Download a URL and return the raw bytes (for binary content like .zip files).
+   * Does NOT update currentHtml/currentUrl.
+   */
+  async downloadBytes(path: string): Promise<Uint8Array> {
+    const req = this.buildRequest(toPath(path));
+    const response = await this.handleRequest(req);
+    parseCookies(response, this.cookies);
+    return new Uint8Array(await response.arrayBuffer());
+  }
+
+  /**
+   * Submit a multipart form with a file attachment.
+   * Used for file upload forms (e.g. backup restore).
+   * Finds the form by button text, auto-includes CSRF token and hidden fields.
+   */
+  async submitFormWithFile(
+    fileField: string,
+    fileName: string,
+    fileData: Uint8Array,
+    data: Record<string, string> = {},
+    buttonText?: string,
+  ): Promise<void> {
+    const { action, entries } = this.findForm(buttonText);
+    const formData = new FormData();
+
+    for (const [key, value] of entries) {
+      formData.append(key, value);
+    }
+    for (const [key, value] of Object.entries(data)) {
+      formData.delete(key);
+      formData.append(key, value);
+    }
+    formData.append(
+      fileField,
+      new File([fileData.buffer as ArrayBuffer], fileName),
+    );
+
+    await this.request(action, {
+      body: formData,
+      method: "POST",
+    });
+  }
+}

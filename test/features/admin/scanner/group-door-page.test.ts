@@ -1,0 +1,211 @@
+/** Tests for the group scanner page, the direct suite beside the routes it
+ * exercises in src/features/admin/scanner.ts: GET /admin/groups/:id/scanner -
+ * one door for every member of a group.
+ *
+ * The scan API itself has its own suite beside this one; this one owns the
+ * page: the scope from the group's membership, the roster, the stored
+ * every-listing warning, and the guards.
+ */
+
+import { assert, assertStringIncludes } from "@std/assert";
+import { expect } from "@std/expect";
+import { it as test } from "@std/testing/bdd";
+import { handleRequest } from "#routes";
+import { expectIncludesAll } from "#test-utils/assertions.ts";
+import { describeWithEnv } from "#test-utils/db.ts";
+import { createMultiBookingAttendee } from "#test-utils/db-helpers/attendees.ts";
+import {
+  createTestGroup,
+  updateTestGroup,
+} from "#test-utils/db-helpers/groups.ts";
+import { createTestListing } from "#test-utils/db-helpers/listings.ts";
+import { postAttendeeRefund } from "#test-utils/ledger.ts";
+import { expectLoginRedirectWithReturn } from "#test-utils/login-redirect.ts";
+import {
+  createTestEditorSession,
+  requestAsSession,
+  testCookie,
+  testCsrfToken,
+} from "#test-utils/session.ts";
+import {
+  doorPage,
+  groupDoor,
+  pickTicketsAtDoor,
+  scanAtDoor,
+} from "./support.ts";
+
+const rosterOption = (name: string): string => `data-name="${name}"`;
+
+describeWithEnv("group scanner page", { db: true }, () => {
+  test("renders one door for the whole group", async () => {
+    const { group, members } = await groupDoor();
+    const body = await doorPage(group.id);
+
+    expectIncludesAll(body, [
+      `Scanner: ${group.name}`,
+      `data-scan-path="/admin/groups/${group.id}/scan"`,
+    ]);
+    assert(!body.includes(`/admin/listing/${members[0]!.id}/scan`));
+  });
+
+  test("offers one option per person, with their places summed", async () => {
+    const { group, members } = await groupDoor(2);
+    await createMultiBookingAttendee("Sam", "sam@example.com", [
+      { listingId: members[0]!.id, quantity: 2 },
+      { listingId: members[1]!.id, quantity: 1 },
+    ]);
+
+    const body = await doorPage(group.id);
+
+    assertStringIncludes(body, "Sam (3 tickets)");
+    expect(body.match(/role="option"/g)?.length).toBe(1);
+  });
+
+  test("does not offer refunded or fully checked-in people", async () => {
+    const { group, members } = await groupDoor(2);
+    const refunded = await createMultiBookingAttendee(
+      "Rob",
+      "rob@example.com",
+      [{ listingId: members[0]!.id, quantity: 1 }],
+    );
+    const seated = await createMultiBookingAttendee("Mel", "mel@example.com", [
+      { listingId: members[1]!.id, quantity: 1 },
+    ]);
+    await postAttendeeRefund({
+      attendeeId: refunded.id,
+      listingId: members[0]!.id,
+    });
+    await scanAtDoor(group.id, { token: seated.ticket_token });
+
+    const body = await doorPage(group.id);
+
+    assert(!body.includes(rosterOption("Rob")));
+    assert(!body.includes(rosterOption("Mel")));
+  });
+
+  test("warns that one scan checks in every listing only once that rule is on", async () => {
+    const door = await groupDoor(2);
+    // The rule off its default: every door walks one listing per scan, so
+    // the page says nothing about spanning listings.
+    assert(
+      !(await doorPage(door.group.id)).includes(
+        "Scanning a ticket in this group",
+      ),
+    );
+
+    await updateTestGroup(door.group.id, { scanChecksInAllListings: true });
+    const warned = await doorPage(door.group.id);
+    expectIncludesAll(warned, [
+      'role="alert"',
+      "Scanning a ticket in this group will check in ALL of the attendee's booked listings in that group",
+    ]);
+
+    // One listing left that a scan can span: the warning would say "ALL"
+    // over a single place, so even the stored rule on stays quiet.
+    const single = await createTestGroup({
+      name: "Solo door",
+      scanChecksInAllListings: true,
+    });
+    await createTestListing({
+      groupId: single.id,
+      maxAttendees: 10,
+      name: "Solo",
+    });
+    assert(
+      !(await doorPage(single.id)).includes("Scanning a ticket in this group"),
+    );
+  });
+
+  test("a scan after the saved rule checks in every listing at once", async () => {
+    const { group, members } = await groupDoor(2);
+    const ticket = await createMultiBookingAttendee("Van", "van@example.com", [
+      { listingId: members[0]!.id, quantity: 1 },
+      { listingId: members[1]!.id, quantity: 2 },
+    ]);
+    await updateTestGroup(group.id, { scanChecksInAllListings: true });
+    // The Society line owes two, so the door asks before it admits both.
+    const { admission, ask } = await pickTicketsAtDoor(
+      group.id,
+      ticket.ticket_token,
+      2,
+    );
+    expect(ask.json.max).toBe(2);
+
+    const { json } = admission;
+    expect(json.status).toBe("checked_in");
+    expect(json.listingName).toBe("Standard, Society");
+    expect(json.quantity).toBe(3);
+    expect(json.remaining).toBe(0);
+  });
+
+  test("a No check-in member alone gives the door no warning and no roster", async () => {
+    const group = await createTestGroup({ name: "Merch only" });
+    const merch = await createTestListing({
+      groupId: group.id,
+      maxAttendees: 10,
+      name: "Merch",
+      purchaseOnly: true,
+    });
+    await createMultiBookingAttendee("Ola", "ola@example.com", [
+      { listingId: merch.id, quantity: 1 },
+    ]);
+    await updateTestGroup(group.id, { scanChecksInAllListings: true });
+    const body = await doorPage(group.id);
+
+    assert(!body.includes("Scanning a ticket in this group"));
+    assert(!body.includes(rosterOption("Ola")));
+    assertStringIncludes(body, "No tickets to check in");
+  });
+
+  test("redirects to the login flow with the door page when not authenticated", async () => {
+    const { group } = await groupDoor(1);
+    const response = await handleRequest(
+      new Request(`http://localhost/admin/groups/${group.id}/scanner`, {
+        headers: { host: "localhost" },
+      }),
+    );
+    expectLoginRedirectWithReturn(`/admin/groups/${group.id}/scanner`)(
+      response,
+    );
+  });
+
+  test("answers 404 for an unknown group", async () => {
+    const response = await handleRequest(
+      requestAsSession("/admin/groups/99999/scanner", {
+        cookie: await testCookie(),
+        csrfToken: await testCsrfToken(),
+      }),
+    );
+    expect(response.status).toBe(404);
+  });
+
+  test("refuses an editor before the group is looked up", async () => {
+    const editor = await createTestEditorSession();
+    const response = await handleRequest(
+      requestAsSession("/admin/groups/99999/scanner", {
+        cookie: editor.cookie,
+        csrfToken: await testCsrfToken(),
+      }),
+    );
+    expect(response.status).toBe(403);
+  });
+
+  test("a one-listing door names no listing in its roster details", async () => {
+    // The page title already names the door's one listing, so the option
+    // carries only the day, and a place without a day carries nothing.
+    const door = await groupDoor(1);
+    await createMultiBookingAttendee("Sam", "sam@example.com", [
+      { listingId: door.members[0]!.id, quantity: 2 },
+    ]);
+
+    const body = await doorPage(door.group.id);
+
+    expectIncludesAll(body, [rosterOption("Sam"), 'data-detail=""']);
+  });
+
+  test("answers the scan of a missing group with not_found", async () => {
+    const missing = await scanAtDoor(99999, { token: "any" });
+    expect(missing.response.status).toBe(404);
+    expect(missing.json).toEqual({ status: "not_found" });
+  });
+});

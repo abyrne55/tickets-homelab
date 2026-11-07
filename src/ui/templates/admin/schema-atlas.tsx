@@ -1,0 +1,264 @@
+/** The system-map page template: one section per declared machine.
+ *
+ * The page is complete without JavaScript — every state and its ways forward
+ * are rendered as a list. The interactive diagram is a progressive
+ * enhancement: the same data, with labels already resolved, is embedded once
+ * as JSON and `client/admin/schema-atlas.ts` turns it into an SVG map. */
+
+import type { SchemaAnomaly } from "#db/schema-anomaly-scan.ts";
+import type { UnansweredSumupMoney } from "#db/sumup-recovery.ts";
+import { requiredMapValue } from "#fp";
+import { t } from "#i18n";
+import { formatTimeAgo } from "#shared/dates.ts";
+import { nowMs } from "#shared/now.ts";
+import { SCHEMA_ATLAS_MACHINES } from "#shared/schema-atlas/index.ts";
+import type { AtlasActor } from "#shared/schema-atlas/types.ts";
+import { settingsPage } from "#templates/admin/settings/page-shell.tsx";
+import { JsonScript } from "#templates/components/json-script.tsx";
+import { ProseHeading } from "#templates/components/prose-heading.tsx";
+import type { AdminSession, Theme } from "#types";
+
+const ACTOR_CLASS: Record<AtlasActor, string> = {
+  owner: "schema-actor-owner",
+  provider: "schema-actor-provider",
+  system: "schema-actor-system",
+};
+
+type ViewEdge = {
+  readonly actor: AtlasActor;
+  readonly label: string;
+  readonly to: string;
+  readonly toLabel: string;
+};
+
+type ViewState = {
+  readonly detail: string;
+  readonly edges: readonly ViewEdge[];
+  readonly facts: readonly { readonly label: string; readonly value: string }[];
+  readonly id: string;
+  readonly label: string;
+  readonly layout: { readonly x: number; readonly y: number };
+  readonly start: boolean;
+};
+
+type ViewMachine = {
+  readonly id: string;
+  readonly intro: string;
+  readonly states: readonly ViewState[];
+  readonly title: string;
+};
+
+/** The label an atlas edge shows for the state it names. The atlas spec is
+ *  checked by its own test, so a throw here names a spec defect. */
+const atlasStateLabel = (
+  id: string,
+  labels: ReadonlyMap<string, string>,
+): string => requiredMapValue(labels, id, `Schema atlas has no state ${id}`);
+
+/** Resolve every catalog key once, server-side: the client script receives
+ * finished words and does no translation work. */
+const viewMachine = (
+  machine: (typeof SCHEMA_ATLAS_MACHINES)[number],
+): ViewMachine => {
+  const labels = new Map(
+    machine.states.map((state) => [state.id, t(state.labelKey)]),
+  );
+  return {
+    id: machine.id,
+    intro: t(machine.introKey),
+    states: machine.states.map((state) => ({
+      detail: t(state.detailKey),
+      edges: state.edges.map((edge) => ({
+        actor: edge.actor,
+        label: t(edge.labelKey),
+        to: edge.to,
+        toLabel: atlasStateLabel(edge.to, labels),
+      })),
+      facts: state.facts.map((fact) => ({
+        label: t(fact.labelKey),
+        value: fact.value,
+      })),
+      id: state.id,
+      label: t(state.labelKey),
+      layout: state.layout,
+      start: state.start === true,
+    })),
+    title: t(machine.titleKey),
+  };
+};
+
+/** One state's static entry: what it means, what the code says clears it,
+ * and every way the record can move next. */
+const StateArticle = ({ state }: { state: ViewState }): JSX.Element => (
+  <article class="schema-state" data-schema-state={state.id}>
+    <div class="prose">
+      <h3>
+        {state.label}
+        {state.start && ` · ${t("schema.state.start")}`}
+      </h3>
+      <p>{state.detail}</p>
+    </div>
+    {state.facts.some(Boolean) && (
+      <dl class="schema-facts">
+        {state.facts.map((fact) => (
+          <>
+            <dt>{fact.label}</dt>
+            <dd>
+              <code>{fact.value}</code>
+            </dd>
+          </>
+        ))}
+      </dl>
+    )}
+    <h4>{t("schema.list.heading")}</h4>
+    {state.edges.length ? (
+      <ul>
+        {state.edges.map((edge) => (
+          <li>
+            <span class={`schema-actor ${ACTOR_CLASS[edge.actor]}`}>
+              {t(`schema.actor.${edge.actor}`)}
+            </span>
+            {`: ${edge.label} → ${edge.toLabel}`}
+          </li>
+        ))}
+      </ul>
+    ) : (
+      <p>{t("schema.list.none")}</p>
+    )}
+  </article>
+);
+
+/** One machine: its diagram mount (filled in by the client) and its full
+ * static list. */
+const MachineSection = ({ machine }: { machine: ViewMachine }): JSX.Element => (
+  <section
+    class="schema-machine"
+    data-schema-atlas-machine={machine.id}
+    id={machine.id}
+  >
+    <div class="prose">
+      <h2>{machine.title}</h2>
+      <p>{machine.intro}</p>
+    </div>
+    <div class="schema-widget" data-schema-atlas={machine.id} hidden />
+    <p class="schema-widget-hint">{t("schema.widget.hint")}</p>
+    {machine.states.map((state) => (
+      <StateArticle state={state} />
+    ))}
+  </section>
+);
+
+const ANOMALY_MESSAGES: Record<SchemaAnomaly["key"], () => string> = {
+  sumup_check_time_mismatch: () => t("schema.check.sumup_check_time_mismatch"),
+  sumup_checkout_id_mismatch: () =>
+    t("schema.check.sumup_checkout_id_mismatch"),
+  sumup_unknown_state: () => t("schema.check.sumup_unknown_state"),
+};
+
+/** The live answer to the promises above: every row the scan flagged, or
+ * the all-clear. Findings name the broken rule, the stored record, and the
+ * stored state word when the rule judged one. */
+const LiveCheckSection = ({
+  anomalies,
+}: {
+  anomalies: readonly SchemaAnomaly[];
+}): JSX.Element => (
+  <section id="schema-check">
+    <div class="prose">
+      <h2>{t("schema.check.heading")}</h2>
+      <p>{t("schema.check.intro")}</p>
+    </div>
+    {anomalies.length === 0 ? (
+      <p>{t("schema.check.none")}</p>
+    ) : (
+      <ul>
+        {anomalies.map((anomaly) => (
+          <li>
+            {ANOMALY_MESSAGES[anomaly.key]()} <code>{anomaly.recordId}</code>
+            {anomaly.state !== undefined && (
+              <>
+                {" "}
+                <code>{anomaly.state}</code>
+              </>
+            )}
+          </li>
+        ))}
+      </ul>
+    )}
+  </section>
+);
+
+/** The SumUp checkouts that may be holding money nobody has answered for:
+ * the exact count, and the oldest rows. Legal states, not anomalies — but
+ * states an operator must see, because nothing else counts them. */
+const UnansweredMoneySection = ({
+  unanswered,
+}: {
+  unanswered: UnansweredSumupMoney;
+}): JSX.Element => (
+  <section id="schema-unanswered">
+    <div class="prose">
+      <h2>{t("schema.unanswered.heading")}</h2>
+      <p>{t("schema.unanswered.intro")}</p>
+    </div>
+    {unanswered.total === 0 ? (
+      <p>{t("schema.unanswered.none")}</p>
+    ) : (
+      <>
+        <p>
+          {t("schema.unanswered.count", { count: unanswered.total })}
+          {unanswered.total > unanswered.rows.length &&
+            ` ${t("schema.unanswered.truncated", {
+              shown: unanswered.rows.length,
+            })}`}
+        </p>
+        <ul>
+          {unanswered.rows.map((row) => (
+            <li>
+              {t(`schema.sumup_recovery.state.${row.state}`)}
+              {" · "}
+              {formatTimeAgo(row.createdAt, nowMs()) ?? row.createdAt}{" "}
+              <code>{row.referenceIndex}</code>
+            </li>
+          ))}
+        </ul>
+      </>
+    )}
+  </section>
+);
+
+export const adminSchemaAtlasPage = (
+  session: AdminSession,
+  theme: Theme,
+  anomalies: readonly SchemaAnomaly[],
+  unanswered: UnansweredSumupMoney,
+): string => {
+  const machines = SCHEMA_ATLAS_MACHINES.map(viewMachine);
+  return settingsPage(t("schema.title"), "/admin/schema")(session, theme)(
+    <>
+      <ProseHeading heading={t("schema.title")}>
+        <p>{t("schema.intro")}</p>
+      </ProseHeading>
+      <div class="prose">
+        <p class="schema-legend">
+          <strong>{t("schema.legend.heading")}</strong>{" "}
+          {(["system", "provider", "owner"] as const).map((actor, index) => (
+            <>
+              {index > 0 && ", "}
+              <span class={`schema-actor ${ACTOR_CLASS[actor]}`}>
+                {t(`schema.legend.${actor}`)}
+              </span>
+            </>
+          ))}
+          .
+        </p>
+        {machines.map((machine) => (
+          <MachineSection machine={machine} />
+        ))}
+        <LiveCheckSection anomalies={anomalies} />
+        <UnansweredMoneySection unanswered={unanswered} />
+      </div>
+      <JsonScript id="schema-atlas-data" value={{ machines }} />
+    </>,
+  );
+};

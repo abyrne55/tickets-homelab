@@ -1,0 +1,433 @@
+/**
+ * Listing parent/child relationship editing (the "required child listings"
+ * section on the listing edit page + its save endpoint).
+ */
+
+import { logActivity } from "#db/activity-log.ts";
+import { type TxScope, withTransaction } from "#db/client.ts";
+import { listingGroups } from "#db/groups/table.ts";
+import {
+  hydrateListingLinks,
+  listingChildren,
+  listingParents,
+  setListingChildrenWithPackageCheckTx,
+} from "#db/listing-parents.ts";
+import {
+  getAllListings,
+  getListingsById,
+  getListingWithCount,
+  requireListingWithCount,
+} from "#db/listings/records.ts";
+import {
+  childOnlyAddOnName,
+  type ListingGroupMembership,
+  toListingGroupMembership,
+} from "#db/modifier-resolve.ts";
+import { groupToMap, mapNotNullish, requiredMapValue, unique } from "#fp";
+import { t } from "#i18n";
+import { CONTENT_FORM, formGuard } from "#routes/auth.ts";
+import { createIdEntityHandler } from "#routes/entity.ts";
+import { redirect } from "#routes/response.ts";
+import type { TypedRouteHandler } from "#routes/router.ts";
+import {
+  childOnlyAddOnNameForListings,
+  resolveWouldBeAddOns,
+} from "#shared/add-on-reachability.ts";
+import {
+  childAddOnError,
+  type EdgeListing,
+  edgeFieldError,
+  type ParentChildEdge,
+} from "#shared/listing-parents-rules.ts";
+import {
+  type PackageChildEdgeBlock,
+  packageChildEdgeError,
+  packageChildEdgeErrorOrNull,
+} from "#shared/package-membership.ts";
+import { transactionValidationMessageOrRethrow } from "#shared/rest/write-error.ts";
+import type { ListingParentsSection } from "#templates/admin/listings/types.ts";
+import type { ListingWithCount } from "#types";
+
+/** The nesting error message naming the offending listing. */
+const namedListingError =
+  (key: string) =>
+  (listing: EdgeListing): string =>
+    t(key, { name: listing.name });
+
+/** Error shown when the parent is itself offered as a child: single-level
+ * nesting means it cannot also gate children. */
+const parentIsChildError = namedListingError(
+  "listings_table.children_err_parent_is_child",
+);
+
+/** Error shown when a chosen child is itself a parent: single-level nesting
+ * means it cannot also be a child. */
+const childIsParentError = namedListingError(
+  "listings_table.children_err_child_is_parent",
+);
+
+/** Why `candidate` cannot be a child of `parent` for the edit-page candidate
+ * list, or null when allowed. This covers the synchronous structural and field
+ * blocks and mirrors {@link childEdgeError}, so the pre-disable and the save
+ * agree. The async add-on-reachability block is left to the save. It needs
+ * per-edge scope resolution and is the rare case. */
+const childEdgeIneligibility = (
+  parent: EdgeListing,
+  candidate: EdgeListing,
+  parentIsChild: boolean,
+  candidateIsParent: boolean,
+): string | null => {
+  if (parentIsChild) return parentIsChildError(parent);
+  if (candidateIsParent) return childIsParentError(candidate);
+  return edgeFieldError(parent, candidate);
+};
+
+export const loadListingParentsSection = async (
+  listing: ListingWithCount,
+): Promise<ListingParentsSection> => {
+  const [allListings, childIds, offeredUnderLinks] = await Promise.all([
+    getAllListings(),
+    listingChildren.getIds(listing.id),
+    hydrateListingLinks(listingParents, [listing.id]),
+  ]);
+  const linkedParents = offeredUnderLinks.listingsByKey.get(listing.id);
+  const offeredUnder = linkedParents === undefined ? [] : linkedParents;
+  const others = allListings.filter((other) => other.id !== listing.id);
+  // Single-level nesting: a listing already offered as a child cannot also be
+  // a parent, so every candidate is ineligible in that case.
+  const parentIsChild = offeredUnder.length > 0;
+  // One query for which candidates are themselves parents (so they cannot be
+  // a child), instead of an N+1 over each candidate's children.
+  const childrenOf = await listingChildren.getIdsByKeys(
+    others.map((other) => other.id),
+  );
+  const candidates = others.map((candidate) => ({
+    ineligibleReason: childEdgeIneligibility(
+      listing,
+      candidate,
+      parentIsChild,
+      requiredMapValue(
+        childrenOf,
+        candidate.id,
+        `Listing ${candidate.id} missing`,
+      ).length > 0,
+    ),
+    listing: candidate,
+  }));
+  return { candidates, childIds: new Set(childIds), offeredUnder };
+};
+
+/** Resolve the name of an opt-in add-on that `childId` orphans from a
+ * parent page of `pageIds`, or null. The default resolves add-on scopes from
+ * the LIVE listings table. That fits the HTML children form, where the parent
+ * row's `group_id` is already persisted. The admin API supplies a pending
+ * variant that resolves against an in-memory listing set carrying the
+ * submitted `group_id`. */
+type ChildOnlyAddOnResolver = (
+  childId: number,
+  pageIds: readonly number[],
+) => Promise<string | null>;
+
+/**
+ * Reject a parent→children edge set the inherited-date booking model or the v1
+ * add-on scoping cannot honour. A parent must not itself be a child, and a
+ * child must not itself be a parent.
+ *
+ * An **empty** child set is always allowed. It clears the listing's edges. A
+ * listing that is itself a child can still save its blank children form, and
+ * a stuck nested state can be cleared.
+ */
+const childEdgeError = async (
+  parent: EdgeListing,
+  parentIsChild: boolean,
+  children: { listing: ListingWithCount; isParent: boolean }[],
+  resolveChildOnlyAddOn: ChildOnlyAddOnResolver,
+): Promise<string | null> => {
+  if (children.length === 0) return null;
+  if (parentIsChild) return parentIsChildError(parent);
+  // The parent's own booking page loads add-ons from ONLY its own listing id
+  // (`getTicketContext` → `getOptionalAddOns([parent.id])`), never its group
+  // siblings, so reachability is checked against just `[parent.id]`.
+  const pageIds = [parent.id];
+  for (const { listing, isParent } of children) {
+    if (isParent) return childIsParentError(listing);
+    const fieldError = edgeFieldError(parent, listing);
+    if (fieldError) return fieldError;
+    // v1 has no child-scoped add-on render/parse path, so an add-on reachable
+    // only through the suppressed child becomes a dead end. Hard block it.
+    // A `bookable_alone` child keeps its OWN booking page, so its add-on is
+    // still reachable and the edge must not be blocked. This mirrors the
+    // modifier/listing save reachability, which count a flagged child among
+    // the live pages.
+    if (listing.bookable_alone) continue;
+    const addOn = await resolveChildOnlyAddOn(listing.id, pageIds);
+    if (addOn) return childAddOnError(addOn, listing.name);
+  }
+  return null;
+};
+
+/** The outcome of validating a parent's submitted child ids: either a
+ * user-facing error, or the cleaned set of child ids ready to persist. */
+export type ChildEdgeValidation =
+  | { ok: false; error: string }
+  | { ok: true; childIds: number[] };
+
+/**
+ * Optional group context for the admin JSON API: the parent's submitted
+ * `group_id`, applied to an in-memory listing set. The save is about to make
+ * that move, and the live `modifier_groups`→`listings` join cannot yet see
+ * it. A group-scoped add-on's reachability therefore resolves against the
+ * submitted group. Omitted by the HTML children form, whose parent row already
+ * carries its live `group_id`.
+ */
+export type ChildEdgeOptions = { wouldBeGroupIds: number[] };
+
+/** Build the add-on resolver for a child-edge validation. The HTML form uses
+ * the live-table check. The admin API uses an in-memory check against the
+ * submitted groups and mirrors {@link orphanedAddOnAfterChange}'s approach.
+ *
+ * The in-memory set carries the parent at its **submitted** `group_id`.
+ * An existing parent is remapped in place. A not-yet-created parent
+ * (placeholder id) is **appended** so it sits in that group too. Otherwise a
+ * group-scoped add-on's in-memory scope (the group's member listings) does not
+ * include the new parent, and the add-on looks unreachable from its page.
+ * That wrongly rejects a create into the add-on's own group. */
+const childOnlyAddOnResolver = async (
+  parent: EdgeListing,
+  options: ChildEdgeOptions | undefined,
+): Promise<ChildOnlyAddOnResolver> => {
+  if (!options) return childOnlyAddOnName;
+  const live = await getAllListings();
+  const membership = await listingGroups.getIdsByKeys(live.map((l) => l.id));
+  const hasParent = live.some((listing) => listing.id === parent.id);
+  const base: ListingGroupMembership[] = live.map((listing) => {
+    const withGroups = toListingGroupMembership(listing, membership);
+    return listing.id === parent.id
+      ? { ...withGroups, groupIds: options.wouldBeGroupIds }
+      : withGroups;
+  });
+  const allListings: ListingGroupMembership[] = hasParent
+    ? base
+    : [...base, { groupIds: options.wouldBeGroupIds, id: parent.id }];
+  // These scopes resolve once per save, not once per child edge.
+  const addOns = await resolveWouldBeAddOns(allListings);
+  return async (childId, pageIds) =>
+    childOnlyAddOnNameForListings(childId, pageIds, addOns);
+};
+
+/**
+ * Shared child-edge validation for the HTML form and the admin JSON API, so
+ * both enforce one rule set.
+ *
+ * `parent` is an {@link EdgeListing}, not the full row, so the API can validate
+ * edge fields for the submitted state BEFORE the row is written. A create has
+ * no persisted row yet, and an update's rename must not persist when an edge is
+ * rejected. A create passes a placeholder id no real listing can reference.
+ */
+export const validateChildEdges = async (
+  parent: EdgeListing,
+  submittedChildIds: readonly number[],
+  options?: ChildEdgeOptions,
+): Promise<ChildEdgeValidation> => {
+  const byId = await getListingsById();
+  // Drop self-edges and unknown ids, then collapse duplicates (preserving
+  // order). A repeated child id (API body `[7,7]` or repeated form values)
+  // makes `setChildIds` insert two `(parent, child)` rows and violates the
+  // unique index. Dedupe once here so validation and persist agree.
+  const childIds = unique(
+    submittedChildIds.filter(
+      (childId) => childId !== parent.id && byId.has(childId),
+    ),
+  );
+  const [parentIds, resolveChildOnlyAddOn, childrenByParent] =
+    await Promise.all([
+      listingParents.getIds(parent.id),
+      childOnlyAddOnResolver(parent, options),
+      listingChildren.getIdsByKeys(childIds),
+    ]);
+  const children = childIds.map((childId) => ({
+    isParent:
+      requiredMapValue(childrenByParent, childId, `Listing ${childId} missing`)
+        .length > 0,
+    listing: requiredMapValue(byId, childId, `Listing ${childId} missing`),
+  }));
+  const error = await childEdgeError(
+    parent,
+    parentIds.length > 0,
+    children,
+    resolveChildOnlyAddOn,
+  );
+  return error ? { error, ok: false } : { childIds, ok: true };
+};
+
+/**
+ * On validation failure the edge set is **not** written, and the error is
+ * **returned** rather than thrown, so the caller can warn the operator. A
+ * duplicate that silently drops its gate turns a gated listing into a
+ * standalone bookable copy.
+ *
+ * Validation legitimately fails when an edge is reachable only through the
+ * *source*. For example, a child whose opt-in add-on is scoped to
+ * `{originalParent, child}` dead-ends from the new parent.
+ */
+export const copyDuplicatedChildEdges = async (
+  newParent: ListingWithCount,
+  childIds: readonly number[],
+): Promise<string | null> => {
+  const result = await validateChildEdges(newParent, childIds);
+  if (!result.ok) return result.error;
+  try {
+    const packageConflict = await withTransaction((tx: TxScope) =>
+      setListingChildrenWithPackageCheckTx(tx, newParent.id, result.childIds),
+    );
+    return packageChildEdgeErrorOrNull(packageConflict);
+  } catch (error) {
+    // A child can vanish or become a parent after validation but before this
+    // transaction. The copy is already committed, so surface the localized
+    // validation message through the caller's existing warning flow rather
+    // than letting a 500 escape.
+    return transactionValidationMessageOrRethrow(error);
+  }
+};
+
+const groupChildEdges = (edges: ParentChildEdge[]): Map<number, number[]> =>
+  groupToMap(
+    (edge: ParentChildEdge) => edge.parentId,
+    (edge: ParentChildEdge) => edge.childId,
+  )(edges);
+
+const groupRemappedEdges = (
+  idMap: ReadonlyMap<number, number>,
+  relatedIdsBySource: ReadonlyMap<number, number[]>,
+  toEdge: (cloneId: number, relatedId: number) => ParentChildEdge | null,
+): Map<number, number[]> =>
+  groupChildEdges(
+    [...idMap].flatMap(([sourceId, cloneId]) =>
+      mapNotNullish((relatedId: number) => toEdge(cloneId, relatedId))(
+        requiredMapValue(
+          relatedIdsBySource,
+          sourceId,
+          `Listing ${sourceId} missing`,
+        ),
+      ),
+    ),
+  );
+
+interface GroupEdgePlan {
+  existingMode: "keep" | "replace";
+  relatedIdsBySource: ReadonlyMap<number, number[]>;
+  toEdge: (cloneId: number, relatedId: number) => ParentChildEdge | null;
+}
+
+/** Existing children are kept when an outside parent gains cloned children.
+ * Replacing them clobbers the gate it already had. */
+const copyGroupEdgePlans = async (
+  idMap: ReadonlyMap<number, number>,
+  plans: GroupEdgePlan[],
+): Promise<string[]> => {
+  const errors: string[] = [];
+  for (const plan of plans) {
+    const childrenByParent = groupRemappedEdges(
+      idMap,
+      plan.relatedIdsBySource,
+      plan.toEdge,
+    );
+    for (const [parentId, childIds] of childrenByParent) {
+      const parent = await requireListingWithCount(parentId);
+      const existing =
+        plan.existingMode === "keep"
+          ? await listingChildren.getIds(parentId)
+          : [];
+      const error = await copyDuplicatedChildEdges(parent, [
+        ...existing,
+        ...childIds,
+      ]);
+      if (error) errors.push(error);
+    }
+  }
+  return unique(errors);
+};
+
+/**
+ * Both edge directions are walked, so a cloned child is never left
+ * standalone-bookable:
+ *
+ * 1. Outgoing — a child inside the group points at its clone, a child outside
+ *    it keeps referencing the original. Either way the clone has a gate.
+ * 2. Incoming — a cloned child whose parent sits outside the group needs
+ *    `outsideParent → clonedChild`, or it becomes standalone.
+ */
+export const remapDuplicatedGroupEdges = async (
+  idMap: ReadonlyMap<number, number>,
+): Promise<string[]> => {
+  const sourceIds = [...idMap.keys()];
+  const [childrenByParent, parentsByChild] = await Promise.all([
+    listingChildren.getIdsByKeys(sourceIds),
+    listingParents.getIdsByKeys(sourceIds),
+  ]);
+  return copyGroupEdgePlans(idMap, [
+    {
+      existingMode: "replace",
+      relatedIdsBySource: childrenByParent,
+      toEdge: (cloneId, childId) => {
+        const clonedChildId = idMap.get(childId);
+        return {
+          childId: clonedChildId === undefined ? childId : clonedChildId,
+          parentId: cloneId,
+        };
+      },
+    },
+    {
+      existingMode: "keep",
+      relatedIdsBySource: parentsByChild,
+      toEdge: (cloneId, parentId) =>
+        idMap.has(parentId) ? null : { childId: cloneId, parentId },
+    },
+  ]);
+};
+
+const listingChildrenHandler = createIdEntityHandler<ListingWithCount>(
+  getListingWithCount,
+)(formGuard(CONTENT_FORM));
+
+export const handleAdminListingChildren: TypedRouteHandler<"POST /admin/listing/:id/children"> =
+  listingChildrenHandler(async (listing, _session, form, _request, { id }) => {
+    const result = await validateChildEdges(
+      listing,
+      form.getNumberArray("child_listing_ids"),
+    );
+    if (!result.ok) {
+      return redirect(`/admin/listing/${id}/edit`, result.error, false);
+    }
+    const { childIds } = result;
+    let packageConflict: PackageChildEdgeBlock | null;
+    try {
+      packageConflict = await withTransaction((tx: TxScope) =>
+        setListingChildrenWithPackageCheckTx(tx, id, childIds),
+      );
+    } catch (error) {
+      return redirect(
+        "/admin/listings",
+        transactionValidationMessageOrRethrow(error),
+        false,
+      );
+    }
+    if (packageConflict) {
+      return redirect(
+        `/admin/listing/${id}/edit`,
+        packageChildEdgeError(packageConflict),
+        false,
+      );
+    }
+    await logActivity(
+      `Listing '${listing.name}' required children set to ${childIds.length} listing${
+        childIds.length === 1 ? "" : "s"
+      }`,
+      listing,
+    );
+    return redirect(
+      `/admin/listing/${id}/edit`,
+      t("success.required_children_updated"),
+      true,
+    );
+  });

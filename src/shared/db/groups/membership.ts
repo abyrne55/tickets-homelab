@@ -1,0 +1,407 @@
+/** Group membership checks and writes that must see one transaction-local view. */
+
+import { decrypt } from "#crypto/encryption.ts";
+import type { EnvKeyEncrypted } from "#crypto/sealed.ts";
+import { inPlaceholders, resultRows, type TxScope } from "#db/client.ts";
+import {
+  checkGroupListingSettings,
+  type GroupListingSettings,
+} from "#db/groups/homogeneity.ts";
+import { groupListings } from "#db/groups/table.ts";
+import { TransactionValidationError, txIdSetInTable } from "#db/transaction.ts";
+import { byId, mapNotNullish, requiredMapValue } from "#fp";
+import { t } from "#i18n";
+import type { PackageMemberInput } from "#shared/catalog-fields/fields.ts";
+import {
+  memberBlockKey,
+  packageMemberMessage,
+  packageMemberQuantityBroken,
+  packageMemberQuantityError,
+  sitePlanMemberError,
+} from "#shared/package-membership.ts";
+import type { ListingType } from "#types";
+
+type GroupStateRow = {
+  group_id: number;
+  group_quantity: number;
+  is_package: number;
+  hide_package_listings: number;
+  listing_id: number | null;
+  listing_type: ListingType | null;
+  customisable_days: number | null;
+};
+
+export type GroupMember = GroupListingSettings & { quantity: number };
+
+export type GroupState = {
+  isPackage: boolean;
+  hideListings: boolean;
+  members: GroupMember[];
+};
+
+/** Reads the group rows and all of their current member settings together,
+ *  with each member's pick count (`group_listings.quantity`). */
+export const groupStatesTx = async (
+  tx: TxScope,
+  groupIds: readonly number[],
+): Promise<Map<number, GroupState>> => {
+  const ids = [...new Set(groupIds)];
+  if (ids.length === 0) return new Map();
+  const rows = resultRows<GroupStateRow>(
+    await tx.execute({
+      args: ids,
+      sql: `SELECT groupRow.id AS group_id, groupRow.is_package,
+                   groupRow.hide_package_listings,
+                   COALESCE(groupListing.quantity, 1) AS group_quantity,
+                   listing.id AS listing_id,
+                   listing.listing_type, listing.customisable_days
+              FROM groups AS groupRow
+              LEFT JOIN group_listings AS groupListing
+                ON groupListing.group_id = groupRow.id
+              LEFT JOIN listings AS listing ON listing.id = groupListing.listing_id
+             WHERE groupRow.id IN (${inPlaceholders(ids)})`,
+    }),
+  );
+  const states = new Map<number, GroupState>();
+  for (const row of rows) {
+    let state = states.get(row.group_id);
+    if (!state) {
+      state = {
+        hideListings: row.hide_package_listings === 1,
+        isPackage: row.is_package === 1,
+        members: [],
+      };
+      states.set(row.group_id, state);
+    }
+    if (row.listing_id !== null) {
+      state.members.push({
+        customisable_days: row.customisable_days === 1,
+        id: row.listing_id,
+        listing_type: row.listing_type!,
+        quantity: row.group_quantity,
+      });
+    }
+  }
+  return states;
+};
+
+/** Returns the set of group ids that are packages in the transaction's
+ *  current view. A catalog import derives package overrides from fresh state
+ *  rather than a pre-transaction snapshot that can go stale. */
+export const packageGroupIdsTx = txIdSetInTable(
+  "groups",
+  " AND is_package = 1",
+);
+
+type ListingStateRow = Omit<GroupListingSettings, "customisable_days"> & {
+  name: EnvKeyEncrypted;
+  assign_built_site: number;
+  customisable_days: number;
+  can_pay_more: number;
+  has_children: number;
+  has_parents: number;
+  max_quantity: number;
+  min_quantity: number;
+};
+
+export type ListingState = GroupListingSettings & {
+  name: EnvKeyEncrypted;
+  assignsBuiltSite: boolean;
+  canPayMore: boolean;
+  hasChildren: boolean;
+  hasParents: boolean;
+  maxQuantity: number;
+  minQuantity: number;
+};
+
+/** Reads the package rules' listing fields, both edge directions, and the
+ *  per-order cap in one query. */
+export const listingStatesTx = async (
+  tx: TxScope,
+  listingIds: readonly number[],
+): Promise<ListingState[]> => {
+  const ids = [...new Set(listingIds)];
+  const rows = resultRows<ListingStateRow>(
+    await tx.execute({
+      args: ids,
+      sql: `SELECT listing.id, listing.name, listing.listing_type,
+                    listing.customisable_days, listing.can_pay_more,
+                    listing.max_quantity, listing.min_quantity,
+                    listing.assign_built_site,
+                    EXISTS(SELECT 1 FROM listing_parents AS listingParent
+                             WHERE listingParent.parent_listing_id = listing.id) AS has_children,
+                    EXISTS(SELECT 1 FROM listing_parents AS listingParent
+                             WHERE listingParent.child_listing_id = listing.id) AS has_parents
+               FROM listings AS listing
+              WHERE listing.id IN (${inPlaceholders(ids)})`,
+    }),
+  );
+  const states: ListingState[] = rows.map((row) => ({
+    assignsBuiltSite: row.assign_built_site === 1,
+    canPayMore: row.can_pay_more === 1,
+    customisable_days: row.customisable_days === 1,
+    hasChildren: row.has_children === 1,
+    hasParents: row.has_parents === 1,
+    id: row.id,
+    listing_type: row.listing_type,
+    maxQuantity: row.max_quantity,
+    minQuantity: row.min_quantity,
+    name: row.name,
+  }));
+  const stateById = byId(states);
+  return mapNotNullish((id: number) => stateById.get(id))(listingIds);
+};
+
+/** Checks the package rules against the transaction's current group and edge rows.
+ *  Decrypts only the name of the first listing that fails a rule. A large
+ *  package with all-valid members does no crypto work under the write lock. */
+export const packageMembersErrorTx = async (
+  listings: readonly ListingState[],
+  group: GroupState,
+): Promise<string | null> => {
+  if (!group.isPackage) return null;
+  for (const listing of listings) {
+    const key = memberBlockKey(
+      { can_pay_more: listing.canPayMore },
+      {
+        childIds: listing.hasChildren ? [listing.id] : [],
+        parentIds: listing.hasParents ? [listing.id] : [],
+      },
+      group.hideListings,
+    );
+    if (key) {
+      return packageMemberMessage(key, await decrypt(listing.name));
+    }
+  }
+  return null;
+};
+
+/** The all-group built-site plan refusal for listings a write wants inside a
+ *  group — ordinary or package: the first plan's message, or null. Decrypts
+ *  only the name of the listing that fails. */
+export const sitePlanMemberErrorTx = async (
+  listings: readonly ListingState[],
+): Promise<string | null> => {
+  const sitePlan = listings.find((listing) => listing.assignsBuiltSite);
+  return sitePlan ? sitePlanMemberError(await decrypt(sitePlan.name)) : null;
+};
+
+/** The refusal for any join into a group that already holds a stored
+ *  built-site plan member: such a group can only lose members, never gain
+ *  them, so no join can mix the plan with normal listings. */
+export const storedPlanMemberErrorTx = async (
+  tx: TxScope,
+  groups: readonly GroupState[],
+): Promise<string | null> => {
+  const memberIds = groups.flatMap((group) =>
+    group.members.map((member) => member.id),
+  );
+  if (memberIds.length === 0) return null;
+  return sitePlanMemberErrorTx(await listingStatesTx(tx, memberIds));
+};
+
+/** The pick-count refusals for one listing against one membership quantity:
+ *  cap first, then the minimum. Decrypts the name only for a member that
+ *  fails. */
+export const memberCapErrorTx = async (
+  listing: ListingState,
+  quantity?: number,
+): Promise<string | null> => {
+  const member = {
+    max_quantity: listing.maxQuantity,
+    min_quantity: listing.minQuantity,
+    quantity,
+  };
+  if (packageMemberQuantityBroken(member) === null) return null;
+  return packageMemberQuantityError(await decrypt(listing.name), member);
+};
+
+/** The pick-count refusals for a save's submitted member quantities, judged
+ *  against each member's stored cap. Only members the write will keep are
+ *  judged (a stale or crafted id is dropped by the membership write itself);
+ *  duplicate ids collapse last-wins, so a crafted repeat cannot dodge the
+ *  check with a legal first entry. */
+export const submittedMembersCapErrorTx = async (
+  tx: TxScope,
+  groupId: number,
+  members: PackageMemberInput[],
+): Promise<string | null> => {
+  const currentIds = new Set(await groupListings.getIds(groupId, tx));
+  const quantities = new Map(
+    members
+      .filter((member) => currentIds.has(member.listingId))
+      .map((member) => [member.listingId, member.quantity]),
+  );
+  if (quantities.size === 0) return null;
+  const states = await listingStatesTx(tx, [...quantities.keys()]);
+  const stateById = byId(states);
+  for (const [listingId, quantity] of quantities) {
+    const capError = await memberCapErrorTx(
+      requiredMapValue(stateById, listingId, `Listing ${listingId} missing`),
+      quantity,
+    );
+    if (capError) return capError;
+  }
+  return null;
+};
+
+/** Rechecks every selected group after the listing row write, before membership changes. */
+export type ListingGroupMembershipValidation =
+  | { listingMissing: true }
+  | { error: string | null; listingMissing: false };
+
+type MembershipsChecker<Result> = (
+  listingIds: readonly number[],
+  groupIds: readonly number[],
+) => Promise<Result>;
+
+/** One (listing, group) membership pair judged inside the write transaction:
+ *  the group must exist, the listing must not be a built-site plan (it is
+ *  booked on its own, so this holds for ordinary groups too, not just
+ *  packages), its members must stay homogeneous, the listing must obey the
+ *  package rules, and the member's pick count must fit its cap. */
+const oneMembershipErrorTx = async (
+  listing: ListingState,
+  states: Map<number, GroupState>,
+  groupId: number,
+): Promise<string | null> => {
+  if (listing.assignsBuiltSite) {
+    return sitePlanMemberError(await decrypt(listing.name));
+  }
+  const checked = checkGroupListingSettings(
+    states.get(groupId),
+    (group) => group.members,
+    listing,
+    listing.id,
+  );
+  if (!checked.ok) return checked.error;
+  const packageError = await packageMembersErrorTx([listing], checked.group);
+  if (packageError) return packageError;
+  if (!checked.group.isPackage) return null;
+  // A membership row not yet inserted in this transaction (a fresh join)
+  // serves one unit per package, always at or below the cap.
+  const ownQuantity =
+    checked.group.members.find((member) => member.id === listing.id)
+      ?.quantity ?? 1;
+  return memberCapErrorTx(listing, ownQuantity);
+};
+
+/** The membership pairs a write creates, judged inside its transaction. */
+export type MembershipPairRef = { groupId: number; listingId: number };
+
+/** The transaction's member and group states behind a membership check, or
+ *  the refusal that stops it before any per-pair judgment: a vanished listing
+ *  row, or a stored built-site plan member in one of the groups (such a group
+ *  can only lose members, never gain them). */
+const membershipCheckStatesTx = async (
+  tx: TxScope,
+  listingIds: readonly number[],
+  groupIds: readonly number[],
+): Promise<
+  | { listingMissing: true }
+  | {
+      listings: ListingState[];
+      refusal: string | null;
+      states: Map<number, GroupState>;
+    }
+> => {
+  const listings = await listingStatesTx(tx, listingIds);
+  if (listings.length !== listingIds.length) return { listingMissing: true };
+  const states = await groupStatesTx(tx, groupIds);
+  return {
+    listings,
+    refusal: await storedPlanMemberErrorTx(tx, [...states.values()]),
+    states,
+  };
+};
+
+/** Rechecks membership pairs inside the write transaction: the group must
+ *  exist, the listing must not be a built-site plan (it is booked on its
+ *  own, so this holds for ordinary groups too, not just packages), its
+ *  members must stay homogeneous, the listing must obey the package rules,
+ *  and the member's pick count must fit its cap. `hasChildrenByListingId`
+ *  overrides a listing's intended child state (an edge written earlier in
+ *  the same transaction). */
+const validateMembershipPairsWithChildStateTx = async (
+  tx: TxScope,
+  pairs: readonly MembershipPairRef[],
+  hasChildrenByListingId: ReadonlyMap<number, boolean>,
+): Promise<ListingGroupMembershipValidation> => {
+  const loaded = await membershipCheckStatesTx(
+    tx,
+    [...new Set(pairs.map((pair) => pair.listingId))],
+    [...new Set(pairs.map((pair) => pair.groupId))],
+  );
+  if ("listingMissing" in loaded) return { listingMissing: true };
+  if (loaded.refusal) return { error: loaded.refusal, listingMissing: false };
+  const listingById = byId(loaded.listings);
+  for (const pair of pairs) {
+    const listing = requiredMapValue(
+      listingById,
+      pair.listingId,
+      `Listing ${pair.listingId} missing`,
+    );
+    const hasChildren = hasChildrenByListingId.get(listing.id);
+    const error = await oneMembershipErrorTx(
+      hasChildren === undefined ? listing : { ...listing, hasChildren },
+      loaded.states,
+      pair.groupId,
+    );
+    if (error) return { error, listingMissing: false };
+  }
+  return { error: null, listingMissing: false };
+};
+
+/** Rechecks selected listing/group membership pairs inside the write
+ *  transaction: every listed listing against every listed group. A single
+ *  new row's check, where the product is exactly the memberships it creates. */
+export const validateListingGroupMembershipsTx =
+  (tx: TxScope): MembershipsChecker<ListingGroupMembershipValidation> =>
+  (listingIds, groupIds) =>
+    validateMembershipPairsWithChildStateTx(
+      tx,
+      listingIds.flatMap((listingId) =>
+        groupIds.map((groupId) => ({ groupId, listingId })),
+      ),
+      new Map(),
+    );
+
+/** Rechecks exactly the (listing, group) pairs a write creates, inside the
+ *  write transaction. A many-listing import creates a sparse subset of the
+ *  listing×group product, and the checks must not judge memberships nobody
+ *  declared. Same refusals, same order, one batched read per side. */
+export const validateMembershipPairsTx =
+  (tx: TxScope) =>
+  (
+    pairs: readonly MembershipPairRef[],
+  ): Promise<ListingGroupMembershipValidation> =>
+    validateMembershipPairsWithChildStateTx(tx, pairs, new Map());
+
+/** Refuses on any membership revalidation outcome, so a persisted pick count
+ *  or homogeneity breach rolls the write back with its message. */
+export const requireMembershipValidation = (
+  membership: ListingGroupMembershipValidation,
+): void => {
+  if (membership.listingMissing) {
+    throw new TransactionValidationError(t("catalog_transfer.member_missing"));
+  }
+  if (membership.error) throw new TransactionValidationError(membership.error);
+};
+
+/** Rechecks one listing's selected group memberships with its intended child state. */
+export const validateListingGroupMembershipTx =
+  (
+    tx: TxScope,
+  ): ((
+    listingId: number,
+    groupIds: readonly number[],
+    hasChildren?: boolean,
+  ) => Promise<ListingGroupMembershipValidation>) =>
+  (listingId, groupIds, hasChildren) =>
+    validateMembershipPairsWithChildStateTx(
+      tx,
+      groupIds.map((groupId) => ({ groupId, listingId })),
+      hasChildren === undefined
+        ? new Map()
+        : new Map([[listingId, hasChildren]]),
+    );

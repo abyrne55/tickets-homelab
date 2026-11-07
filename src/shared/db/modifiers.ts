@@ -1,0 +1,339 @@
+/**
+ * Modifiers table operations.
+ *
+ * Modifiers are owner-defined price rules (surcharges, discounts, add-ons).
+ * There are typically only a handful, they are read on admin pages, and
+ * (for now) nothing reads them on the hot public path, so this layer talks to
+ * the table directly without a cache.
+ */
+
+import { inOwnTx, ledgerTx } from "#accounting/ledger-tx.ts";
+import { accountBalanceSubquery } from "#accounting/projection-sql.ts";
+import { decrypt, encrypt } from "#crypto/encryption.ts";
+import {
+  executeBatch,
+  inPlaceholders,
+  queryAll,
+  queryIdColumn,
+  queryOne,
+  requireOne,
+  resultRows,
+  type TxScope,
+  update,
+} from "#db/client.ts";
+import {
+  type AggregateRecalculation,
+  type AggregateValues,
+  aggregateRepairs,
+  idAndEncryptedNameSchema,
+} from "#db/common-schema.ts";
+import { defineIdTable } from "#db/define-id-table.ts";
+import { linkTableSide } from "#db/link-table.ts";
+import {
+  columnMapByIds,
+  envNameSource,
+  type ListsByIds,
+  queryAndMap,
+} from "#db/query.ts";
+import { col } from "#db/table.ts";
+import {
+  clauseArgs,
+  equals,
+  type WhereClause,
+  whereSql,
+} from "#db/where-clauses.ts";
+import { emptyListsFor, mapParallel, requiredMapValue } from "#fp";
+import type {
+  CalcKind,
+  ModifierDirection,
+  ModifierScope,
+  ModifierTrigger,
+} from "#shared/price-modifier.ts";
+import type { Modifier } from "#types";
+
+/** The stored modifier row. `total_revenue` is NOT a column — it is projected
+ * from the transfers ledger at read time (see {@link modifierRevenueSubquery})
+ * and merged onto the read type {@link Modifier} — so it is absent here, exactly
+ * as `listings.income` is absent from the listings table row. */
+export type ModifierRow = Omit<Modifier, "total_revenue">;
+
+/** Modifier input fields for create/update (camelCase, mapped to columns). */
+export type ModifierInput = {
+  name: string;
+  calcKind: CalcKind;
+  calcValue: number;
+  direction: ModifierDirection;
+  active?: boolean;
+  trigger?: ModifierTrigger;
+  code?: string;
+  codeIndex?: string | null;
+  maxPerOrder?: number | null;
+  minVisits?: number;
+  scope?: ModifierScope;
+  minSubtotal?: number;
+  stock?: number | null;
+};
+
+/** Modifiers table with CRUD operations. Name is encrypted at rest, matching
+ * the other owner-defined entities. Behavioural columns (active, trigger,
+ * scope, min_subtotal) have sensible defaults so the base create form need
+ * only supply the pricing rule; later admin fields populate the rest. */
+export const modifiersTable = defineIdTable<ModifierRow, ModifierInput>(
+  "modifiers",
+  {
+    ...idAndEncryptedNameSchema(encrypt, decrypt),
+    active: col.boolean(true),
+    calc_kind: col.simple<CalcKind>(),
+    calc_value: col.simple<number>(),
+    code: col.encryptedText(encrypt, decrypt),
+    code_index: col.withDefault<string | null>(() => null),
+    direction: col.simple<ModifierDirection>(),
+    max_per_order: col.withDefault<number | null>(() => null),
+    min_subtotal: col.withDefault(() => 0),
+    min_visits: col.withDefault(() => 0),
+    scope: col.withDefault<ModifierScope>(() => "all"),
+    stock: col.withDefault<number | null>(() => null),
+    // Trigger-maintained aggregates over modifier_usages — read-only here
+    // (generated), so insert/update never write them and the DB default / the
+    // triggers keep them current. total_revenue is no longer a column: it is
+    // projected from the transfers ledger by {@link modifierRevenueSubquery},
+    // which every loader selects alongside the stored modifier columns.
+    total_uses: col.generated<number>(),
+    trigger: col.withDefault<ModifierTrigger>(() => "automatic"),
+    usage_count: col.generated<number>(),
+  },
+);
+
+/**
+ * Subquery projecting a modifier's revenue from the ledger: the modifier
+ * account's NET balance (`balanceOf(modifier:M)`), read directly — never
+ * negated. A surcharge bills the attendee (attendee→modifier), a discount funds
+ * them (modifier→attendee), so the signed balance is exactly the modifier's net
+ * effect on revenue. `idExpr` is the SQL for the modifier's id in the
+ * surrounding query (always qualified — `modifiers.id` — because the correlated
+ * subquery's FROM is `transfers`, which also has an `id`). Reused by every
+ * modifier loader so revenue is read from the ledger in exactly one place,
+ * never off the now-dropped column. The trailing `AS total_revenue` names the
+ * projected column.
+ */
+export const modifierRevenueSubquery = (idExpr: string): string =>
+  `${accountBalanceSubquery("modifier", idExpr)} AS total_revenue`;
+const MODIFIER_COLUMNS = modifiersTable.columns.join(", ");
+
+/** Decrypt a modifier row and merge the ledger-projected total_revenue its
+ * loader selected alongside the stored modifier columns. The row carries
+ * `total_revenue` from {@link modifierRevenueSubquery} (the column itself is
+ * gone), so it is always a number. Mirrors `decryptListingWithCount`'s
+ * attach-the-projection step. */
+const mapModifierRow = async (row: Modifier): Promise<Modifier> => ({
+  ...(await modifiersTable.fromDb(row)),
+  total_revenue: Number(row.total_revenue),
+});
+
+/** Execute a query and decrypt the resulting modifier rows, merging the
+ * ledger-projected total_revenue every loader selects. */
+const queryModifiers = queryAndMap<Modifier, Modifier>(mapModifierRow);
+
+const modifierSelect = (parts: WhereClause[] = []): string =>
+  `SELECT ${MODIFIER_COLUMNS}, ${modifierRevenueSubquery("modifiers.id")} FROM modifiers${whereSql(parts)}`;
+
+/** Read the modifiers the clauses select, decrypted, oldest first. */
+const queryModifiersWhere = (parts: WhereClause[]): Promise<Modifier[]> =>
+  queryModifiers(`${modifierSelect(parts)} ORDER BY id ASC`, clauseArgs(parts));
+
+/** Get all modifiers, decrypted, ordered by id. */
+export const getAllModifiers = (): Promise<Modifier[]> =>
+  queryModifiersWhere([]);
+
+/** Read and decrypt names only for the requested modifier ids. */
+export const getModifierNamesByIds = envNameSource(
+  "modifiers",
+  "modifier",
+).byIds;
+
+/** Get the active modifiers, decrypted, ordered by id. An optional transaction
+ * reads the same rows through it, so a reachability guard inside a write
+ * transaction sees that transaction's own earlier writes. */
+export const getActiveModifiers = async (tx?: TxScope): Promise<Modifier[]> => {
+  const parts = equals("active", 1);
+  const sql = `${modifierSelect(parts)} ORDER BY id ASC`;
+  const args = clauseArgs(parts);
+  return tx === undefined
+    ? queryModifiersWhere(parts)
+    : mapParallel(mapModifierRow)(
+        resultRows<Modifier>(await tx.execute({ args, sql })),
+      );
+};
+
+/** Get a single modifier by id, decrypted, with its ledger-projected
+ * total_revenue — the single-row read the admin edit/recalculate pages use, so
+ * they see the projected figure rather than the dropped column (the bare
+ * a plain read of the table returns only the stored {@link ModifierRow}). */
+export const getModifier = async (id: number): Promise<Modifier | null> => {
+  const parts = equals("id", id);
+  const row = await queryOne<Modifier>(
+    modifierSelect(parts),
+    clauseArgs(parts),
+  );
+  return row ? mapModifierRow(row) : null;
+};
+
+export const MODIFIER_AGGREGATE_FIELDS = ["total_uses", "usage_count"] as const;
+
+export type ModifierAggregateField = (typeof MODIFIER_AGGREGATE_FIELDS)[number];
+
+export type ModifierAggregateValues = AggregateValues<ModifierAggregateField>;
+
+export type ModifierAggregateRecalculation =
+  AggregateRecalculation<ModifierAggregateField>;
+
+/** The modifier count aggregates as they would be if rebuilt from usage rows.
+ * Takes the stored {@link ModifierRow} — total_revenue is no longer a
+ * recalculable aggregate (it projects from the ledger), so only the counts are
+ * compared. */
+export const getModifierAggregateRecalculation = async (
+  modifier: ModifierRow,
+): Promise<ModifierAggregateRecalculation> => {
+  const row = await requireOne<ModifierAggregateValues>(
+    `SELECT
+       COALESCE(SUM(quantity), 0) AS total_uses,
+       COUNT(*) AS usage_count
+     FROM modifier_usages
+     WHERE modifier_id = ?`,
+    [modifier.id],
+  );
+  return {
+    total_uses: { current: modifier.total_uses, recalculated: row.total_uses },
+    usage_count: {
+      current: modifier.usage_count,
+      recalculated: row.usage_count,
+    },
+  };
+};
+
+/**
+ * Correct a modifier's projected revenue to `targetRevenue` in its own write
+ * transaction — the standalone form of `ledgerTx.correct.modifierRevenue` (see
+ * {@link ledgerTx}). Revenue is `balanceOf(modifier:M)`, so raising it credits the
+ * modifier account (`writeoff → modifier`) and lowering it debits it
+ * (`modifier → writeoff`); the signed balance moves by the delta either way. The
+ * delta is recomputed from the current projection read inside the transaction, so
+ * re-submitting the same target is idempotent and a no-op when already met.
+ */
+export const adjustModifierRevenue = inOwnTx(ledgerTx.correct.modifierRevenue);
+
+/** Write the operator's typed modifier aggregates, or rebuild chosen ones from
+ * the usage rows they count. */
+export const modifierAggregates = aggregateRepairs<ModifierAggregateField>(
+  "modifiers",
+  {
+    total_uses:
+      "total_uses = COALESCE((SELECT SUM(quantity) FROM modifier_usages WHERE modifier_id = ?), 0)",
+    usage_count:
+      "usage_count = (SELECT COUNT(*) FROM modifier_usages WHERE modifier_id = ?)",
+  },
+);
+
+/** The listings a "listings"-scoped modifier is charged on, keyed by modifier
+ * id: `getIds` reads them (the admin scope editor), `setIds` replaces the set
+ * on save (deduped, idempotent). */
+export const modifierListings = linkTableSide(
+  "modifier_listings",
+  "modifier_id",
+  "listing_id",
+);
+
+/** The groups a "groups"-scoped modifier is charged on, keyed by modifier id —
+ * same shape as {@link modifierListings}. */
+export const modifierGroups = linkTableSide(
+  "modifier_groups",
+  "modifier_id",
+  "group_id",
+);
+
+type ModifierListingLinkRow = { listing_id: number; modifier_id: number };
+
+const appendModifierListingLinks = (
+  links: Map<number, number[]>,
+  rows: ModifierListingLinkRow[],
+): Map<number, number[]> => {
+  for (const row of rows) {
+    requiredMapValue(
+      links,
+      row.modifier_id,
+      `Modifier ${row.modifier_id} missing`,
+    ).push(row.listing_id);
+  }
+  return links;
+};
+
+/** Build a batched modifier->listing scope lookup: the returned function runs
+ * `buildSql` (given the bound `IN (...)` placeholders) and buckets the rows by
+ * modifier id. */
+const modifierScopeListingIdsLookup =
+  (buildSql: (placeholders: string) => string) =>
+  async (
+    modifierIds: number[],
+    tx?: TxScope,
+  ): Promise<Map<number, number[]>> => {
+    if (modifierIds.length === 0) return new Map();
+    const sql = buildSql(inPlaceholders(modifierIds));
+    const rows =
+      tx === undefined
+        ? await queryAll<ModifierListingLinkRow>(sql, modifierIds)
+        : resultRows<ModifierListingLinkRow>(
+            await tx.execute({ args: modifierIds, sql }),
+          );
+    return appendModifierListingLinks(
+      emptyListsFor<number, number>(modifierIds),
+      rows,
+    );
+  };
+
+/** Listing ids belonging to linked groups for each group-scoped modifier id. */
+export const getModifierGroupListingIdsByModifierId =
+  modifierScopeListingIdsLookup(
+    (placeholders) =>
+      `SELECT modifierGroup.modifier_id, groupListing.listing_id AS listing_id
+       FROM modifier_groups AS modifierGroup
+         JOIN group_listings AS groupListing ON groupListing.group_id = modifierGroup.group_id
+       WHERE modifierGroup.modifier_id IN (${placeholders})`,
+  );
+
+/** Answer ids an "answer"-triggered modifier is linked to (for the admin
+ * editor) — i.e. the answers whose modifier_id points at this modifier. */
+export const getModifierAnswerIds = (modifierId: number): Promise<number[]> =>
+  queryIdColumn("SELECT id FROM answers WHERE modifier_id = ?", [modifierId]);
+
+/** Point the given answers at an "answer"-triggered modifier (and clear any
+ * answers previously pointing at it), so saving the editor is idempotent and
+ * an answer carries at most one modifier. The links live on the answers rows
+ * themselves (a `modifier_id` column), so this is a clear-then-point batch
+ * rather than a link-table replace. */
+export const setModifierAnswers = (
+  modifierId: number,
+  answerIds: number[],
+): Promise<void> =>
+  executeBatch([
+    update("answers", { modifier_id: null }, { modifier_id: modifierId }),
+    ...answerIds.map((id) =>
+      update("answers", { modifier_id: modifierId }, { id }),
+    ),
+  ]);
+
+/** Selected answer id → the "answer"-trigger modifier it activates (as a
+ * single-element list, absent when the answer has no modifier), keyed for
+ * resolve so a modifier's quantity totals across every chosen answer that
+ * points at it. */
+export const modifierIdsByAnswerId: ListsByIds = async (answerIds) =>
+  new Map(
+    [
+      ...(await columnMapByIds(
+        "answers",
+        "answer",
+        "modifier_id",
+        answerIds,
+        " AND answer.modifier_id IS NOT NULL",
+      )),
+    ].map(([id, modifierId]) => [id, [modifierId]]),
+  );

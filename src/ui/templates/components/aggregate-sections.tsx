@@ -1,0 +1,277 @@
+import { type Child, Raw } from "#jsx/jsx-runtime.ts";
+import { isReadOnly } from "#shared/env.ts";
+import type { Field } from "#shared/forms/field.ts";
+import { renderFields } from "#shared/forms/rendering.tsx";
+import type { FlashPageRenderer } from "#templates/admin/admin-page-spec.tsx";
+import { adminRecalculatePage } from "#templates/admin/recalculate.tsx";
+import type { IconName } from "#templates/components/actions.tsx";
+import { mappedItems } from "#templates/components/item-list.tsx";
+import { PageBlock } from "#templates/components/page-structure.tsx";
+import { saveFormComponent } from "#templates/components/save-form.tsx";
+import type { AdminSession } from "#types";
+
+type StackBaseProps = {
+  children: Child;
+  className?: string | undefined;
+};
+
+/** A form section: a bordered-off group of fields led by a <legend>. The
+ * fieldset is already a flex column with the standard gap, so its children
+ * stack on their own — no wrapper needed. */
+export const SectionFieldset = ({
+  children,
+  className,
+  legend,
+}: StackBaseProps & { legend: string }): JSX.Element => (
+  <fieldset class={className}>
+    <legend>{legend}</legend>
+    {children}
+  </fieldset>
+);
+
+/**
+ * One section of a form: a heading (rendered as the fieldset's <legend>) and
+ * the fields that belong under it. This is the ONLY shape a form section takes
+ * — model a form as a `FormSection[]` and render it with {@link FormSections},
+ * so a section header can never drift back into a hand-rolled <h3>. Build the
+ * list with `compact` to drop sections that don't apply (see the attendee
+ * form's `editFormSections`).
+ *
+ * A blank or absent `className` falls back to the shared "listing-section"
+ * legend styling; pass a `className` to override it — include "listing-section"
+ * plus any modifier, as the listing form's daily section does.
+ */
+export type FormSection = {
+  legend: string;
+  className?: string | undefined;
+  children: Child;
+};
+
+/** Build a "render the whole list" function from a "render one section"
+ *  function: each section is rendered in order and the results are joined
+ *  into one fragment. Shared by the form-section and guide-section folds. */
+export const sectionsRenderer =
+  <Section,>(
+    renderSection: (section: Section) => JSX.Element,
+  ): ((sections: readonly Section[]) => JSX.Element) =>
+  (sections: readonly Section[]): JSX.Element => (
+    <>{sections.map(renderSection)}</>
+  );
+
+/** Render a form's `FormSection[]` as a run of {@link SectionFieldset}s. */
+export const FormSections = ({
+  sections,
+}: {
+  sections: readonly FormSection[];
+}): JSX.Element =>
+  sectionsRenderer((section: FormSection) => (
+    <SectionFieldset
+      className={section.className || "listing-section"}
+      legend={section.legend}
+    >
+      {section.children}
+    </SectionFieldset>
+  ))(sections);
+
+export const StackDetails = ({
+  children,
+  className,
+  open,
+  summary,
+}: StackBaseProps & {
+  open?: boolean;
+  summary: string;
+}): JSX.Element => (
+  <details class={className} open={open}>
+    <summary>{summary}</summary>
+    <PageBlock>{children}</PageBlock>
+  </details>
+);
+
+export const CheckboxFieldset = ({
+  children,
+  className,
+  hint,
+  legend,
+}: {
+  children: Child;
+  className: string;
+  hint: string;
+  legend: string;
+}): JSX.Element => (
+  <SectionFieldset className={className} legend={legend}>
+    <p>
+      <small>{hint}</small>
+    </p>
+    {children}
+  </SectionFieldset>
+);
+
+export const CheckboxLabel = ({
+  checked,
+  children,
+  className,
+  disabled,
+  label,
+  name,
+  value,
+}: {
+  checked: boolean | undefined;
+  children?: Child;
+  className?: string | undefined;
+  disabled?: boolean;
+  label: Child;
+  name: string;
+  value?: string;
+}): JSX.Element => (
+  <label class={className}>
+    <input
+      checked={checked}
+      disabled={disabled || undefined}
+      name={name}
+      type="checkbox"
+      value={value}
+    />
+    {label}
+    {children}
+  </label>
+);
+
+export const IdCheckboxLabel = ({
+  checkedIds,
+  children,
+  id,
+  label,
+  name,
+}: {
+  checkedIds: ReadonlySet<number>;
+  children?: Child;
+  id: number;
+  label: Child;
+  name: string;
+}): JSX.Element => (
+  <CheckboxLabel
+    checked={checkedIds.has(id) || undefined}
+    label={label}
+    name={name}
+    value={String(id)}
+  >
+    {children}
+  </CheckboxLabel>
+);
+
+/** One tick box per {id, name} item, all submitting under the one repeated
+ * form field name. Wrappers stay with the caller: this is only the list. */
+export const ItemCheckboxList = <T extends { id: number; name: string }>({
+  checkedIds,
+  items,
+  name,
+}: {
+  checkedIds: ReadonlySet<number>;
+  items: readonly T[];
+  name: string;
+}): JSX.Element =>
+  mappedItems(items, (item) => (
+    <CheckboxLabel
+      checked={checkedIds.has(item.id) || undefined}
+      label={` ${item.name}`}
+      name={name}
+      value={String(item.id)}
+    />
+  ));
+
+export const CheckboxesFieldset = <T extends { id: number; name: string }>({
+  fieldName,
+  noneMessage,
+  options,
+  selected,
+}: {
+  fieldName: string;
+  noneMessage: string;
+  options: T[];
+  selected: number[];
+}): JSX.Element =>
+  options.length === 0 ? (
+    <p>{noneMessage}</p>
+  ) : (
+    <fieldset class="checkboxes">
+      <ItemCheckboxList
+        checkedIds={new Set(selected)}
+        items={options}
+        name={fieldName}
+      />
+    </fieldset>
+  );
+
+export const CheckboxForm = saveFormComponent<{
+  action: string;
+  children: Child;
+  id?: string;
+  submitIcon?: IconName;
+  submitLabel: string;
+}>(({ children, submitIcon = "save", submitLabel }) => ({
+  children: <fieldset class="checkboxes">{children}</fieldset>,
+  submitIcon,
+  submitLabel,
+}));
+
+export type RunningTotalsConfig = {
+  className?: string;
+  fields: Field[];
+  legend: string;
+  note: string;
+  recalculateHref: string;
+  recalculateLabel: string;
+  values: Record<string, string | number | null>;
+};
+
+export const RunningTotalsFieldset = ({
+  children,
+  config,
+}: {
+  children?: JSX.Element;
+  config: RunningTotalsConfig;
+}): JSX.Element => (
+  <SectionFieldset className={config.className} legend={config.legend}>
+    {children}
+    <p>
+      <small>{config.note}</small>
+    </p>
+    <Raw html={renderFields(config.fields, config.values)} />
+    <p>
+      {/* The recalculate route is a write, blocked in read-only mode, so show
+          its label as plain text there rather than a link that can't work. */}
+      {isReadOnly() ? (
+        config.recalculateLabel
+      ) : (
+        <a href={config.recalculateHref}>{config.recalculateLabel}</a>
+      )}
+    </p>
+  </SectionFieldset>
+);
+
+export const recalculatePageRenderer =
+  (
+    config: Omit<
+      Parameters<typeof adminRecalculatePage>[0],
+      "error" | "session" | "success"
+    >,
+  ): FlashPageRenderer =>
+  (session, error, success) =>
+    adminRecalculatePage({ ...config, error, session, success });
+
+/** Binds a two-argument recalculate renderer (which captures the record and its
+ *  recounted snapshot) to the per-request `(session, error?, success?)` tail the
+ *  listing and modifier recalculate page routes call with. */
+export const bindRecalculatePage =
+  <Record, Snapshot>(
+    renderer: (record: Record, snapshot: Snapshot) => FlashPageRenderer,
+  ): ((
+    record: Record,
+    snapshot: Snapshot,
+    session: AdminSession,
+    error?: string,
+    success?: string,
+  ) => string) =>
+  (record, snapshot, session, error, success) =>
+    renderer(record, snapshot)(session, error, success);

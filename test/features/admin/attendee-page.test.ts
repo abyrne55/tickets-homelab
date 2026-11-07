@@ -1,0 +1,302 @@
+/**
+ * The tabbed attendee page as a whole: which tabs each role may open, and what
+ * each one puts on the page. The definition is closed over by
+ * `defineEntityPage`, so everything here goes through a real render.
+ */
+
+import { assert, assertStringIncludes } from "@std/assert";
+import { expect } from "@std/expect";
+import { describe, it as test } from "@std/testing/bdd";
+import { takePooledSiteForBuyer } from "#db/built-sites/claims.ts";
+import { getAssignableBuiltSites, insertBuiltSite } from "#db/built-sites.ts";
+import { attendeePage } from "#routes/admin/attendee-page.ts";
+import { paymentRecoveryAction } from "#routes/admin/attendees-route-helpers.ts";
+import { setBookingLineQuantity } from "#test/features/admin/refunds-helpers.ts";
+import { describeWithEnv } from "#test-utils/db.ts";
+import { createPaidTestAttendee } from "#test-utils/db-helpers/attendee-payments.ts";
+import { createTestAttendee } from "#test-utils/db-helpers/attendees.ts";
+import { createTestListing } from "#test-utils/db-helpers/listings.ts";
+import { planListing } from "#test-utils/db-helpers/site-plans.ts";
+import { withEnv } from "#test-utils/env.ts";
+import { seedHistoricalProcessedPayment } from "#test-utils/historical-payment-references.ts";
+import { finalizeProcessedPayment } from "#test-utils/processed-payments.ts";
+import { withTestSession } from "#test-utils/session.ts";
+import {
+  bookAttendee,
+  MANAGER,
+  OWNER,
+  renderTab,
+  tabHtml,
+} from "./attendee-page/helpers.ts";
+
+describeWithEnv("the attendee page", { db: true }, () => {
+  describe("its URLs", () => {
+    test("mints the base page and each tab beneath it", () => {
+      expect(attendeePage.path(7)).toBe("/admin/attendees/7");
+      expect(attendeePage.path(7, "ledger")).toBe("/admin/attendees/7/ledger");
+      expect(attendeePage.path(7, "actions")).toBe(
+        "/admin/attendees/7/actions",
+      );
+    });
+
+    test("selects payment recovery URLs from the attendee action schema", () => {
+      const refresh = paymentRecoveryAction("refresh-payment");
+      const review = paymentRecoveryAction("payment-review");
+      expect(refresh.action).toBe("refresh-payment");
+      expect(refresh.url(7)).toBe("/admin/attendees/7/refresh-payment");
+      expect(review.action).toBe("payment-review");
+      expect(review.url(7)).toBe("/admin/attendees/7/payment-review");
+    });
+  });
+
+  describe("an attendee that is not there", () => {
+    test("is not found rather than an empty page", async () => {
+      const response = await renderTab(999_999, "");
+      expect(response.status).toBe(404);
+    });
+  });
+
+  describe("the overview tab", () => {
+    test("names the attendee in the page title", async () => {
+      const html = await tabHtml(await bookAttendee(), "");
+      assertStringIncludes(html, "Ada Lovelace");
+    });
+
+    test("offers every tab the owner may open", async () => {
+      const id = await bookAttendee();
+      const html = await tabHtml(id, "");
+      for (const slug of [
+        "edit",
+        "logistics",
+        "ledger",
+        "activity",
+        "actions",
+      ]) {
+        assertStringIncludes(html, `/admin/attendees/${id}/${slug}`);
+      }
+    });
+
+    test("renders refresh for a complete provider-tagged payment", async () => {
+      const id = await bookAttendee();
+      await finalizeProcessedPayment("sess_page_refresh", id);
+
+      assertStringIncludes(
+        await tabHtml(id, ""),
+        `action="/admin/attendees/${id}/refresh-payment"`,
+      );
+    });
+
+    test("explains provider-unknown history without rendering a dead refresh form", async () => {
+      const id = await bookAttendee();
+      await seedHistoricalProcessedPayment(
+        "sess_page_provider_unknown",
+        id,
+        "pi_page_provider_unknown",
+      );
+
+      const html = await tabHtml(id, "");
+      assertStringIncludes(
+        html,
+        "This older payment does not record which provider took it",
+      );
+      assert(!html.includes(`action="/admin/attendees/${id}/refresh-payment"`));
+    });
+  });
+
+  describe("the ledger tab", () => {
+    test("opens for the owner", async () => {
+      const response = await renderTab(await bookAttendee(), "ledger");
+      expect(response.status).toBe(200);
+    });
+
+    test("is not found for a manager, who may not see money movements", async () => {
+      const response = await renderTab(await bookAttendee(), "ledger", MANAGER);
+      expect(response.status).toBe(404);
+    });
+
+    test("is not even linked for a manager, so no one clicks a dead link", async () => {
+      const id = await bookAttendee();
+      const html = await tabHtml(id, "", MANAGER);
+      assert(!html.includes(`/admin/attendees/${id}/ledger`));
+    });
+  });
+
+  describe("the other tabs", () => {
+    for (const slug of ["edit", "logistics", "activity"]) {
+      test(`${slug} opens`, async () => {
+        const response = await renderTab(await bookAttendee(), slug);
+        expect(response.status).toBe(200);
+      });
+    }
+
+    test("a tab that does not exist is not found", async () => {
+      const response = await renderTab(await bookAttendee(), "nonsense");
+      expect(response.status).toBe(404);
+    });
+  });
+
+  describe("the edit tab's return link", () => {
+    test("comes back to wherever the caller said", async () => {
+      const id = await bookAttendee();
+      const response = await withTestSession(() =>
+        attendeePage.renderPage(OWNER, id, "edit", {
+          query: new URLSearchParams({ return_url: "/admin/calendar" }),
+        }),
+      );
+      // The hidden field itself — the admin nav also links /admin/calendar,
+      // so a looser check would pass without the value ever being carried.
+      assertStringIncludes(
+        await response.text(),
+        'name="return_url" type="hidden" value="/admin/calendar"',
+      );
+    });
+
+    test("is not carried at all when the caller named nowhere", async () => {
+      const id = await bookAttendee();
+      const html = await tabHtml(id, "edit");
+      // No return URL means no hidden field, rather than an empty one.
+      assert(!html.includes('name="return_url" type="hidden"'));
+    });
+  });
+
+  describe("an attendee holding no places", () => {
+    test("shows a ticket link while they hold a place", async () => {
+      const listing = await createTestListing({});
+      const attendee = await createTestAttendee(
+        listing.id,
+        listing.slug,
+        "Has A Place",
+        "has@example.com",
+      );
+      const html = await tabHtml(attendee.id, "");
+      assertStringIncludes(html, "/t/");
+      assert(!html.includes("No quantity"));
+    });
+
+    test("says so instead of linking a ticket page that would not open", async () => {
+      const listing = await createTestListing({});
+      const attendee = await createTestAttendee(
+        listing.id,
+        listing.slug,
+        "No Places",
+        "none@example.com",
+      );
+      await setBookingLineQuantity(attendee.id, listing.id, 0);
+      const html = await tabHtml(attendee.id, "");
+      assertStringIncludes(html, "No quantity");
+      // The /t page 404s without a quantity, so it must not be linked at all.
+      assert(!html.includes("/t/"));
+    });
+  });
+
+  describe("the overview's activity preview", () => {
+    test("offers a way through to the full activity tab", async () => {
+      const id = await bookAttendee();
+      const html = await tabHtml(id, "");
+      // The preview's own link, not the tab strip's — the strip would still
+      // link activity even if the preview pointed somewhere else.
+      assertStringIncludes(
+        html,
+        `<a href="/admin/attendees/${id}/activity">View all activity</a>`,
+      );
+    });
+  });
+
+  describe("the overview tab itself", () => {
+    test("sits at the attendee's own address, with no slug after it", async () => {
+      const id = await bookAttendee();
+      const html = await tabHtml(id, "");
+      assertStringIncludes(html, `href="/admin/attendees/${id}"`);
+    });
+  });
+
+  describe("the admin nav", () => {
+    test("marks Attendees as the section being viewed", async () => {
+      const id = await bookAttendee();
+      const html = await tabHtml(id, "");
+      assertStringIncludes(html, 'class="active" href="/admin/attendees"');
+    });
+  });
+
+  describe("adding a note", () => {
+    test("is offered while the site can be written to", async () => {
+      const id = await bookAttendee();
+      const html = await tabHtml(id, "");
+      assertStringIncludes(html, "Add a note");
+    });
+
+    test("is not offered once the site is read-only", async () => {
+      const id = await bookAttendee();
+      using _env = withEnv({ READ_ONLY_FROM: "2000-01-01" });
+      const html = await tabHtml(id, "");
+      assert(!html.includes("Add a note"));
+    });
+  });
+
+  describe("the ledger tab", () => {
+    test("links back to the full activity history", async () => {
+      const id = await bookAttendee();
+      const html = await tabHtml(id, "ledger");
+      assertStringIncludes(
+        html,
+        `<a href="/admin/attendees/${id}/activity">See the full plain-English log on the Activity tab</a>`,
+      );
+    });
+  });
+});
+
+describeWithEnv(
+  "the overview's missing-site cue",
+  { db: true, env: { CAN_BUILD_SITES: "true" } },
+  () => {
+    test("shows the cue on a paid plan row whose buyer holds no site", async () => {
+      const plan = await planListing("Cue Plan");
+      const attendee = await createPaidTestAttendee(
+        plan.id,
+        "Pat Plan",
+        "pat@example.com",
+        "pay_cue_missing",
+      );
+      assertStringIncludes(
+        await tabHtml(attendee.id, ""),
+        "No site assigned yet",
+      );
+    });
+
+    test("hides the cue once the buyer's site is assigned", async () => {
+      const plan = await planListing("Served Cue Plan");
+      const attendee = await createPaidTestAttendee(
+        plan.id,
+        "Served Plan",
+        "served@example.com",
+        "pay_cue_served",
+      );
+      await insertBuiltSite("Cue Site", "cue.example.test", "", "", true);
+      await takePooledSiteForBuyer(
+        await getAssignableBuiltSites(),
+        attendee.id,
+        [plan.id],
+        plan.id,
+      );
+      assert(
+        !(await tabHtml(attendee.id, "")).includes("No site assigned yet"),
+      );
+    });
+
+    test("hides the cue while the sale carries no payment reference", async () => {
+      const plan = await planListing("Unrecorded Cue Plan");
+      // A recorded sale with no payment id: the money has no provider
+      // reference, so the sale never completed and the cue stays quiet.
+      const attendee = await createPaidTestAttendee(
+        plan.id,
+        "Unrecorded Plan",
+        "unrecorded@example.com",
+        "",
+        plan.unit_price,
+      );
+      assert(
+        !(await tabHtml(attendee.id, "")).includes("No site assigned yet"),
+      );
+    });
+  },
+);

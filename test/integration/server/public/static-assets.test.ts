@@ -1,0 +1,427 @@
+import { assert, assertStringIncludes } from "@std/assert";
+import { expect } from "@std/expect";
+import { describe, it as test } from "@std/testing/bdd";
+import { settings } from "#db/settings.ts";
+import { handleRequest } from "#routes";
+import { expectIncludesAll } from "#test-utils/assertions.ts";
+import { describeWithEnv } from "#test-utils/db.ts";
+import { awaitTestRequest, mockRequest } from "#test-utils/mocks.ts";
+import {
+  expect404ForNonGetStatic,
+  expectLongCacheHeaders,
+  expectStaticFile,
+} from "#test-utils/public/static-route-checks.ts";
+import { disablePublicSite, enablePublicSite } from "#test-utils/settings.ts";
+
+/** The compiled stylesheet is one media query per topic, compressed, with flat
+ * rules. Read it the way a print stylesheet resolves: take the `@media print`
+ * block, then the declarations of the rule whose selector group names the
+ * given selector. Throws when no print rule styles it. */
+const printBlockOf = (css: string): string => {
+  const start = css.indexOf("@media print");
+  if (start === -1) throw new Error("No @media print block");
+  let depth = 0;
+  for (let i = css.indexOf("{", start); i < css.length; i++) {
+    if (css[i] === "{") depth++;
+    else if (css[i] === "}" && --depth === 0) return css.slice(start, i + 1);
+  }
+  throw new Error("Unterminated @media print block");
+};
+
+/** One rule body's declarations, as a `property: value` map. Both style
+ * lookups share it so the print block and the base cascade parse the same
+ * way. */
+const declarationsOf = (body: string): Record<string, string> =>
+  Object.fromEntries(
+    body
+      .split(";")
+      .filter(Boolean)
+      .map((declaration) => {
+        const colon = declaration.indexOf(":");
+        return [
+          declaration.slice(0, colon).trim(),
+          declaration.slice(colon + 1).trim(),
+        ];
+      }),
+  );
+
+const printStyleOf = (
+  css: string,
+  selector: string,
+): Record<string, string> => {
+  const block = printBlockOf(css);
+  // Slice off the `@media print {` wrapper; the block's rules are flat.
+  const inner = block.slice(block.indexOf("{") + 1, -1);
+  for (const rule of inner.split("}")) {
+    const brace = rule.indexOf("{");
+    if (brace === -1) continue;
+    const selectors = rule
+      .slice(0, brace)
+      .split(",")
+      .map((s) => s.trim());
+    if (!selectors.includes(selector)) continue;
+    return declarationsOf(rule.slice(brace + 1));
+  }
+  throw new Error(`No print rule styles ${selector}`);
+};
+
+/** Index just past an at-rule that starts at `start`: a statement (`@layer
+ * name;`) ends at its `;`, a block (media query, keyframes) at its matching
+ * `}`. Either way it owns no top-level rule. */
+const afterAtRule = (css: string, start: number): number => {
+  const brace = css.indexOf("{", start);
+  const semicolon = css.indexOf(";", start);
+  if (semicolon !== -1 && (brace === -1 || semicolon < brace)) {
+    return semicolon + 1;
+  }
+  let depth = 0;
+  for (let i = brace; i < css.length; i++) {
+    if (css[i] === "{") depth++;
+    else if (css[i] === "}" && --depth === 0) return i + 1;
+  }
+  throw new Error("Unterminated at-rule block");
+};
+
+/** The compiled stylesheet's top-level rule whose selector group names the
+ * given selector, as its declaration map. Throws when no top-level rule
+ * styles it. */
+const styleOf = (css: string, selector: string): Record<string, string> => {
+  for (let i = 0; i < css.length; ) {
+    if (css[i] === "@") {
+      i = afterAtRule(css, i);
+      continue;
+    }
+    const brace = css.indexOf("{", i);
+    if (brace === -1) break;
+    const close = css.indexOf("}", brace);
+    if (close === -1) break;
+    if (
+      css
+        .slice(i, brace)
+        .split(",")
+        .some((s) => s.trim() === selector)
+    ) {
+      return declarationsOf(css.slice(brace + 1, close));
+    }
+    i = close + 1;
+  }
+  throw new Error(`No top-level rule styles ${selector}`);
+};
+
+describeWithEnv(
+  "server public > static assets",
+  { db: true, triggers: true },
+  () => {
+    describe("GET /robots.txt", () => {
+      test("returns plain text robots.txt", async () => {
+        await expectStaticFile("/robots.txt", "text/plain; charset=utf-8");
+      });
+
+      test("keeps the listings-only body while the public site is off", async () => {
+        await disablePublicSite();
+        const response = await handleRequest(mockRequest("/robots.txt"));
+        expect(await response.text()).toBe(
+          "User-agent: *\nAllow: /listings/\nDisallow: /\n",
+        );
+      });
+
+      test("opens every page once the public site is on", async () => {
+        await enablePublicSite();
+        try {
+          const response = await handleRequest(mockRequest("/robots.txt"));
+          expect(await response.text()).toBe(
+            "User-agent: *\nAllow: /\nSitemap: https://localhost/sitemap.xml\n",
+          );
+        } finally {
+          await disablePublicSite();
+        }
+      });
+
+      test("answers from the database with nothing cached", async () => {
+        // The static path serves before a request loads settings, so the
+        // handler must read its own key: with the process cache emptied, a
+        // body that followed a stale or empty snapshot would say Disallow.
+        await enablePublicSite();
+        settings.invalidateCache();
+        try {
+          const response = await handleRequest(mockRequest("/robots.txt"));
+          expect(await response.text()).toBe(
+            "User-agent: *\nAllow: /\nSitemap: https://localhost/sitemap.xml\n",
+          );
+        } finally {
+          await disablePublicSite();
+          settings.invalidateCache();
+        }
+      });
+
+      test("names no private path in either state", async () => {
+        for (const publicSite of [false, true] as const) {
+          if (publicSite) {
+            await enablePublicSite();
+          } else {
+            await disablePublicSite();
+          }
+          const body = await (
+            await handleRequest(mockRequest("/robots.txt"))
+          ).text();
+          for (const family of [
+            "/admin",
+            "/api",
+            "/checkout",
+            "/payment",
+            "/webhook",
+            "/ticket",
+            "/order",
+            "/pay",
+            "/renew",
+            "/join",
+            "/unsubscribe",
+            "/setup",
+            "/login",
+          ]) {
+            expect(body.includes(family)).toBe(false);
+          }
+        }
+        await disablePublicSite();
+      });
+
+      test("returns 404 for non-GET requests to /robots.txt", async () => {
+        await expect404ForNonGetStatic("/robots.txt");
+      });
+
+      test("caches briefly, because the body follows a setting", async () => {
+        const response = await handleRequest(mockRequest("/robots.txt"));
+        expect(response.headers.get("cache-control")).toBe(
+          "public, max-age=300",
+        );
+      });
+    });
+
+    describe("GET /favicon.ico", () => {
+      test("returns SVG favicon", async () => {
+        await expectStaticFile("/favicon.ico", "image/svg+xml", (svg) => {
+          expectIncludesAll(svg, ["<svg", "viewBox"]);
+        });
+      });
+
+      test("returns 404 for non-GET requests to /favicon.ico", async () => {
+        await expect404ForNonGetStatic("/favicon.ico");
+      });
+
+      test("has long cache headers", async () => {
+        await expectLongCacheHeaders("/favicon.ico");
+      });
+    });
+
+    describe("GET /icons.svg", () => {
+      test("returns SVG icon sprite", async () => {
+        await expectStaticFile("/icons.svg", "image/svg+xml", (svg) => {
+          expectIncludesAll(svg, ["<svg", 'id="plus"']);
+        });
+      });
+
+      test("returns 404 for non-GET requests to /icons.svg", async () => {
+        await expect404ForNonGetStatic("/icons.svg");
+      });
+
+      test("has long cache headers", async () => {
+        await expectLongCacheHeaders("/icons.svg");
+      });
+    });
+
+    describe("GET /style.css", () => {
+      test("returns CSS stylesheet", async () => {
+        await expectStaticFile(
+          "/style.css",
+          "text/css; charset=utf-8",
+          (css) => {
+            expectIncludesAll(css, [":root", "--color-link"]);
+          },
+        );
+      });
+
+      test("keeps description images within their container", async () => {
+        await expectStaticFile(
+          "/style.css",
+          "text/css; charset=utf-8",
+          (css) => {
+            // A description's markdown image (a poster, a map) must not
+            // spill out of the ticket card, the header, a listing row, or
+            // the prose block.
+            expect(
+              styleOf(css, ".ticket-card-description img")["max-width"],
+            ).toBe("100%");
+            expect(styleOf(css, ".description img")["max-width"]).toBe("100%");
+            expect(styleOf(css, ".description-compact img")["max-width"]).toBe(
+              "100%",
+            );
+            expect(styleOf(css, ".prose img")["max-width"]).toBe("100%");
+          },
+        );
+      });
+
+      test("prints without the site footer or the interface chrome", async () => {
+        await expectStaticFile(
+          "/style.css",
+          "text/css; charset=utf-8",
+          (css) => {
+            expect(printStyleOf(css, ".site-footer")).toEqual({
+              display: "none",
+            });
+            expect(printStyleOf(css, ".admin-footer")).toEqual({
+              display: "none",
+            });
+            expect(printStyleOf(css, ".admin-nav-group")).toEqual({
+              display: "none",
+            });
+            expect(
+              printStyleOf(css, "body:has(.admin-nav-group) main"),
+            ).toEqual({ display: "block" });
+            expect(printStyleOf(css, ".ticket-card")["box-shadow"]).toBe(
+              "none",
+            );
+            expect(printStyleOf(css, ".ticket-card-qr img")["max-width"]).toBe(
+              "8rem",
+            );
+          },
+        );
+      });
+
+      test("keeps the print block after the base rules it overrides", async () => {
+        await expectStaticFile(
+          "/style.css",
+          "text/css; charset=utf-8",
+          (css) => {
+            const printBlock = css.indexOf("@media print");
+            // A print rule the base cascade defeats is worse than none: equal
+            // specificity, so whichever rule comes later wins. The base
+            // ticket-card and admin-footer rules must precede the print block.
+            expect(css.indexOf(".ticket-card{")).toBeLessThan(printBlock);
+            expect(css.indexOf(".admin-footer{")).toBeLessThan(printBlock);
+          },
+        );
+      });
+
+      test("returns 404 for non-GET requests to /style.css", async () => {
+        await expect404ForNonGetStatic("/style.css");
+      });
+
+      test("has long cache headers", async () => {
+        await expectLongCacheHeaders("/style.css");
+      });
+    });
+
+    describe("GET /admin.js", () => {
+      test("returns JavaScript file", async () => {
+        await expectStaticFile(
+          "/admin.js",
+          "application/javascript; charset=utf-8",
+          (js) => {
+            expectIncludesAll(js, ["data-select-on-click", "data-nav-select"]);
+          },
+        );
+      });
+
+      test("bundles every admin page behavior", async () => {
+        // One distinctive runtime string per module wired up in admin.ts, in
+        // its wiring order. A missing marker means the bundle dropped that
+        // module — i.e. its init call fell out of the admin entry point (the
+        // bundler tree-shakes the whole module away with it). A marker must be
+        // a literal the module keeps: a value it builds per call survives only
+        // as the fixed part of its template.
+        const moduleMarkers = [
+          "[data-select-on-click]",
+          "data-nav-select",
+          "[data-availability-checker]",
+          "[data-day-count-label]",
+          "[data-multi-booking-slug]",
+          "[data-fill-default]",
+          "closes_at",
+          "[data-scroll-into-view]",
+          "[data-checkout-popup]",
+          "[data-payment-result]",
+          "-test-btn",
+          "[data-qr-refresh]",
+          "[data-running-total-output]",
+          "char-counter-warn",
+          "/admin/markdown-preview",
+          "/markdown-editor.js",
+          "/logistics-map.js",
+          "#manual-checkin-input",
+          ":not([data-manual-checkin])",
+          ".custom-question[data-listing-ids]",
+          "data-child-hint",
+          "data-child-dates",
+          ".daily-date-field",
+          "[data-duplicate-preview]",
+          "duration-warning-confirm",
+          "Please select at least one ticket",
+        ];
+        const response = await handleRequest(mockRequest("/admin.js"));
+        const js = await response.text();
+        for (const marker of moduleMarkers) {
+          assertStringIncludes(js, marker);
+        }
+      });
+
+      test("returns 404 for non-GET requests to /admin.js", async () => {
+        await expect404ForNonGetStatic("/admin.js");
+      });
+
+      test("has long cache headers", async () => {
+        await expectLongCacheHeaders("/admin.js");
+      });
+    });
+
+    describe("GET /scanner.js and /contact.js", () => {
+      test("serves each standalone client bundle as JavaScript", async () => {
+        for (const path of ["/scanner.js", "/contact.js"]) {
+          await expectStaticFile(path, "application/javascript; charset=utf-8");
+        }
+      });
+    });
+
+    describe("GET /admin/scanner-sw.js", () => {
+      test("serves the scanner's service worker for fresh revalidation", async () => {
+        const response = await awaitTestRequest("/admin/scanner-sw.js");
+        expect(response.status).toBe(200);
+        const contentType = response.headers.get("content-type");
+        assert(contentType !== null);
+        assertStringIncludes(contentType, "application/javascript");
+        // A year-old cached worker would keep superseded offline behavior
+        // running, so this one file revalidates instead of caching.
+        expect(response.headers.get("cache-control")).toBe("no-cache");
+      });
+    });
+
+    describe("GET /markdown-editor.js", () => {
+      test("serves the rich editor bundle with long cache headers", async () => {
+        await expectStaticFile(
+          "/markdown-editor.js",
+          "application/javascript; charset=utf-8",
+          (js) => assertStringIncludes(js, "md-editor"),
+        );
+        await expectLongCacheHeaders("/markdown-editor.js");
+      });
+    });
+
+    describe("GET /logistics-map.js and /logistics-map.css", () => {
+      test("serves the map bundle with long cache headers", async () => {
+        await expectStaticFile(
+          "/logistics-map.js",
+          "application/javascript; charset=utf-8",
+          (js) => assertStringIncludes(js, "logistics-map-pin"),
+        );
+        await expectLongCacheHeaders("/logistics-map.js");
+      });
+
+      test("serves Leaflet's stylesheet", async () => {
+        await expectStaticFile(
+          "/logistics-map.css",
+          "text/css; charset=utf-8",
+          (css) => assertStringIncludes(css, ".leaflet-pane"),
+        );
+      });
+    });
+  },
+);

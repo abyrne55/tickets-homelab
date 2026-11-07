@@ -1,0 +1,21 @@
+services:
+  - type: web
+    name: chobble-tickets
+    # Prebuilt OCI image assembled by devenv (devenv.nix,
+    # outputs.tickets-image) and published by .github/workflows/publish-image.yml
+    # on every merge to main.
+    runtime: image
+    image:
+      url: ghcr.io/chobbledotcom/tickets:latest
+    plan: starter
+    envVars:
+      - key: DB_URL
+        sync: false
+      - key: DB_TOKEN
+        sync: false
+      - key: DB_ENCRYPTION_KEY
+        sync: false
+      - key: ADMIN_EMAIL_ADDRESS
+        sync: false
+      - key: PORT
+        value: "3000"

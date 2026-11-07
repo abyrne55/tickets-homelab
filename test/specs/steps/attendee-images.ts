@@ -1,0 +1,156 @@
+import { Given, Then, When } from "@cucumber/cucumber";
+import { assert, assertStringIncludes } from "@std/assert";
+import { expect } from "@std/expect";
+import { setListingGroups } from "#db/groups.ts";
+import { t } from "#i18n";
+import {
+  BANNER_BLOCK,
+  NOTES_BLOCK,
+  NOTES_SUMMARY,
+  noteDeletePath,
+  notedAboutWithPicture,
+  pictureCount,
+  pictureTag,
+  regionFrom,
+  regionShowsPicture,
+} from "#test/specs/support/attendee-images.ts";
+import { openAdminPage, scenarioBrowser } from "#test/specs/support/browser.ts";
+import { findOrCreateGroup, groupNamed } from "#test/specs/support/groups.ts";
+import { listingIdNamed } from "#test/specs/support/listings.ts";
+import type { TicketsWorld } from "#test/specs/support/world.ts";
+
+/** The group the Attendees-page steps filter by. Every scenario starts from
+ * an empty database, so one fixed name carries nothing over. */
+const PEOPLE_LIST_GROUP = "Door groups";
+
+Given(
+  "the {word} is in a group",
+  async function (this: TicketsWorld, listing: string): Promise<void> {
+    // The Attendees page filtered to the group lists the people booked on
+    // the group's listings, so the story puts the listing in one group
+    // before anybody opens that page.
+    const group = await findOrCreateGroup(PEOPLE_LIST_GROUP);
+    await setListingGroups(listingIdNamed(this, listing), [group.id]);
+  },
+);
+
+When(
+  "the organiser opens the Attendees page filtered to the group",
+  async function (this: TicketsWorld): Promise<void> {
+    const group = await groupNamed(PEOPLE_LIST_GROUP);
+    await openAdminPage(this, `/admin/attendees?group=${group.id}`);
+  },
+);
+
+When(
+  "the organiser opens {word}'s page",
+  async function (this: TicketsWorld, who: string): Promise<void> {
+    await openAdminPage(
+      this,
+      `/admin/attendees/${this.things.require("record", who)}`,
+    );
+  },
+);
+
+Given(
+  "the organiser noted about {word} {string} with a picture called {string}",
+  async function (
+    this: TicketsWorld,
+    who: string,
+    noteText: string,
+    name: string,
+  ): Promise<void> {
+    await notedAboutWithPicture(this, who, noteText, name);
+  },
+);
+
+When(
+  "the organiser opens the Attendees page",
+  async function (this: TicketsWorld): Promise<void> {
+    await openAdminPage(this, "/admin/attendees");
+  },
+);
+
+When(
+  "the organiser opens the {word}'s overview",
+  async function (this: TicketsWorld, listing: string): Promise<void> {
+    await openAdminPage(
+      this,
+      `/admin/listing/${listingIdNamed(this, listing)}`,
+    );
+  },
+);
+
+When(
+  "the organiser opens the {word}'s roster",
+  async function (this: TicketsWorld, listing: string): Promise<void> {
+    await openAdminPage(
+      this,
+      `/admin/listing/${listingIdNamed(this, listing)}/attendees`,
+    );
+  },
+);
+
+/** The note's own "×", the link titled "Delete note". */
+const NOTE_DELETE_MARK = "×";
+
+When(
+  "the organiser asks to remove that note",
+  async function (this: TicketsWorld): Promise<void> {
+    // The "×" beside the note is the way in. This step follows the link from
+    // the page the story opened, and never opens the delete address itself.
+    await scenarioBrowser(this).clickLink(NOTE_DELETE_MARK);
+  },
+);
+
+Then(
+  "the notes block above the tabs shows the {string} picture",
+  function (this: TicketsWorld, _name: string): void {
+    const html = scenarioBrowser(this).currentHtml;
+    // The notes block sits in the page's top block, above the tab strip, and
+    // the note shows once: a copy moved below the tabs, or a second copy
+    // anywhere on the page, fails here.
+    regionShowsPicture(
+      regionFrom(html, BANNER_BLOCK, "div"),
+      NOTES_BLOCK,
+      "section",
+      this,
+    );
+    expect(pictureCount(html, this)).toBe(1);
+  },
+);
+
+Then(
+  "the notes summary shows the {string} picture",
+  function (this: TicketsWorld, _name: string): void {
+    regionShowsPicture(
+      scenarioBrowser(this).currentHtml,
+      NOTES_SUMMARY,
+      "details",
+      this,
+    );
+  },
+);
+
+Then(
+  "the organiser is on the note's delete page",
+  function (this: TicketsWorld): void {
+    const browser = scenarioBrowser(this);
+    expect(browser.currentUrl).toBe(noteDeletePath(this));
+    assertStringIncludes(browser.pageText, t("notes.delete_confirm"));
+  },
+);
+
+Then(
+  "the confirmation shows the {string} picture",
+  function (this: TicketsWorld, _name: string): void {
+    assertStringIncludes(scenarioBrowser(this).currentHtml, pictureTag(this));
+  },
+);
+
+Then(
+  "the confirmation never shows the picture reference",
+  function (this: TicketsWorld): void {
+    assert(!scenarioBrowser(this).currentHtml.includes("img#"));
+  },
+);

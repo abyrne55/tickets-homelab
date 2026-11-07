@@ -1,0 +1,232 @@
+import { assertStringIncludes } from "@std/assert";
+import { expect } from "@std/expect";
+import { it as test } from "@std/testing/bdd";
+import { groups } from "#db/groups.ts";
+import { handleRequest } from "#routes";
+import { assertPublicHtml } from "#test-utils/assertions.ts";
+import { describeWithEnv } from "#test-utils/db.ts";
+import { createTestGroup } from "#test-utils/db-helpers/groups.ts";
+import { createTestListing } from "#test-utils/db-helpers/listings.ts";
+import {
+  createTestNewsPost,
+  createTestSitePage,
+} from "#test-utils/db-helpers/misc.ts";
+import { mockRequest } from "#test-utils/mocks.ts";
+import { disablePublicSite, enablePublicSite } from "#test-utils/settings.ts";
+
+const robotsTagFor = async (path: string): Promise<Headers> =>
+  (await handleRequest(mockRequest(path))).headers;
+
+describeWithEnv(
+  "robots headers on a public thing's own page",
+  { db: true, triggers: true },
+  () => {
+    const groupKinds = [
+      { isPackage: false, label: "group" },
+      { isPackage: true, label: "package" },
+    ] as const;
+    const visibilityCases = [
+      {
+        expected: "index, follow",
+        groupHidden: false,
+        memberHidden: true,
+        name: "uses its visible setting when its member is kept off the list",
+      },
+      {
+        expected: "noindex, nofollow",
+        groupHidden: true,
+        memberHidden: false,
+        name: "uses its hidden setting when its member is visible",
+      },
+    ] as const;
+
+    for (const kind of groupKinds) {
+      for (const visibility of visibilityCases) {
+        test(`${kind.label} ${visibility.name}`, async () => {
+          const group = await createTestGroup({
+            hidden: visibility.groupHidden,
+            isPackage: kind.isPackage,
+            name: `Robots ${kind.label}`,
+          });
+          await createTestListing({
+            groupId: group.id,
+            hidden: visibility.memberHidden,
+            maxAttendees: 50,
+            name: `Robots ${kind.label} member`,
+          });
+
+          expect(
+            (await robotsTagFor(`/ticket/${group.slug}`)).get("x-robots-tag"),
+          ).toBe(visibility.expected);
+        });
+      }
+    }
+
+    test("tells robots to index a listing anybody can find", async () => {
+      const listing = await createTestListing();
+      expect(
+        (await robotsTagFor(`/ticket/${listing.slug}`)).get("x-robots-tag"),
+      ).toBe("index, follow");
+    });
+
+    test("indexes a visible listing inside a concealing package", async () => {
+      await enablePublicSite();
+      const group = await createTestGroup({
+        isPackage: true,
+        name: "Private Kit",
+      });
+      await groups.table.update(group.id, { hidePackageListings: true });
+      const listing = await createTestListing({
+        groupId: group.id,
+        name: "Separate Unit",
+      });
+
+      const html = await assertPublicHtml(
+        "/listings",
+        "Private Kit",
+        "Separate Unit",
+      );
+      assertStringIncludes(html, `href="/ticket/${listing.slug}"`);
+      expect(
+        (await robotsTagFor(`/ticket/${listing.slug}`)).get("x-robots-tag"),
+      ).toBe("index, follow");
+    });
+
+    test("mixed carts follow each package root's visibility, not its members", async () => {
+      await enablePublicSite();
+      const hiddenPackage = await createTestGroup({
+        hidden: true,
+        isPackage: true,
+        name: "Robots Hidden Pkg",
+      });
+      await groups.table.update(hiddenPackage.id, {
+        hidePackageListings: true,
+      });
+      const visiblePackage = await createTestGroup({
+        hidden: false,
+        isPackage: true,
+        name: "Robots Visible Pkg",
+      });
+      // A hidden package whose members are all visible, and a visible one
+      // holding a hidden member: the roots alone decide the cart page.
+      await createTestListing({ groupId: hiddenPackage.id, maxAttendees: 5 });
+      await createTestListing({
+        groupId: visiblePackage.id,
+        hidden: true,
+        maxAttendees: 5,
+      });
+      const extra = await createTestListing({ maxAttendees: 5 });
+
+      const withHiddenRoot = await robotsTagFor(
+        `/ticket/${hiddenPackage.slug}+${extra.slug}`,
+      );
+      const withVisibleRoot = await robotsTagFor(
+        `/ticket/${visiblePackage.slug}+${extra.slug}`,
+      );
+      expect(withHiddenRoot.get("x-robots-tag")).toBe("noindex, nofollow");
+      expect(withVisibleRoot.get("x-robots-tag")).toBe("index, follow");
+      for (const headers of [withHiddenRoot, withVisibleRoot]) {
+        expect(headers.has("x-robots-noindex")).toBe(false);
+      }
+    });
+
+    test("a hidden standalone root hides its whole mixed cart", async () => {
+      await enablePublicSite();
+      const packageGroup = await createTestGroup({
+        isPackage: true,
+        name: "Robots Cart Pkg",
+      });
+      const packageMember = await createTestListing({
+        groupId: packageGroup.id,
+        maxAttendees: 5,
+      });
+      const hiddenStandalone = await createTestListing({
+        hidden: true,
+        maxAttendees: 5,
+      });
+
+      const headers = await robotsTagFor(
+        `/ticket/${packageGroup.slug}+${hiddenStandalone.slug}`,
+      );
+
+      expect(headers.get("x-robots-tag")).toBe("noindex, nofollow");
+      expect(headers.has("x-robots-noindex")).toBe(false);
+      // The member's own inference stays out of it: the cart is hidden through
+      // the buyer's chosen hidden listing, not the visible package member.
+      expect(packageMember.hidden).toBe(false);
+    });
+
+    test("tells robots to leave a listing kept off the list alone", async () => {
+      const listing = await createTestListing({ hidden: true });
+      const headers = await robotsTagFor(`/ticket/${listing.slug}`);
+      expect(headers.get("x-robots-tag")).toBe("noindex, nofollow");
+      expect(headers.has("x-robots-noindex")).toBe(false);
+    });
+
+    test("a public site page drops noindex while the site feature is on", async () => {
+      await createTestSitePage("about-us");
+      await createTestNewsPost("Spring fair");
+      await enablePublicSite();
+      try {
+        for (const path of ["/", "/listings", "/news", "/page/about-us"]) {
+          expect((await robotsTagFor(path)).get("x-robots-tag")).toBe(
+            "index, follow",
+          );
+        }
+      } finally {
+        await disablePublicSite();
+      }
+    });
+
+    test("a hidden public page keeps noindex while the site feature is on", async () => {
+      await createTestSitePage("unlisted-page", { hidden: true });
+      await enablePublicSite();
+      try {
+        // The page still serves by its direct link, but it is out of the
+        // menus and the sitemap, so robots are told to leave it alone.
+        const response = await handleRequest(
+          mockRequest("/page/unlisted-page"),
+        );
+        expect(response.status).toBe(200);
+        expect(response.headers.get("x-robots-tag")).toBe("noindex, nofollow");
+      } finally {
+        await disablePublicSite();
+      }
+    });
+
+    test("an unknown public slug stays noindex while the site feature is on", async () => {
+      await enablePublicSite();
+      try {
+        for (const path of ["/page/unknown-page", "/news/unknown-post"]) {
+          const response = await handleRequest(mockRequest(path));
+          expect(response.status).toBe(404);
+          expect(response.headers.get("x-robots-tag")).toBe(
+            "noindex, nofollow",
+          );
+        }
+      } finally {
+        await disablePublicSite();
+      }
+    });
+
+    test("a public site page keeps noindex while the site feature is off", async () => {
+      await disablePublicSite();
+      for (const path of ["/", "/listings"]) {
+        expect((await robotsTagFor(path)).get("x-robots-tag")).toBe(
+          "noindex, nofollow",
+        );
+      }
+    });
+
+    test("a private page keeps noindex even with the public site on", async () => {
+      await enablePublicSite();
+      try {
+        expect((await robotsTagFor("/admin/login")).get("x-robots-tag")).toBe(
+          "noindex, nofollow",
+        );
+      } finally {
+        await disablePublicSite();
+      }
+    });
+  },
+);

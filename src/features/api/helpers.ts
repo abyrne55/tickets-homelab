@@ -1,0 +1,190 @@
+import { bookingError, parseCustomPrice } from "#booking/form.ts";
+import { bookingLimiter } from "#db/booking-attempts.ts";
+import { getListingWithCountBySlug } from "#db/listings/records.ts";
+import { apiError, apiResponse } from "#routes/api/cors.ts";
+import type { JsonBodyReader } from "#routes/api/json-body.ts";
+import { readJsonBody } from "#routes/read-json-body.ts";
+import { orResponse, withHeaders } from "#routes/response.ts";
+import { FormParams } from "#shared/form-data.ts";
+import { BOOKING_LOCKOUT_MS } from "#shared/limits.ts";
+import { getRequestClientIp } from "#shared/request-context.ts";
+import { parseNonNegativeInt } from "#shared/validation/number.ts";
+import { isRecord, type ListingWithCount } from "#types";
+
+const LISTING_NOT_FOUND = "Listing not found";
+
+/** The public booking JSON body for a booking that was created: the ticket
+ * link plus any balance left to collect. Shared by the standalone and folded
+ * booking paths so the two spell the contract one way. */
+export const bookingSuccessResponse = (attendee: {
+  remaining_balance: number;
+  ticket_token: string;
+}): Response =>
+  apiResponse({
+    booking: {
+      // Outstanding balance in minor units. 0 when fully paid. Positive when
+      // the booking was taken without collecting payment (no provider), so
+      // the integration knows the amount left to collect from the buyer.
+      amountOwed: attendee.remaining_balance,
+      ticketToken: attendee.ticket_token,
+      ticketUrl: `/t/${attendee.ticket_token}`,
+    },
+  });
+
+/** The public booking JSON body sending the buyer to the payment provider's
+ * hosted checkout page to finish paying. */
+export const checkoutResponse = (checkoutUrl: string): Response =>
+  apiResponse({ booking: { checkoutUrl } });
+
+/** 409 for a booking that no longer fits the remaining spots. */
+export const soldOutResponse = (): Response =>
+  apiError(bookingError.generic, 409);
+
+/** Map a failed checkout-session creation to a response. The provider's own
+ * message wins when it gave one (a 400 the buyer can act on). Otherwise the
+ * generic 500 answers. */
+export const checkoutFailedResponse = (error?: string): Response =>
+  error ? apiError(error) : apiError(bookingError.paymentSessionFailed, 500);
+
+/** Resolve a booking's `quantity` field from a JSON body. The field is
+ * required: an absent or malformed value is a 400, never a default. An
+ * explicit 0 is refused: the admin-only no-quantity sentinel must never be
+ * created through the public API. Shared by both booking paths. */
+export const resolvePositiveQuantity = (
+  body: Record<string, unknown>,
+): number | Response => {
+  if (body.quantity === undefined) {
+    return apiError("Quantity is required");
+  }
+  if (typeof body.quantity !== "number" && typeof body.quantity !== "string") {
+    return apiError("Quantity must be a whole number of 1 or more");
+  }
+  const parsedQuantity = parseNonNegativeInt(String(body.quantity));
+  if (parsedQuantity === null) {
+    return apiError("Quantity must be a whole number of 1 or more");
+  }
+  if (parsedQuantity === 0) {
+    return apiError("Quantity must be at least 1");
+  }
+  return parsedQuantity;
+};
+
+/** Resolve a pay-more listing's submitted `customPrice` (from the JSON body's
+ * `customPrice` field). Answers the validated price for a `can_pay_more`
+ * listing, `undefined` for a fixed-price one, or a 400 response when the
+ * submitted price is out of range. Shared by both booking paths so they
+ * never parse the pay-more price differently. */
+export const resolveCustomPrice = (
+  listing: ListingWithCount,
+  form: FormParams,
+): number | undefined | Response => {
+  if (!listing.can_pay_more) return;
+  const priceResult = parseCustomPrice(
+    form,
+    "customPrice",
+    listing.unit_price,
+    listing.max_price,
+  );
+  return priceResult.ok ? priceResult.price : apiError(priceResult.error);
+};
+
+/** Look up an active listing by slug. */
+const findActiveListing = async (
+  slug: string,
+): Promise<ListingWithCount | Response> => {
+  const listing = await getListingWithCountBySlug(slug);
+  if (!listing?.active) return apiError(LISTING_NOT_FOUND, 404);
+  return listing;
+};
+
+/** Parse a JSON request body, returning a 400 API response on failure */
+export const parseApiJsonBody: JsonBodyReader = async (request) => {
+  const body = await readJsonBody(request);
+  if (!body.ok) return apiError("Invalid JSON body");
+  const parsed = body.value;
+  // JsonBodyReader promises a plain record. A body like `null` or `[...]`
+  // parses fine but is not a record. Reject it here rather than letting it
+  // reach the route's field parsing and throw further in.
+  if (!isRecord(parsed)) {
+    return apiError("Invalid JSON body");
+  }
+  return parsed;
+};
+
+/** Parse the request's JSON body and, unless it fails with a 400 response,
+ * hand the parsed record to `use`. Lets a book route skip the parse-then-guard
+ * boilerplate that every JSON endpoint otherwise repeats. */
+export const withApiBody = async (
+  request: Request,
+  use: (body: Record<string, unknown>) => Promise<Response>,
+): Promise<Response> => orResponse(await parseApiJsonBody(request), use);
+
+/** A route handler keyed by a single `:slug` path param — the shape every
+ * `withSlugLoaded` wrapper returns to the router. Kept as a named type so the
+ * listing and package wrappers expose one identical contract instead of each
+ * re-spelling `(request, { slug }) => Promise<Response>`. */
+export type SlugRouteHandler = (
+  request: Request,
+  params: { slug: string },
+) => Promise<Response>;
+
+/** A handler that receives a slug-loaded value alongside the request. This is
+ * the shape `withSlugLoaded` calls after the load succeeds. Each loaded
+ * surface (an active listing, a bookable package) then only spells how its
+ * loader yields the value, not the request plumbing around it. */
+type LoadedHandler<Loaded> = (
+  request: Request,
+  loaded: Loaded,
+) => Promise<Response>;
+
+/** Wrap a `:slug` route handler that resolves its slug into a loaded value,
+ * passing the loader's 404/error `Response` straight through when it fails.
+ * The single place the load-or-respond routing is spelled, so the listing and
+ * package endpoints never drift on how a missing slug becomes a response. */
+export const withSlugLoaded =
+  <Loaded>(loader: (slug: string) => Promise<Loaded | Response>) =>
+  (handler: LoadedHandler<Loaded>): SlugRouteHandler =>
+  async (request, { slug }) => {
+    const loaded = await loader(slug);
+    return loaded instanceof Response ? loaded : handler(request, loaded);
+  };
+
+/** Look up an active listing by slug, or respond. The detail, availability,
+ * and book endpoints share this slug lookup and 404. */
+export const withActiveListing =
+  withSlugLoaded<ListingWithCount>(findActiveListing);
+
+/** Convert JSON body fields to FormParams for validation compatibility */
+export const toFormParams = (body: Record<string, unknown>): FormParams =>
+  Object.entries(body).reduce((params, [key, value]) => {
+    if (value !== null && value !== undefined) params.set(key, String(value));
+    return params;
+  }, new FormParams());
+
+/** The Retry-After header value for a lockout measured in milliseconds. HTTP
+ * delay-seconds takes whole digits only, so a fraction of a second rounds up:
+ * the header never names a moment inside the window. */
+export const lockoutRetryAfter = (lockoutMs: number): string =>
+  `${Math.ceil(lockoutMs / 1000)}`;
+
+/**
+ * Throttle a booking request by client IP. The booking endpoints are
+ * unauthenticated and create rows, send emails, and fire webhooks, so a flood
+ * can grief capacity and spam the owner. Returns a 429 response when over the
+ * limit, or null to proceed (counting this attempt).
+ */
+export const checkBookingRateLimit = async (): Promise<Response | null> => {
+  const ip = getRequestClientIp();
+  if (await bookingLimiter.isLimited(ip)) {
+    // The limiter does not expose the remaining lockout, so the header names
+    // the full window. A client then never retries before it can succeed.
+    return withHeaders(
+      apiError("Too many booking attempts. Please try again later.", 429),
+      { "retry-after": lockoutRetryAfter(BOOKING_LOCKOUT_MS) },
+    );
+  }
+  await bookingLimiter.record(ip);
+  return null;
+};
+
+export { LISTING_NOT_FOUND };

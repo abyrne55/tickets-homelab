@@ -1,0 +1,111 @@
+/** Owner acknowledgement of the exact durable payment-review work they saw. */
+
+import { acknowledgeCurrentPaymentReview } from "#db/payment-review.ts";
+import { t } from "#i18n";
+import type { PaymentWorkStatus } from "#payment/admit-move.ts";
+import { defineAdminRoutes } from "#routes/admin/route-tables.ts";
+import { adminRedirect, errorRedirect } from "#routes/response.ts";
+import { adminPaymentReviewPage } from "#templates/admin/attendees.tsx";
+import {
+  attendeeActions,
+  attendeeActionUrlWithReturn,
+} from "./attendees-route-helpers.ts";
+
+const ACTION = "payment-review";
+
+const REVIEW_GUARD = {
+  clear: "admin.attendees.payment_review_none",
+  moving: "admin.attendees.payment_review_in_progress",
+  needs_money_record: "admin.attendees.payment_review_none",
+  needs_provider_recovery: "admin.attendees.payment_review_none",
+  needs_review: null,
+} satisfies Record<PaymentWorkStatus, string | null>;
+
+const reviewError = (
+  attendeeId: number,
+  returnUrl: string,
+  messageKey: string,
+): Response =>
+  errorRedirect(
+    attendeeActionUrlWithReturn(attendeeId, ACTION, returnUrl),
+    t(messageKey),
+  );
+
+const handlePaymentReviewGet = attendeeActions[ACTION].page(
+  "/admin/attendees/:attendeeId/payment-review",
+  ({ paymentReview }) => {
+    const messageKey = REVIEW_GUARD[paymentReview.status];
+    return {
+      reason: messageKey === null ? null : t(messageKey),
+      render: ({ attendee, paymentReview }, session, returnUrl, error) =>
+        adminPaymentReviewPage(
+          {
+            attendee,
+            reviewIdentity:
+              paymentReview.status === "needs_review"
+                ? paymentReview.identity
+                : null,
+          },
+          session,
+          returnUrl,
+          error,
+        ),
+    };
+  },
+);
+
+const handlePaymentReviewPost = attendeeActions[ACTION].verified(
+  "/admin/attendees/:attendeeId/payment-review",
+  "payment review",
+  async ({ attendee, listingId }, form) => {
+    const result = await acknowledgeCurrentPaymentReview({
+      attendeeId: attendee.id,
+      listingId,
+      reviewIdentity: form.getString("review_identity"),
+    });
+    const returnUrl = form.getString("return_url");
+    switch (result.kind) {
+      case "acknowledged":
+        return adminRedirect(
+          "attendeeActions",
+          { attendeeId: attendee.id },
+          t("success.payment_reviewed"),
+          true,
+          { form },
+        );
+      case "already_acknowledged":
+        return adminRedirect(
+          "attendeeActions",
+          { attendeeId: attendee.id },
+          t("admin.attendees.payment_review_already_acknowledged"),
+          true,
+          { form, level: "info" },
+        );
+      case "review_changed":
+        return reviewError(
+          attendee.id,
+          returnUrl,
+          "admin.attendees.payment_review_changed",
+        );
+      case "nothing_to_review":
+        return adminRedirect(
+          "attendeeActions",
+          { attendeeId: attendee.id },
+          t("admin.attendees.payment_review_none"),
+          true,
+          { form, level: "info" },
+        );
+      case "claim_in_progress":
+        return reviewError(
+          attendee.id,
+          returnUrl,
+          "admin.attendees.payment_review_in_progress",
+        );
+    }
+  },
+);
+
+export const paymentReviewHandlers = defineAdminRoutes({
+  "GET /admin/attendees/:attendeeId/payment-review": handlePaymentReviewGet,
+  "POST /admin/attendees/:attendeeId/payment-review": handlePaymentReviewPost,
+});

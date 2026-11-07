@@ -1,0 +1,708 @@
+/**
+ * Authentication and session utilities
+ */
+
+import { unwrapKeyWithToken } from "#crypto/keys.ts";
+import type { WrappedKey } from "#crypto/sealed.ts";
+import { apiKeyLimiter } from "#db/api-key-attempts.ts";
+import { getApiKeyByToken, touchApiKeyLastUsed } from "#db/api-keys.ts";
+import { deleteSession, getSessionWithUser } from "#db/sessions.ts";
+import {
+  decryptAdminLevel,
+  getUserAuthFieldsById,
+  type UserAuthFields,
+} from "#db/users.ts";
+import { apiErrorResponse } from "#routes/api/cors.ts";
+import type { JsonBodyReader } from "#routes/api/json-body.ts";
+import { type AuthChannel, authFailure } from "#routes/auth-failures.ts";
+import { applyFlash, parseFormData } from "#routes/csrf.ts";
+import { lowerContentType } from "#routes/middleware.ts";
+import { readJsonBody } from "#routes/read-json-body.ts";
+import { htmlResponse } from "#routes/response.ts";
+import { parseCookies } from "#routes/url.ts";
+import {
+  type AdminDestinationDef,
+  ownerOnlyAudience,
+} from "#shared/admin-surface/definitions.ts";
+import { adminPageAudience } from "#shared/admin-surface.ts";
+import { getSessionCookieName } from "#shared/cookies.ts";
+import { signCsrfToken, verifySignedCsrfToken } from "#shared/csrf.ts";
+import type { Flash } from "#shared/flash-context.ts";
+import type { FormParams } from "#shared/form-data.ts";
+import { setSavedFormData } from "#shared/forms/saved-data.ts";
+import { SCANNER_CSRF_MAX_AGE_S } from "#shared/limits.ts";
+import { ErrorCode, logError } from "#shared/logger.ts";
+import { nowMs } from "#shared/now.ts";
+import { addPendingWork } from "#shared/pending-work.ts";
+import { getRequestClientIp } from "#shared/request-context.ts";
+import type { RequestRoute, ResponseHandler } from "#shared/response-steps.ts";
+import { getCachedSession, setCachedSession } from "#shared/session-context.ts";
+import { getSettingsNagItemsForOwner } from "#shared/settings-nags.ts";
+import {
+  type AdminLevel,
+  ALL_ADMIN_LEVELS,
+  CONTENT_ADMIN_LEVELS,
+  DELIVERY_ADMIN_LEVELS,
+  DOOR_ADMIN_LEVELS,
+  isRecord,
+  isStaffRole,
+  type NagItem,
+  SITE_ADMIN_LEVELS,
+} from "#types";
+
+/** Session with wrapped data key for private key derivation, and user role */
+export type AuthSession = {
+  token: string;
+  wrappedDataKey: WrappedKey | null;
+  userId: number;
+  adminLevel: AdminLevel;
+  settingsNagItems?: readonly NagItem[];
+};
+
+/** Report a session or API key whose user has since been deleted. Always gives
+ * back null so a caller can `return reportMissingAuthUser(...)`. */
+const reportMissingAuthUser = (missingDetail: string): null => {
+  logError({ code: ErrorCode.AUTH_INVALID_SESSION, detail: missingDetail });
+  return null;
+};
+
+/** Load the user's auth fields for an API key. When the id points at no user,
+ * log an invalid-session error and give back null so the caller can bail. */
+const loadAuthUserFields = async (
+  userId: number,
+  missingDetail: string,
+): Promise<UserAuthFields | null> =>
+  (await getUserAuthFieldsById(userId)) ?? reportMissingAuthUser(missingDetail);
+
+/** Drop the cached session (and, when the caller has a token, the stored
+ *  session row) — the one "this session is no longer valid" step every bail-out
+ *  below shares. Always resolves to null so callers can `return invalidateSession(...)`. */
+const invalidateSession = async (token?: string): Promise<null> => {
+  if (token) await deleteSession(token);
+  setCachedSession(null);
+  return null;
+};
+
+/**
+ * Get authenticated session if valid
+ * Returns null if not authenticated
+ * Includes wrapped_data_key. Callers derive the private key from it when needed.
+ * Loads user info and decrypts admin_level for role checking
+ *
+ * Validates that wrapped_data_key can be unwrapped with current DB_ENCRYPTION_KEY.
+ * If unwrapping fails (e.g., after key rotation), the session is invalidated.
+ */
+export const getAuthenticatedSession = async (
+  request: Request,
+): Promise<AuthSession | null> => {
+  const cached = getCachedSession();
+  if (cached !== undefined) return cached;
+
+  const cookies = parseCookies(request);
+  const token = cookies.get(getSessionCookieName());
+  if (!token) return invalidateSession();
+
+  const found = await getSessionWithUser(token);
+  if (!found) return invalidateSession();
+  const { session, user } = found;
+
+  if (session.expires < nowMs()) return invalidateSession(token);
+
+  if (!user) {
+    reportMissingAuthUser("Session references non-existent user, invalidating");
+    return invalidateSession(token);
+  }
+
+  const adminLevel = await decryptAdminLevel(user);
+  await signCsrfToken();
+
+  const result: AuthSession = {
+    adminLevel,
+    token,
+    userId: session.user_id,
+    wrappedDataKey: session.wrapped_data_key,
+  };
+
+  if (adminLevel === "owner") {
+    result.settingsNagItems = await getSettingsNagItemsForOwner();
+  }
+
+  setCachedSession(result);
+  return result;
+};
+
+/**
+ * Extract Bearer token from Authorization header.
+ */
+const getBearerToken = (request: Request): string | null => {
+  const auth = request.headers.get("authorization");
+  if (!auth?.startsWith("Bearer ")) return null;
+  return auth.slice(7);
+};
+
+/**
+ * Authenticate via API key (Bearer token).
+ * Returns an AuthSession (compatible with session-based auth) or null.
+ * API key auth bypasses CSRF since the key itself is the secret.
+ */
+export const getAuthenticatedApiKey = async (
+  request: Request,
+): Promise<AuthSession | null> => {
+  const token = getBearerToken(request);
+  if (!token) return null;
+
+  // Throttle brute-force guessing per IP. Only failed lookups are counted, so a
+  // client with a valid key is never locked out; once an IP is locked, even a
+  // correct token is rejected until the lockout expires.
+  const ip = getRequestClientIp();
+  if (await apiKeyLimiter.isLimited(ip)) {
+    logError({
+      code: ErrorCode.AUTH_INVALID_SESSION,
+      detail: "API key authentication rate limited",
+    });
+    return null;
+  }
+
+  const apiKeyRow = await getApiKeyByToken(token);
+  if (!apiKeyRow) {
+    await apiKeyLimiter.record(ip);
+    logError({
+      code: ErrorCode.AUTH_INVALID_SESSION,
+      detail: "Bearer token does not match any API key",
+    });
+    return null;
+  }
+
+  const user = await loadAuthUserFields(
+    apiKeyRow.user_id,
+    "API key references non-existent user",
+  );
+  if (!user) return null;
+
+  try {
+    await unwrapKeyWithToken(apiKeyRow.wrapped_data_key, token);
+  } catch {
+    logError({
+      code: ErrorCode.AUTH_INVALID_SESSION,
+      detail: "API key wrapped data key corrupted",
+    });
+    return null;
+  }
+
+  // getPrivateKey() expects token + wrappedDataKey in the session's format.
+  const wrappedDataKey = apiKeyRow.wrapped_data_key;
+
+  const adminLevel = await decryptAdminLevel(user);
+
+  // Best-effort last_used update, queued as pending work so it settles.
+  addPendingWork(
+    touchApiKeyLastUsed(apiKeyRow.id).catch(() => {
+      // A stats write must never fail the request.
+    }),
+  );
+
+  const result: AuthSession = {
+    adminLevel,
+    token,
+    userId: apiKeyRow.user_id,
+    wrappedDataKey,
+  };
+  setCachedSession(result);
+  return result;
+};
+
+/** How the request was authenticated */
+type AuthKind = "cookie" | "apiKey";
+
+/** Body parsing mode for authenticated requests */
+type BodyMode = "form" | "multipart" | "json";
+
+/** Maps body mode to the parsed body type */
+type ParsedBody<T extends BodyMode> = T extends "form"
+  ? FormParams
+  : T extends "multipart"
+    ? FormData
+    : Record<string, unknown>;
+
+/** Policy controlling authentication, CSRF, role, and body parsing */
+export type AuthPolicy<T extends BodyMode = BodyMode> = {
+  body: T;
+  /** Require exactly this role. */
+  role?: AdminLevel;
+  /** Allow any of these roles (use instead of `role` for multi-role gates). */
+  roles?: readonly AdminLevel[];
+  allowApiKey?: boolean;
+  /** Override the CSRF token max-age (seconds). Defaults to the standard 1 hour. */
+  csrfMaxAge?: number;
+};
+
+/**
+ * Whether a session's role satisfies a gate.
+ * - `roles` given: membership test.
+ * - single `role` given: exact match (owner-only or agent-only gates).
+ * - neither: any back-office staff (owner|manager). Delivery agents are
+ *   excluded by default so introducing the agent class can never widen access
+ *   to an existing staff page that didn't explicitly opt them in.
+ */
+const sessionRoleAllowed = (
+  level: AdminLevel,
+  role: AdminLevel | undefined,
+  roles: readonly AdminLevel[] | undefined,
+): boolean => {
+  if (roles) return roles.includes(level);
+  if (role) return level === role;
+  return isStaffRole(level);
+};
+
+/** Auth policy presets — use with withAuth to avoid repeating policy objects */
+export const OWNER_FORM: AuthPolicy<"form"> = { body: "form", role: "owner" };
+/** Agent-only form gate (delivery run-sheet actions). */
+export const AGENT_FORM: AuthPolicy<"form"> = { body: "form", role: "agent" };
+/** Content-editing form gate: staff plus the content-only `editor`. Used for the
+ * listing/group create-edit actions and the public-site content saves editors
+ * are opted into. */
+export const CONTENT_FORM: AuthPolicy<"form"> = {
+  body: "form",
+  roles: CONTENT_ADMIN_LEVELS,
+};
+/** Content-editing multipart gate (listing create/edit with image uploads). */
+export const CONTENT_MULTIPART: AuthPolicy<"multipart"> = {
+  body: "multipart",
+  roles: CONTENT_ADMIN_LEVELS,
+};
+/** Public-site content form gate: owner + editor only (managers stay excluded
+ * from site editing — see {@link SITE_ADMIN_LEVELS}). */
+export const SITE_FORM: AuthPolicy<"form"> = {
+  body: "form",
+  roles: SITE_ADMIN_LEVELS,
+};
+/** Public-site content multipart gate (news-post image uploads). */
+export const SITE_MULTIPART: AuthPolicy<"multipart"> = {
+  body: "multipart",
+  roles: SITE_ADMIN_LEVELS,
+};
+/** Delivery run-sheet form gate: staff + agent, but NOT editor. */
+export const DELIVERY_FORM: AuthPolicy<"form"> = {
+  body: "form",
+  roles: DELIVERY_ADMIN_LEVELS,
+};
+/** Door check-in form gate: staff + the door-only `scanner`. The ticket
+ * check-in page's check-in/out toggle is the one write a scanner login makes. */
+export const DOOR_FORM: AuthPolicy<"form"> = {
+  body: "form",
+  roles: DOOR_ADMIN_LEVELS,
+};
+/** Form gate that admits any authenticated user, agents and editors included —
+ * used for actions every logged-in user must reach, like logout. */
+export const ANY_USER_FORM: AuthPolicy<"form"> = {
+  body: "form",
+  roles: ALL_ADMIN_LEVELS,
+};
+export const OWNER_MULTIPART: AuthPolicy<"multipart"> = {
+  body: "multipart",
+  role: "owner",
+};
+export const ADMIN_API: AuthPolicy<"json"> = {
+  allowApiKey: true,
+  body: "json",
+};
+/**
+ * Content-admin JSON API: the audience the groups and listings pages declare,
+ * so an editor does through the API what the dashboard allows, and no more.
+ */
+export const CONTENT_API: AuthPolicy<"json"> = {
+  allowApiKey: true,
+  body: "json",
+  roles: CONTENT_ADMIN_LEVELS,
+};
+/**
+ * Owner-only JSON API: like ADMIN_API but restricted to the owner role, for
+ * resources whose web management is owner-only (e.g. holidays). Keeps the JSON
+ * API authorization aligned with the UI so a manager cannot perform via the API
+ * what the dashboard denies them.
+ */
+export const OWNER_API: AuthPolicy<"json"> = {
+  allowApiKey: true,
+  body: "json",
+  role: "owner",
+};
+/**
+ * Scanner check-in API: cookie-authenticated JSON with a CSRF max-age matching
+ * the session lifetime, so a logged-in admin can keep the scanner page open for
+ * a whole listing without check-ins failing on CSRF expiry. Door roles only —
+ * the same audience the scanner pages declare.
+ */
+export const SCANNER_JSON: AuthPolicy<"json"> = {
+  body: "json",
+  csrfMaxAge: SCANNER_CSRF_MAX_AGE_S,
+  roles: DOOR_ADMIN_LEVELS,
+};
+
+/** Get the current cookie session, or the channel's not-authenticated failure. */
+const cookieSessionOrFailure = async (
+  request: Request,
+  channel: AuthChannel,
+): Promise<AuthSession | Response> => {
+  const session = await getAuthenticatedSession(request);
+  return session ?? authFailure(channel, "not-authenticated");
+};
+
+/**
+ * Core session + role gate. Returns the session on success, or a
+ * channel-appropriate failure Response.
+ */
+const requireSessionFor = async (
+  request: Request,
+  channel: AuthChannel,
+  role?: AdminLevel,
+  roles?: readonly AdminLevel[],
+): Promise<AuthSession | Response> => {
+  const session = await cookieSessionOrFailure(request, channel);
+  if (isResponse(session)) return session;
+  if (!sessionRoleAllowed(session.adminLevel, role, roles)) {
+    return authFailure(
+      channel,
+      "forbidden",
+      ownerOnlyAudience({ role, roles }) ? "owner-only" : undefined,
+    );
+  }
+  return session;
+};
+
+const isResponse = (v: unknown): v is Response => v instanceof Response;
+
+/** A response callback that receives the signed-in session. */
+export type AuthSessionHandler = ResponseHandler<[session: AuthSession]>;
+
+/**
+ * Low-level session gate with custom no-session fallback (used by dashboard login page).
+ * Only checks cookie-based auth. API key auth is intentionally excluded —
+ * Bearer tokens should only authenticate /api/* endpoints via withAuth + ADMIN_API.
+ */
+export const withSession = async (
+  request: Request,
+  handler: AuthSessionHandler,
+  onNoSession: ResponseHandler,
+): Promise<Response> => {
+  const session = await getAuthenticatedSession(request);
+  return session ? handler(session) : onNoSession();
+};
+
+/** Build a session guard that admits any of the given roles. */
+const requireRolesOr =
+  (roles: readonly AdminLevel[]) =>
+  async (request: Request, handler: AuthSessionHandler): Promise<Response> => {
+    const result = await requireSessionFor(request, "html", undefined, roles);
+    return isResponse(result) ? result : handler(result);
+  };
+
+/** Require a content-editing session (staff or editor) — 403 outside
+ * {@link CONTENT_ADMIN_LEVELS}. Used for the listing/group create-edit pages. */
+export const requireContentOr = requireRolesOr(CONTENT_ADMIN_LEVELS);
+
+/** Require a site-editing session (owner or editor) — 403 outside
+ * {@link SITE_ADMIN_LEVELS}. Managers stay excluded from site editing. */
+export const requireSiteOr = requireRolesOr(SITE_ADMIN_LEVELS);
+
+/** Require a delivery-run-sheet session (staff or agent, NOT editor) — 403
+ * outside {@link DELIVERY_ADMIN_LEVELS}. */
+export const requireDeliveryOr = requireRolesOr(DELIVERY_ADMIN_LEVELS);
+
+/**
+ * The gates below take the roles they admit from the route the handler serves,
+ * so `admin-surface/areas.ts` is the one place a role is written down.
+ * `test/integration/admin-role-matrix.test.ts` asks every page as every role
+ * and proves the gate and the declaration still agree.
+ */
+
+/** A GET page's gate, admitting exactly the roles its route declares. */
+export const pageGuardFor = (
+  route: AdminDestinationDef,
+): SessionGuard<AuthSession> => requireRolesOr(route.audience);
+
+/** One record page's gate: every role that can reach any route beneath it.
+ * A tab open to a wider role sits under this same path and needs to get in;
+ * the tab's own `visible` is what keeps the narrower tabs shut. A page whose
+ * beneath-routes include a standalone tool rather than a tab names its own tab
+ * audience instead — the listing and group scanner doors are such routes, and
+ * the folded floor would otherwise admit the door-only `scanner` login to a
+ * page whose every tab hides from them. The role matrix still catches a page
+ * that freezes out a role one of its tab destinations declares. */
+export const recordPageGuardFor = (
+  route: AdminDestinationDef,
+  audience?: readonly AdminLevel[],
+): SessionGuard<AuthSession> =>
+  requireRolesOr(audience ?? adminPageAudience(route));
+
+/** A form POST's policy, admitting exactly the roles its route declares. */
+export const formPolicyFor = (
+  route: AdminDestinationDef,
+): AuthPolicy<"form"> => ({ body: "form", roles: route.audience });
+
+/** A gate a route runs before its handler: it authenticates/loads whatever
+ * the handler needs, then calls it with that data — or answers the request
+ * itself (a redirect, a 403) without ever calling it. */
+export type Guard<TArgs extends unknown[]> = (
+  request: Request,
+  handler: ResponseHandler<TArgs>,
+) => Promise<Response>;
+
+/** Session guard: require auth and call handler with session */
+export type SessionGuard<TSession> = Guard<[TSession]>;
+
+/** Turn a form auth policy into a route gate that yields its session and form. */
+export const formGuard =
+  (
+    policy: AuthPolicy<"form">,
+  ): Guard<[session: AuthSession, form: FormParams]> =>
+  (request, handler) =>
+    withAuth(request, policy, (session, form) => handler(session, form));
+
+/** Factory for authenticated GET routes whose builder returns the full
+ * Response — for pages that may 404, redirect, or set headers. Applies any
+ * flashed message first and hands its values to the builder. */
+export const authResponsePage =
+  <TSession>(requireSession: SessionGuard<TSession>) =>
+  (
+    build: ResponseHandler<[session: TSession, request: Request, flash: Flash]>,
+  ): RequestRoute =>
+  (request) =>
+    requireSession(request, (session) =>
+      build(session, request, applyFlash(request)),
+    );
+
+/** Factory for creating authenticated page handlers. The render callback is
+ * given the request too, for pages that read query params (e.g. the deliveries
+ * run sheet's date picker), and the flashed message values, for pages that
+ * thread them into the template; callers that need neither simply ignore
+ * them. */
+export const authPage =
+  <TSession>(requireSession: SessionGuard<TSession>) =>
+  (
+    render: (
+      session: TSession,
+      request: Request,
+      flash: Flash,
+    ) => string | Promise<string>,
+  ): RequestRoute =>
+    authResponsePage(requireSession)(async (session, request, flash) =>
+      htmlResponse(await render(session, request, flash)),
+    );
+
+/** What a role's response-page helper is: it takes the builder for the full
+ * Response and returns the guarded route. */
+type ResponsePageFactory = (
+  build: ResponseHandler<
+    [session: AuthSession, request: Request, flash: Flash]
+  >,
+) => RequestRoute;
+
+/** Content-editing GET route (staff or editor) whose builder returns the full
+ * Response (may 404 or redirect instead of rendering). */
+export const contentResponsePage: ResponsePageFactory =
+  authResponsePage(requireContentOr);
+
+/** Content-editing GET page (staff or editor): authenticate, apply flash,
+ * render HTML. */
+export const contentPage = authPage(requireContentOr);
+
+/** Site-editing GET page (owner or editor): authenticate, apply flash,
+ * render HTML. */
+export const sitePage = authPage(requireSiteOr);
+
+/** Delivery-run-sheet GET page (staff or agent): authenticate, apply flash,
+ * render HTML. */
+export const deliveryPage = authPage(requireDeliveryOr);
+
+/** Look up the current session (or null) and hand it to `handler`. The single
+ * place a request's session is fetched for a branch on present/absent — callers
+ * decide what each case means (fail, redirect, render). */
+export const withOptionalSession = async (
+  request: Request,
+  handler: ResponseHandler<[session: AuthSession | null]>,
+): Promise<Response> => handler(await getAuthenticatedSession(request));
+
+/** Require any authenticated user (owner, manager or agent). Used for pages
+ * that staff and delivery agents alike must reach, like the deliveries run
+ * sheet — agents are sent here, staff opt in via the Calendar submenu. Every
+ * valid session already holds one of the three roles, so authentication is the
+ * only gate. */
+const requireAnyUserOr = (
+  request: Request,
+  handler: AuthSessionHandler,
+): Promise<Response> =>
+  withOptionalSession(request, (session) =>
+    session ? handler(session) : authFailure("html", "not-authenticated"),
+  );
+
+/** Any-authenticated-user GET page: authenticate, apply flash, render HTML */
+export const anyUserPage = authPage(requireAnyUserOr);
+
+/**
+ * Safe HTTP methods (RFC 7231 §4.2.1): read-only, so a request using one cannot
+ * mutate state and carries no body. Such requests need no CSRF token — CSRF
+ * defends state-changing submissions, and cross-origin reads of the response are
+ * already blocked by the Same-Origin Policy. This lets cookie-authenticated
+ * calendar clients fetch GET /caldav/events.ics without an x-csrf-token header
+ * they have no way to attach.
+ */
+const isSafeMethod = (request: Request): boolean =>
+  request.method === "GET" || request.method === "HEAD";
+
+/** Parse JSON body, returning empty object for non-JSON GET/HEAD requests */
+const parseJsonBody: JsonBodyReader = async (request) => {
+  const contentType = lowerContentType(request);
+  const bodyRequired = !isSafeMethod(request);
+
+  if (!contentType.includes("application/json")) {
+    if (bodyRequired) {
+      return apiErrorResponse("Invalid request body");
+    }
+    return {};
+  }
+  const body = await readJsonBody(request);
+  if (!body.ok) {
+    logError({
+      code: ErrorCode.VALIDATION_FORM,
+      detail: "Malformed JSON body",
+    });
+    return apiErrorResponse("Invalid request body");
+  }
+  const parsed = body.value;
+  if (!isRecord(parsed)) {
+    return apiErrorResponse("Invalid request body");
+  }
+  return parsed;
+};
+
+/** Verify a CSRF token, returning a channel-appropriate failure or null */
+const verifyCsrf = async (
+  token: string,
+  channel: AuthChannel,
+  maxAge?: number,
+): Promise<Response | null> => {
+  if (await verifySignedCsrfToken(token, maxAge)) return null;
+  if (channel === "json") {
+    logError({ code: ErrorCode.AUTH_CSRF_MISMATCH, detail: "JSON API" });
+  }
+  return authFailure(channel, "invalid-csrf");
+};
+
+/** Validate CSRF and parse body for the given mode.
+ *
+ * `skipCsrf` only applies to JSON bodies (used for API key auth). Form and
+ * multipart bodies are always CSRF-checked because API key clients use JSON.
+ * Safe-method (GET/HEAD) JSON requests also skip CSRF: they cannot mutate state,
+ * so the token is moot — this keeps read-only JSON routes (e.g. the calendar
+ * feed) reachable by cookie sessions that can't send an x-csrf-token header.
+ * `maxAge` overrides the CSRF token expiry window (seconds). */
+const parseCsrfBody = async (
+  request: Request,
+  mode: BodyMode,
+  skipCsrf: boolean,
+  maxAge?: number,
+): Promise<FormParams | FormData | Record<string, unknown> | Response> => {
+  const channel = channelFor(mode);
+  if (mode === "json") {
+    if (!skipCsrf && !isSafeMethod(request)) {
+      const err = await verifyCsrf(
+        request.headers.get("x-csrf-token") ?? "",
+        channel,
+        maxAge,
+      );
+      if (err) return err;
+    }
+    return parseJsonBody(request);
+  }
+  if (mode === "form") {
+    const form = await parseFormData(request);
+    // Capture the submission so a later validation-failure redirect can stash
+    // it for re-filling, mirroring requireCsrfForm for public forms.
+    setSavedFormData(form);
+    const err = await verifyCsrf(form.getString("csrf_token"), channel, maxAge);
+    return err ?? form;
+  }
+  const fd = await request.formData();
+  const err = await verifyCsrf(
+    String(fd.get("csrf_token") ?? "").trim(),
+    channel,
+    maxAge,
+  );
+  return err ?? fd;
+};
+
+/** Derive the auth channel (html vs json) from the body mode */
+const channelFor = (mode: BodyMode): AuthChannel =>
+  mode === "json" ? "json" : "html";
+
+export const authenticateFor = async <T extends BodyMode>(
+  request: Request,
+  policy: AuthPolicy<T>,
+): Promise<{ session: AuthSession; authKind: AuthKind } | Response> => {
+  const channel = channelFor(policy.body);
+  let auth: { session: AuthSession; authKind: AuthKind } | Response | null =
+    null;
+  if (policy.allowApiKey) {
+    const session = await getAuthenticatedApiKey(request);
+    if (session) auth = { authKind: "apiKey", session };
+    else if (getBearerToken(request)) {
+      auth = authFailure(channel, "invalid-api-key");
+    }
+  }
+  if (auth === null) {
+    const session = await cookieSessionOrFailure(request, channel);
+    auth = isResponse(session) ? session : { authKind: "cookie", session };
+  }
+  if (isResponse(auth)) return auth;
+  return sessionRoleAllowed(auth.session.adminLevel, policy.role, policy.roles)
+    ? auth
+    : authFailure(
+        channel,
+        "forbidden",
+        ownerOnlyAudience({ role: policy.role, roles: policy.roles })
+          ? "owner-only"
+          : undefined,
+      );
+};
+
+/** Unified auth pipeline: authenticate, enforce role, validate CSRF, parse body. */
+export async function withAuth<T extends BodyMode>(
+  request: Request,
+  policy: AuthPolicy<T>,
+  handler: ResponseHandler<
+    [session: AuthSession, body: ParsedBody<T>, authKind: AuthKind]
+  >,
+): Promise<Response> {
+  const auth = await authenticateFor(request, policy);
+  if (isResponse(auth)) return auth;
+  const body = await parseCsrfBody(
+    request,
+    policy.body,
+    auth.authKind === "apiKey",
+    policy.csrfMaxAge,
+  );
+  if (isResponse(body)) return body;
+  return handler(auth.session, body as ParsedBody<T>, auth.authKind);
+}
+
+/** A curried POST route: authenticate under `policy`, then hand the session and
+ * parsed body to `handle`. The shared building block for the per-gate route
+ * wrappers (multipart listing saves, Site-tab content saves, and similar), so
+ * the authenticate-then-delegate shape lives in one place. */
+export const gatedPost =
+  <T extends BodyMode>(policy: AuthPolicy<T>) =>
+  (handle: ResponseHandler<[session: AuthSession, body: ParsedBody<T>]>) =>
+  (request: Request): Promise<Response> =>
+    withAuth(request, policy, handle);
+
+/** A content-editor POST whose body may include uploaded files. */
+export const contentMultipartRoute: (
+  handle: ResponseHandler<[session: AuthSession, body: FormData]>,
+) => RequestRoute = gatedPost(CONTENT_MULTIPART);
+
+/** A {@link gatedPost} whose handler only needs the parsed form — for POST
+ * routes that act on the form alone and never read the session. */
+export const formPost =
+  (policy: AuthPolicy<"form">) =>
+  (handle: ResponseHandler<[form: FormParams]>): RequestRoute =>
+    gatedPost(policy)((_session, form) => handle(form));

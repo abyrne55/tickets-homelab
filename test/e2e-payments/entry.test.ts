@@ -1,0 +1,112 @@
+/** Direct tests for the shared harness failure boundary. */
+
+import { assert, assertStringIncludes } from "@std/assert";
+import { expect } from "@std/expect";
+import { describe, it as test } from "@std/testing/bdd";
+import { type Stub, stub } from "@std/testing/mock";
+import { failRun, runHarness } from "#e2e/entry.ts";
+
+/** Run one boundary call with the process exit status restored afterwards. */
+const withExitCode = async (
+  run: () => Promise<void>,
+): Promise<number | undefined> => {
+  const before = process.exitCode;
+  try {
+    await run();
+    return typeof process.exitCode === "number" ? process.exitCode : undefined;
+  } finally {
+    process.exitCode = before;
+  }
+};
+
+const loggedErrors = (errors: Stub): string =>
+  errors.calls.map((call) => String(call.args[0])).join("\n");
+
+describe("failRun", () => {
+  test("reports the message and sets the failure status", async () => {
+    using errors = stub(console, "error");
+    const code = await withExitCode(() =>
+      failRun("FAIL — resend: the provider said no"),
+    );
+    expect(code).toBe(1);
+    assertStringIncludes(
+      loggedErrors(errors),
+      "FAIL — resend: the provider said no",
+    );
+  });
+});
+
+describe("runHarness", () => {
+  test("leaves a passing main alone", async () => {
+    using errors = stub(console, "error");
+    const crashes: unknown[] = [];
+    const code = await withExitCode(() =>
+      runHarness(
+        () => Promise.resolve(),
+        async (error) => {
+          crashes.push(error);
+        },
+      ),
+    );
+    expect(code).toBeUndefined();
+    expect(crashes).toHaveLength(0);
+    expect(errors.calls).toHaveLength(0);
+  });
+
+  test("reports a crash, with the exception itself, and fails the run", async () => {
+    using errors = stub(console, "error");
+    const crashes: unknown[] = [];
+    const crash = new Error("the tunnel never came up");
+    const code = await withExitCode(() =>
+      runHarness(
+        () => Promise.reject(crash),
+        async (error) => {
+          crashes.push(error);
+        },
+      ),
+    );
+    expect(code).toBe(1);
+    expect(crashes).toHaveLength(1);
+    expect(crashes[0]).toBe(crash);
+    assertStringIncludes(loggedErrors(errors), "the tunnel never came up");
+    assertStringIncludes(loggedErrors(errors), "entry.test.ts");
+  });
+
+  test("still fails the run when the crash report itself rejects", async () => {
+    using _errors = stub(console, "error");
+    const code = await withExitCode(() =>
+      runHarness(
+        () => Promise.reject(new Error("the tunnel never came up")),
+        () => Promise.reject(new Error("bug catcher unreachable")),
+      ),
+    );
+    expect(code).toBe(1);
+  });
+
+  test("falls back to the message when the error carries no stack", async () => {
+    using errors = stub(console, "error");
+    const bare = new Error("bare message");
+    delete bare.stack;
+    const code = await withExitCode(() =>
+      runHarness(
+        () => Promise.reject(bare),
+        () => Promise.resolve(),
+      ),
+    );
+    expect(code).toBe(1);
+    assertStringIncludes(loggedErrors(errors), "bare message");
+    assert(!loggedErrors(errors).includes("entry.test.ts"));
+  });
+
+  test("stringifies a crash that is not an Error", async () => {
+    using errors = stub(console, "error");
+    const code = await withExitCode(() =>
+      runHarness(
+        () => Promise.reject("a plain string failure"),
+        () => Promise.resolve(),
+      ),
+    );
+    expect(code).toBe(1);
+    assertStringIncludes(loggedErrors(errors), "a plain string failure");
+  });
+});

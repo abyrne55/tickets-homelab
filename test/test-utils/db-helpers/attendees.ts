@@ -1,0 +1,498 @@
+import { expect } from "@std/expect";
+import { stub } from "@std/testing/mock";
+import { attendeesApi } from "#db/attendees/api.ts";
+import type { ExistingLine } from "#db/attendees/atomic-update.ts";
+import { decryptAttendees } from "#db/attendees/pii.ts";
+import { getAttendeesRaw } from "#db/attendees/queries.ts";
+import { execute, requireOnePrimary } from "#db/client.ts";
+import { handleRequest } from "#routes";
+import type { ListingInput } from "#shared/catalog-fields/fields.ts";
+import { parseFlashValue } from "#shared/cookies.ts";
+import { signCsrfToken } from "#shared/csrf.ts";
+import { assertJson } from "#test-utils/assertions.ts";
+import { getTestPrivateKey } from "#test-utils/crypto.ts";
+import { extractCsrfToken } from "#test-utils/csrf.ts";
+import {
+  awaitTestRequest,
+  mockTicketFormRequest,
+  testPageHtml,
+} from "#test-utils/mocks.ts";
+import { apiRequest } from "#test-utils/session.ts";
+import type { Attendee, Listing } from "#types";
+import { createDailyTestListing, createTestListing } from "./listings.ts";
+
+export { getAttendeesRaw };
+
+/** One POST create request carrying the minimal valid body for a listing. */
+export const createBooking = (
+  listingId: number,
+  body: Record<string, unknown> = {},
+): Promise<Response> =>
+  apiRequest("/api/admin/attendees", {
+    body: {
+      email: "ada@example.com",
+      lines: [{ listingId, quantity: 1 }],
+      name: "Ada Lovelace",
+      ...body,
+    },
+    method: "POST",
+  });
+
+/** The roster endpoint decrypts and answers every booking on the listing. */
+export const rosterAttendeeIds = async (
+  listingId: number,
+): Promise<number[]> => {
+  const roster = await assertJson(
+    apiRequest(`/api/admin/listings/${listingId}/attendees`),
+    200,
+  );
+  return roster.attendees.map((attendee: { id: number }) => attendee.id);
+};
+
+/** Stub the atomic attendee create to refuse with a capacity failure, for
+ *  tests of the create-refused path. */
+export const stubRefusedAtomicCreate = () =>
+  stub(attendeesApi, "createAttendeeAtomic", () =>
+    Promise.resolve({
+      listingIds: [],
+      reason: "capacity_exceeded" as const,
+      success: false,
+    }),
+  );
+
+export const expectNoAttendeesForListings = async (
+  listingIds: number[],
+): Promise<void> => {
+  for (const listingId of listingIds) {
+    expect(await getAttendeesRaw(listingId)).toEqual([]);
+  }
+};
+
+/** Book a test attendee onto the given listing(s) directly via the DB,
+ *  bypassing the booking routes. Shared by unit tests that just need an
+ *  attendee to hang bookings or answers off. */
+/** One booking to make: a listing id on its own, or a listing with the units
+ * and the day it is booked for. */
+export type TestBooking = {
+  listingId: number;
+  quantity?: number;
+  date?: string;
+};
+
+export const bookTestAttendee = async (
+  bookings: (number | TestBooking)[],
+  name = "Alice",
+  email?: string,
+): Promise<Attendee> => {
+  const result = await attendeesApi.createAttendeeAtomic({
+    bookings: bookings.map((booking) =>
+      typeof booking === "number" ? { listingId: booking } : booking,
+    ),
+    email: email ?? `${name.toLowerCase()}@test.com`,
+    name,
+    source: "public",
+  });
+  if (!result.success) {
+    throw new Error(`Failed to create attendee: ${result.reason}`);
+  }
+  return result.attendees[0]!;
+};
+
+export const createTestAttendee = async (
+  listingId: number,
+  listingSlug: string,
+  name: string,
+  email: string,
+  quantity = 1,
+  phone = "",
+  extraFields: Record<string, string> = {},
+): Promise<Attendee> => {
+  const pageHtml = await testPageHtml(`/ticket/${listingSlug}`);
+  const csrfToken = extractCsrfToken(pageHtml) ?? (await signCsrfToken());
+
+  const response = await handleRequest(
+    mockTicketFormRequest(
+      listingSlug,
+      {
+        email,
+        name,
+        phone,
+        ...extraFields,
+        [`quantity_${listingId}`]: String(quantity),
+      },
+      csrfToken,
+    ),
+  );
+
+  if (response.status !== 302 && response.status !== 303) {
+    const body = await response.text();
+    throw new Error(
+      `Failed to create attendee: ${response.status} - ${body.slice(0, 200)}`,
+    );
+  }
+
+  const flashCookie = response.headers
+    .getSetCookie()
+    .find((c) => c.startsWith("flash_"));
+  if (flashCookie) {
+    const cookiePart = flashCookie.split(";")[0]!;
+    const value = cookiePart.split("=").slice(1).join("=");
+    const parsed = parseFlashValue(value);
+    if (parsed.error) {
+      throw new Error(`Failed to create attendee: ${parsed.error}`);
+    }
+  }
+
+  return (await getAttendeesRaw(listingId))[0] as Attendee;
+};
+
+/** Book one person on an already-made listing, through the site's own create.
+ * The caller says who the person is and the email they book with. */
+export const createAttendeeOn = async (
+  listing: Pick<Listing, "id" | "slug">,
+  who: string,
+  email: string,
+): Promise<Attendee> =>
+  createTestAttendee(listing.id, listing.slug, who, email);
+
+/** Insert an attendee with no listing booking (an orphan) created `daysAgo`
+ *  ago. Returns its numeric id. The `tokenPrefix` distinguishes orphans from
+ *  different test suites — `priv-orphan-…` for privacy, `sched-orphan-…` for
+ *  scheduled, `prune-orphan-…` for prune — so the ticket_token_index is
+ *  unique even when two suites insert orphans against the same test DB. */
+export const insertOrphanAttendee = async (
+  daysAgo: number,
+  tokenPrefix: string,
+): Promise<number> => {
+  const { getDb, insert } = await import("#db/client.ts");
+  const { nowMs } = await import("#shared/now.ts");
+  const created = new Date(nowMs() - daysAgo * 86_400_000).toISOString();
+  const result = await getDb().execute(
+    insert("attendees", {
+      created,
+      pii_blob: "",
+      ticket_token_index: `${tokenPrefix}-${crypto.randomUUID()}`,
+    }) as never,
+  );
+  return Number(result.lastInsertRowid);
+};
+
+/** Check whether an attendee row exists by id. Returns true when the row is
+ *  present, false when it has been purged. */
+export const attendeeExists = async (id: number): Promise<boolean> => {
+  const { queryOne } = await import("#db/client.ts");
+  return (
+    (await queryOne<{ one: number }>(
+      "SELECT 1 AS one FROM attendees WHERE id = ?",
+      [id],
+    )) !== null
+  );
+};
+
+export const createTestAttendeeDirect = async (
+  listingId: number,
+  name: string,
+  email: string,
+  quantity = 1,
+  phone = "",
+  address = "",
+  special_instructions = "",
+  packageGroupId = 0,
+): Promise<{ attendee: Attendee; token: string }> => {
+  const result = await attendeesApi.createAttendeeAtomic({
+    address,
+    bookings: [{ listingId, packageGroupId, quantity }],
+    email,
+    name,
+    phone,
+    special_instructions,
+  });
+
+  if (!result.success) {
+    throw new Error(`Failed to create attendee: ${result.reason}`);
+  }
+
+  const attendee = result.attendees[0]!;
+  const { logActivity } = await import("#db/activity-log.ts");
+  await logActivity(`Attendee '${name}' created`, listingId, attendee.id);
+
+  return {
+    attendee,
+    token: attendee.ticket_token,
+  };
+};
+
+/**
+ * Build form data for the unified attendee edit form (`POST /admin/attendees/:id`).
+ *
+ * Emits the shared `start_date` + `day_count` (seeded from the attendee's
+ * existing bookings) and one indexed editor line (`line_listing_<i>` +
+ * `qty_<i>` + `line_key_<i>`) per existing booking ROW — every path the
+ * attendee books through — so a bare call preserves the attendee unchanged.
+ * Pass `overrides.lines` to set the full line set (each
+ * `{ eventId, quantity, key, packageGroupId }` — quantity 0 or an omitted row
+ * un-books it; `packageGroupId` books a NEW line through that package), or
+ * `startDate` / `dayCount` to move the shared range.
+ */
+/** One editor line for {@link attendeeLineFields}. */
+export type AttendeeLineInput = {
+  eventId: number;
+  quantity?: number;
+  /** Omit to book as a new line; pass the existing key to keep/move it. */
+  key?: string;
+  /** The package path a NEW line books through (existing rows carry
+   * their own). */
+  packageGroupId?: number;
+  /** Tick the line's "no quantity" box. */
+  noQuantity?: boolean;
+};
+
+const attendeeLineInput = ({
+  key,
+  booking,
+}: ExistingLine): AttendeeLineInput => ({
+  eventId: booking.listing_id,
+  key,
+  noQuantity: booking.quantity === 0,
+  packageGroupId: 0,
+  quantity: booking.quantity,
+});
+
+export const existingAttendeeLines = async (
+  attendeeId: number,
+): Promise<AttendeeLineInput[]> => {
+  const { loadExistingLines } = await import("#db/attendees/atomic-update.ts");
+  return (await loadExistingLines(attendeeId)).map(attendeeLineInput);
+};
+
+/** The indexed editor-line fields (`line_listing_<i>` + `qty_<i>` + …) for a
+ * set of lines — the admin attendee form's wire shape. Spread into a POST
+ * body: `{ name: "X", ...attendeeLineFields([{ eventId: 5, quantity: 1 }]) }`. */
+export const attendeeLineFields = (
+  lines: AttendeeLineInput[],
+): Record<string, string> => {
+  const fields: Record<string, string> = {};
+  for (const [index, line] of lines.entries()) {
+    fields[`line_listing_${index}`] = String(line.eventId);
+    fields[`qty_${index}`] = String(line.quantity ?? 1);
+    fields[`line_key_${index}`] = line.key ?? "";
+    if (line.noQuantity) fields[`noqty_${index}`] = "1";
+    if ((line.packageGroupId ?? 0) > 0 && !line.key) {
+      fields[`line_package_${index}`] = String(line.packageGroupId);
+    }
+  }
+  return fields;
+};
+
+export const buildAttendeeEditForm = async (
+  attendeeId: number,
+  overrides: {
+    name?: string;
+    email?: string;
+    phone?: string;
+    address?: string;
+    special_instructions?: string;
+    returnUrl?: string;
+    startDate?: string;
+    dayCount?: number;
+    lines?: AttendeeLineInput[];
+    /** Extra fields to merge in (e.g. `question_<id>`). */
+    extra?: Record<string, string>;
+  } = {},
+): Promise<Record<string, string>> => {
+  const { resolveSharedDates } = await import(
+    "#routes/admin/attendee-form-dates.ts"
+  );
+  const { loadExistingLines } = await import("#db/attendees/atomic-update.ts");
+  const existing = await loadExistingLines(attendeeId);
+  const shared = resolveSharedDates(existing.map(({ booking }) => booking));
+  const lines = overrides.lines ?? existing.map(attendeeLineInput);
+  const form: Record<string, string> = {
+    address: overrides.address ?? "",
+    day_count: String(overrides.dayCount ?? shared.dayCount),
+    email: overrides.email ?? "",
+    name: overrides.name ?? "",
+    phone: overrides.phone ?? "",
+    special_instructions: overrides.special_instructions ?? "",
+    start_date: overrides.startDate ?? shared.startDate,
+  };
+  if (overrides.returnUrl) form.return_url = overrides.returnUrl;
+  Object.assign(form, attendeeLineFields(lines));
+  if (overrides.extra) Object.assign(form, overrides.extra);
+  return form;
+};
+
+export const submitAttendeeEdit = async (
+  attendeeId: number,
+  overrides: Parameters<typeof buildAttendeeEditForm>[1],
+): Promise<Response> => {
+  const { adminFormPost } = await import("#test-utils/session.ts");
+  const form = await buildAttendeeEditForm(attendeeId, overrides);
+  return (await adminFormPost(`/admin/attendees/${attendeeId}`, form)).response;
+};
+
+/** Create one attendee booked across several listings in a single order —
+ *  one booking line per listing, each with its own quantity (default 1).
+ *  Used by the grouped attendee-table suites. */
+export const createMultiBookingAttendee = async (
+  name: string,
+  email: string,
+  bookings: Array<{ listingId: number; quantity?: number }>,
+): Promise<Attendee> => {
+  const result = await attendeesApi.createAttendeeAtomic({
+    bookings: bookings.map((booking) => ({
+      listingId: booking.listingId,
+      quantity: booking.quantity ?? 1,
+    })),
+    email,
+    name,
+  });
+  // Callers pass listings with capacity, so the booking always succeeds; cast
+  // the union rather than guard, mirroring createPaidAttendeeWithoutLedger (a
+  // never-taken failure branch would be an uncovered line).
+  return (result as { success: true; attendees: Attendee[] }).attendees[0]!;
+};
+
+export const createTestAttendeeWithToken = async (
+  name: string,
+  email: string,
+  listingOverrides: Partial<Omit<ListingInput, "slug" | "slugIndex">> = {},
+  quantity = 1,
+  phone = "",
+): Promise<{ listing: Listing; attendee: Attendee; token: string }> => {
+  const listing = await createTestListing({
+    maxAttendees: 10,
+    ...listingOverrides,
+  });
+  const { attendee, token } = await createTestAttendeeDirect(
+    listing.id,
+    name,
+    email,
+    quantity,
+    phone,
+  );
+  return { attendee, listing, token };
+};
+
+/** Store one attendee's pending-notification flags: 1 says a send is owed,
+ * 0 says it went out or nothing was owed. The flag lifecycle tests read
+ * storage, so they write it through this one statement. */
+export const setPendingNotificationFlags = async (
+  attendeeId: number,
+  email: number,
+  webhooks: number,
+): Promise<void> => {
+  await execute(
+    "UPDATE attendees SET email_pending = ?, webhooks_pending = ? WHERE id = ?",
+    [email, webhooks, attendeeId],
+  );
+};
+
+/** Raise both pending-notification flags on one attendee, the way sends that
+ * never got accepted leave them, so an admin re-send has sends to recover. */
+export const markNotificationSendsOwed = (attendeeId: number): Promise<void> =>
+  setPendingNotificationFlags(attendeeId, 1, 1);
+
+/** Book one attendee with its pending-notification flags forced to the given
+ * values, the way a create batch whose sends never got accepted would leave
+ * them — for tests of the badges and counts those flags render. */
+export const bookTestAttendeeWithFlags = async (
+  name: string,
+  email: number,
+  webhooks: number,
+): Promise<{ attendee: Attendee; listing: Listing }> => {
+  const listing = await createTestListing({ name: `${name} Show` });
+  const { attendee } = await createTestAttendeeDirect(
+    listing.id,
+    name,
+    `${name.toLowerCase().replace(/\s+/g, "-")}@example.com`,
+  );
+  await setPendingNotificationFlags(attendee.id, email, webhooks);
+  return { attendee, listing };
+};
+
+/** Reads one attendee's pending-notification flags straight from the row.
+ * The foundation owns the columns, and the shared attendee read carries them
+ * only from the badges layer up, so the flag lifecycle tests read storage. */
+export const readPendingNotificationFlags = async (
+  attendeeId: number,
+): Promise<{ email: number; webhooks: number }> =>
+  requireOnePrimary(
+    "SELECT email_pending AS email, webhooks_pending AS webhooks FROM attendees WHERE id = ?",
+    [attendeeId],
+  );
+
+export const createTestAttendeeWithPhone = async (
+  phone = "+447700900123",
+): Promise<Attendee> => {
+  const { attendee } = await createTestAttendeeWithToken(
+    "Jane",
+    "jane@example.com",
+    { maxAttendees: 100 },
+    1,
+    phone,
+  );
+  return attendee;
+};
+
+/** Create a test attendee for "Alice" and fetch her ticket page body.
+ *  Returns both the token (for further URL assertions) and the HTML body. */
+export const fetchAliceTicketPageBody = async (): Promise<{
+  token: string;
+  body: string;
+}> => {
+  const { token } = await createTestAttendeeWithToken(
+    "Alice",
+    "alice@test.com",
+  );
+  const response = await awaitTestRequest(`/t/${token}`);
+  const body = await response.text();
+  return { body, token };
+};
+
+export const createDailyTestAttendee = async (
+  name: string,
+  email: string,
+  date: string,
+  listingOverrides: Partial<Omit<ListingInput, "slug" | "slugIndex">> = {},
+): Promise<{ listing: Listing; attendee: Attendee; token: string }> => {
+  const listing = await createDailyTestListing(listingOverrides);
+  const result = await attendeesApi.createAttendeeAtomic({
+    bookings: [{ date, listingId: listing.id }],
+    email,
+    name,
+  });
+  const { attendees } = result as Extract<typeof result, { success: true }>;
+  const attendee = attendees[0]!;
+  return { attendee, listing, token: attendee.ticket_token };
+};
+
+/** Assert a listing decrypts to no attendees at all — used both for a
+ *  freshly created listing and after deleting one that had attendees. */
+export const expectNoDecryptedAttendees = async (
+  listingId: number,
+): Promise<void> => {
+  const privateKey = await getTestPrivateKey();
+  const raw = await getAttendeesRaw(listingId);
+  const attendees = await decryptAttendees(raw, privateKey);
+  expect(attendees).toEqual([]);
+};
+
+export const decryptFirstAttendee = async (
+  listingId: number,
+): Promise<Attendee> => {
+  const privateKey = await getTestPrivateKey();
+  const raw = await getAttendeesRaw(listingId);
+  const attendees = await decryptAttendees(raw, privateKey);
+  expect(attendees.length).toBe(1);
+  return attendees[0]!;
+};
+
+/** Book units of a listing, on a day when one is given. */
+export const bookUnits = async (
+  listingId: number,
+  quantity: number,
+  date?: string,
+): Promise<void> => {
+  await bookTestAttendee([{ listingId, quantity, ...(date ? { date } : {}) }]);
+};

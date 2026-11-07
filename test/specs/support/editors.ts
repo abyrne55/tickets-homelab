@@ -1,0 +1,209 @@
+/**
+ * An editor: somebody the owner lets write listings, and nothing else. Every
+ * step here goes through the pages a real person would use — the owner's invite
+ * form, the link it hands over, the login form, and the editor's own listing
+ * pages — so a page that stopped working fails the story rather than being
+ * stepped around.
+ */
+
+import { getAllListings, getListingWithCount } from "#db/listings/records.ts";
+import { t } from "#i18n";
+import { toMinorUnits } from "#shared/currency.ts";
+import {
+  browserSeenBy,
+  EDITOR,
+  type OpensAPage,
+  opensPagesAs,
+  withAdminPage,
+} from "#test/specs/support/browser.ts";
+import { expectCanReallySend } from "#test/specs/support/form-controls/rules.ts";
+import {
+  listingIdNamed,
+  listingNamed,
+  organiserSavesFields,
+  saveListingEdit,
+  somethingForSale,
+} from "#test/specs/support/listings.ts";
+import { invitedRoleJourney } from "#test/specs/support/staff-accounts.ts";
+import {
+  type ActOnOnePerson,
+  type ActOnOneThing,
+  type ActOnTheStory,
+  type ChangeOneThing,
+  type ReadAboutOneThing,
+  requiredWorldValue,
+  stillThere,
+  type TicketsWorld,
+} from "#test/specs/support/world.ts";
+import { createAttendeeOn } from "#test-utils/db-helpers/attendees.ts";
+import { postListingSale } from "#test-utils/ledger.ts";
+import type { TestBrowser } from "#test-utils/test-browser.ts";
+import type { ListingWithCount } from "#types";
+
+/** Where a listing forwards each booking, names and all. */
+export const OWNERS_ADDRESS = "https://owner.example/bookings";
+export const SOMEWHERE_ELSE = "https://elsewhere.example/bookings";
+
+/** The pages the story talks about, by the words it uses for them. Each is a
+ * page an editor must never open. */
+const PRIVATE_PAGES: Record<string, string> = {
+  "list of attendees": "/admin/attendees",
+  money: "/admin/ledger",
+  people: "/admin/users",
+  settings: "/admin/settings",
+};
+
+export const privatePagePath = (page: string): string =>
+  requiredWorldValue(PRIVATE_PAGES[page], `a page called "${page}"`);
+
+/** Each admin page the editor is offered, paired with what the site answers
+ * when they follow it. Only admin links are asked about — a link to the public
+ * site or off it is nobody's to gate. */
+export const pagesOfferedTo = async (
+  browser: TestBrowser,
+): Promise<Array<{ answered: number; href: string }>> => {
+  const offered = [
+    ...new Set(
+      browser.links
+        .map(({ href }) => href)
+        .filter((href) => href.startsWith("/admin/")),
+    ),
+  ];
+  const asked = [];
+  for (const href of offered) {
+    asked.push({ answered: await browser.statusOf(href), href });
+  }
+  return asked;
+};
+
+/** The editor's account journey, shared with every other invited role: the
+ * owner invites them, they follow their link and choose a password, they sign
+ * in, and their pages run in a browser of their own. The role is chosen from
+ * the roles the invite form itself offers, so a form that stopped offering
+ * "editor" fails here. */
+const journey = invitedRoleJourney({
+  browserName: EDITOR,
+  inviteName: "the editor invite",
+  role: "editor",
+});
+
+export const ownerInvitesEditor: ActOnOnePerson = journey.invites;
+
+/** The invited person opens their link, chooses a password, and is now an
+ * editor with an account of their own. */
+export const editorFollowsInvite: ActOnTheStory = journey.followsInvite;
+
+/** The editor logs in the ordinary way, and stays logged in for the rest of
+ * the story. */
+export const editorLogsIn: ActOnOnePerson = journey.logsIn;
+
+/** Somebody who is already an editor and already logged in. */
+export const signedInEditor: ActOnOnePerson = journey.signedIn;
+
+/** The editor's own browser, once the story has signed them in. */
+export const editorBrowser = (world: TicketsWorld): TestBrowser =>
+  browserSeenBy(world, EDITOR);
+
+/** The editor opens one of their own pages. */
+const openAsEditor: OpensAPage = opensPagesAs(editorBrowser);
+
+/** What one sale of this thing brought in, in pounds and pence. A round figure
+ * nothing else on the page would show by accident. */
+export const TAKINGS = 37.5;
+
+/** Somebody has bought this thing and paid for it, so the site has a real
+ * figure to show — or to keep from an editor. */
+export const somethingSoldAndPaidFor: ActOnOneThing = async (world, name) => {
+  await somethingForSale(world, name);
+  const listing = listingNamed(world, name);
+  const buyer = await createAttendeeOn(listing, "Buyer", "buyer@example.com");
+  await postListingSale({
+    attendeeId: buyer.id,
+    gross: toMinorUnits(TAKINGS),
+    listingId: listing.id,
+  });
+};
+
+/** What the owner sees on the same list of things for sale. Reading it proves
+ * the figure is really there to leak before the story says the editor is not
+ * shown it. */
+export const ownersListingsPage = (world: TicketsWorld): Promise<string> =>
+  withAdminPage(world, "/admin/listings", async (browser) => browser.pageText);
+
+/** The editor starts a new listing, picks what kind it is from the kinds the
+ * site offers, fills the form in and saves it. */
+export const editorAddsListing: ActOnOneThing = async (world, name) => {
+  const typed = { max_attendees: "10", max_quantity: "1", name };
+  const browser = await openAsEditor(world, "/admin/listing/new");
+  await browser.clickLink(t("listings_table.listing_type_picker_custom"));
+  expectCanReallySend(browser.currentHtml, typed);
+  await browser.submitForm(typed, t("listings_table.create_listing"));
+};
+
+/** What the site sells under this name, or nothing when it sells no such
+ * thing. */
+export const listingSoldAsOrNull = async (
+  name: string,
+): Promise<ListingWithCount | null> =>
+  (await getAllListings()).find((listing) => listing.name === name) ?? null;
+
+/** Where a listing forwards its bookings now, or nothing when it forwards them
+ * nowhere. */
+export const forwardingAddressOrNull: ReadAboutOneThing<string | null> = async (
+  world,
+  name,
+) => {
+  const found = await getListingWithCount(listingIdNamed(world, name));
+  return stillThere(found, name).webhook_url;
+};
+
+/** The editor renames something the site already sells, through the listing's
+ * own form. Changing a listing is their job, so this one goes through the box
+ * the page offers them rather than being crafted. */
+export const editorRenames: ChangeOneThing<string> = async (
+  world,
+  from,
+  to,
+) => {
+  await saveListingEdit(
+    editorBrowser(world),
+    listingIdNamed(world, from),
+    (served) => {
+      expectCanReallySend(served, { name: to });
+      return { name: to };
+    },
+  );
+};
+
+/** The editor's save carries a forwarding address their form never offered.
+ * That is the whole point of the attempt, so nothing is checked first — the
+ * site has to be what turns it away, not the page. */
+export const editorCraftsForwardingTo: ChangeOneThing<string> = (
+  world,
+  name,
+  address,
+) =>
+  // The save being accepted is what organiserSavesFields checks for us. A whole edit
+  // turned away would leave the address alone too, and prove nothing about this
+  // one field.
+  saveListingEdit(editorBrowser(world), listingIdNamed(world, name), () => ({
+    webhook_url: address,
+  }));
+
+/** The owner makes the same change the ordinary way, through the box their own
+ * form offers them. */
+export const ownerSetsForwardingTo: ChangeOneThing<string> = async (
+  world,
+  name,
+  address,
+) => {
+  await organiserSavesFields(world, name, { webhook_url: address });
+};
+
+/** The listing's edit form as the editor is served it. */
+export const editorOpensListing: ActOnOneThing = async (world, name) => {
+  await openAsEditor(
+    world,
+    `/admin/listing/${listingIdNamed(world, name)}/edit`,
+  );
+};
