@@ -29,7 +29,7 @@ defaults:
 
 jobs:
   backup:
-    runs-on: ubicloud-standard-4
+    runs-on: ubuntu-latest
 
     steps:
       - name: Checkout repository

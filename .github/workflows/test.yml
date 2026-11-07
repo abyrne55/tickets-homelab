@@ -45,7 +45,7 @@ defaults:
 # hosted evidence too (issue #2761).
 jobs:
   checks:
-    runs-on: ubicloud-standard-4
+    runs-on: ubuntu-latest
 
     steps:
       - name: Checkout repository
@@ -159,11 +159,11 @@ jobs:
         run: deno task build:edge
 
   test:
-    runs-on: ubicloud-standard-8
+    runs-on: ubuntu-latest
     # A healthy full suite with coverage finishes in about seven minutes. A
     # wedged test can hold a runner for hours with no failure text (issue
     # #2225), so the job gives up loudly instead.
-    timeout-minutes: 10
+    timeout-minutes: 20
 
     steps:
       - name: Checkout repository
@@ -210,7 +210,7 @@ jobs:
   # `test:screenshot-contract`. This is the one place a broken or flaky
   # journey on a served page goes red (issue #2743).
   browser-contracts:
-    runs-on: ubicloud-standard-8
+    runs-on: ubuntu-latest
     timeout-minutes: 20
 
     # The browser profile carries Chromium, whose path the contracts read
@@ -243,7 +243,7 @@ jobs:
         run: deno task test:screenshot-contract
 
   specs:
-    runs-on: ubicloud-standard-8
+    runs-on: ubuntu-latest
     # The whole journey suite runs in seconds on a developer machine. A wedged
     # scenario can hold a runner for hours with no failure text (issue #2225),
     # so the job gives up loudly instead.

@@ -1,12 +1,11 @@
 services:
   - type: web
     name: chobble-tickets
-    # Prebuilt OCI image assembled by devenv (devenv.nix,
-    # outputs.tickets-image) and published by .github/workflows/publish-image.yml
-    # on every merge to main.
+    # Prebuilt OCI image built from the Containerfile and published by
+    # .github/workflows/publish-image.yml on every merge to main.
     runtime: image
     image:
-      url: ghcr.io/chobbledotcom/tickets:latest
+      url: ghcr.io/abyrne55/tickets-homelab:latest
     plan: starter
     envVars:
       - key: DB_URL

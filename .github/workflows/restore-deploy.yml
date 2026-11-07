@@ -41,7 +41,7 @@ permissions:
 
 jobs:
   deploy:
-    runs-on: ubicloud-standard-4
+    runs-on: ubuntu-latest
 
     steps:
       - name: Validate the commit input is a full SHA

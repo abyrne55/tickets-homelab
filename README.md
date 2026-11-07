@@ -393,39 +393,57 @@ access control, monitoring) are equally important.
 ## Alternative Deployment
 
 The production platform is Bunny Edge Scripting (see above). One prebuilt OCI
-image serves every other target. `devenv.nix` defines it as
-`outputs.tickets-image`. The image carries the pinned Deno runtime, built static
-assets, and server module cache. It runs as an unprivileged user on x86-64
-hosts.
+image serves every other target. The `Containerfile` builds it. The build stage
+compiles the server with `deno compile` into one binary. The runtime stage is
+`quay.io/hummingbird/curl:8`. The image has no shell and no init process. It
+runs as the unprivileged user 65532 on x86-64 and arm64 hosts.
 
-The `Create Release` workflow calls `.github/workflows/publish-image.yml` after
-the GitHub release succeeds. Image publication requires `main` in
-`chobbledotcom/tickets`. Each image uses the release run's exact commit and has
-a `sha-<commit>` tag. Only GitHub's latest release can replace
-`ghcr.io/chobbledotcom/tickets:latest`. Ordinary merges to `main` do not publish
-images.
-
-If image publication fails, the GitHub release remains available. Retry the
-failed image job from the release workflow run. A superseded release can publish
-its commit image, but it cannot replace `latest`.
+The `Publish Docker image` workflow (`.github/workflows/publish-image.yml`)
+builds both architectures on native runners. A push to `main` publishes
+`ghcr.io/abyrne55/tickets-homelab:latest` and
+`ghcr.io/abyrne55/tickets-homelab:sha-<commit>`. A pull request from this
+repository publishes `ghcr.io/abyrne55/tickets-homelab:pr-<number>`. Each tag
+is one multi-architecture image.
 
 GitHub creates the registry package as private on the first publish. A
-repository admin must make it public once. Open the `tickets` package in the
-`chobbledotcom` organisation on GitHub. Select Package settings, then Change
-visibility.
+repository admin must make it public once. Open the `tickets-homelab` package on
+GitHub. Select Package settings, then Change visibility.
+
+The base images come from the Hummingbird project. Its pages say the images are
+under development and not recommended for production. `quay.io/hummingbird` is
+an unsigned mirror.
+
+### Build the image
+
+```bash
+podman build --format docker -t tickets .
+CONTAINER_IMAGE=localhost/tickets scripts/container-check.sh
+```
+
+Use `--format docker`. Podman drops the `HEALTHCHECK` in the OCI format. The
+check script starts the image and checks that it answers, stops on SIGTERM with
+exit code 0, and restarts on the same volume with a read-only root.
 
 ### Docker
 
 ```bash
 docker run -p 3000:3000 \
   -v tickets-data:/data \
-  -e DB_URL="file:/data/tickets.db" \
   -e DB_ENCRYPTION_KEY="your-base64-key" \
-  ghcr.io/chobbledotcom/tickets:latest
+  ghcr.io/abyrne55/tickets-homelab:latest
 ```
 
-The image uses a local SQLite file by default - set `DB_URL` and `DB_TOKEN` to
-point at a remote Turso database instead if you prefer.
+- `DB_ENCRYPTION_KEY` is required. The container exits if it is missing.
+- The image uses the local SQLite file `file:/data/tickets.db` by default. Set
+  `DB_URL` and `DB_TOKEN` to use a remote Turso database instead.
+- The server can write only under `/data`. A bind mount must belong to user
+  65532 (`chown 65532 <dir>`, or `podman unshare chown 65532 <dir>`). If `/data`
+  is not writable, the first database write fails and the error is in the log.
+- If you set `LOCAL_STORAGE_PATH`, the path must be under `/data`.
+- The server unpacks its database library into `/tmp` and loads it from there.
+  With `--read-only`, mount a `/tmp` that allows programs to run:
+  `--tmpfs /tmp:rw,exec,mode=1777`. A `noexec` mount, which is the Docker
+  default for `--tmpfs`, stops the server at start.
 
 ### Platforms
 
@@ -434,7 +452,7 @@ Deploy to:
 |
 [Render](https://render.com/deploy?repo=https://github.com/chobbledotcom/tickets)
 |
-[Koyeb](https://app.koyeb.com/deploy?type=docker&image=ghcr.io/chobbledotcom/tickets:latest&name=chobble-tickets&ports=3000;http;/)
+[Koyeb](https://app.koyeb.com/deploy?type=docker&image=ghcr.io/abyrne55/tickets-homelab:latest&name=chobble-tickets&ports=3000;http;/)
 
 Each platform's config in this repository (`fly.toml`, `render.yaml`,
 `.do/deploy.template.yaml`) points at the published image. You can also deploy

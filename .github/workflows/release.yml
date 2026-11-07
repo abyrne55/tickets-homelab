@@ -15,9 +15,7 @@ jobs:
   release:
     permissions:
       contents: write
-    runs-on: ubicloud-standard-4
-    outputs:
-      tag: ${{ steps.create-release.outputs.tag }}
+    runs-on: ubuntu-latest
 
     steps:
       - name: Checkout repository
@@ -48,12 +46,3 @@ jobs:
             --notes "" \
             bunny-script.ts
           echo "tag=$TAG" >> "$GITHUB_OUTPUT"
-
-  publish-image:
-    needs: release
-    permissions:
-      contents: read
-      packages: write
-    uses: ./.github/workflows/publish-image.yml
-    with:
-      release_tag: ${{ needs.release.outputs.tag }}
