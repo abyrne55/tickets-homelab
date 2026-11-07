@@ -2,15 +2,20 @@ name: Publish Docker image
 
 # Builds the Containerfile natively for amd64 and arm64, then joins the two
 # images into one multi-architecture tag on GitHub Container Registry.
+# A push to main publishes latest and sha-<commit>. A pull request from this
+# repository publishes pr-<number>.
 
 on:
   push:
     branches: [main]
+  pull_request:
+    branches: [main]
   workflow_dispatch:
 
-# Serialise image pushes so an older run cannot replace a newer :latest tag.
+# Serialise image pushes for one ref, so an older run cannot replace a newer
+# tag.
 concurrency:
-  group: publish-image
+  group: publish-image-${{ github.ref }}
   cancel-in-progress: false
 
 permissions:
@@ -23,6 +28,8 @@ env:
 
 jobs:
   build:
+    # A pull request from a fork has a read-only token and cannot push.
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
     strategy:
       fail-fast: true
       matrix:
@@ -97,6 +104,7 @@ jobs:
           retention-days: 1
 
   merge:
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
     runs-on: ubuntu-24.04
     needs: build
     timeout-minutes: 10
@@ -119,6 +127,17 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
+      - name: Extract Docker metadata
+        id: meta
+        uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302 # v6.2.0
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          tags: |
+            type=ref,event=pr
+            type=raw,value=latest,enable=${{ github.ref == 'refs/heads/main' }}
+            type=sha,prefix=sha-,format=long,enable=${{ github.ref == 'refs/heads/main' }}
+            type=ref,event=branch,enable=${{ github.event_name == 'workflow_dispatch' && github.ref != 'refs/heads/main' }}
+
       # GHCR creates the package private on the first push. Make it public
       # once in the package settings, so self-hosters can pull without
       # credentials.
@@ -128,6 +147,5 @@ jobs:
           image="${REGISTRY}/${IMAGE_NAME}"
           # shellcheck disable=SC2046
           docker buildx imagetools create \
-            -t "${image}:latest" \
-            -t "${image}:sha-${GITHUB_SHA}" \
+            $(jq -cr '.tags | map("-t " + .) | join(" ")' <<< "$DOCKER_METADATA_OUTPUT_JSON") \
             $(printf "${image}@sha256:%s " *)

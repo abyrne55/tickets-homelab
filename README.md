@@ -399,9 +399,11 @@ compiles the server with `deno compile` into one binary. The runtime stage is
 runs as the unprivileged user 65532 on x86-64 and arm64 hosts.
 
 The `Publish Docker image` workflow (`.github/workflows/publish-image.yml`)
-builds both architectures on native runners for each push to `main`. It pushes
-one multi-architecture image as `ghcr.io/abyrne55/tickets-homelab:latest` and
-as `ghcr.io/abyrne55/tickets-homelab:sha-<commit>`.
+builds both architectures on native runners. A push to `main` publishes
+`ghcr.io/abyrne55/tickets-homelab:latest` and
+`ghcr.io/abyrne55/tickets-homelab:sha-<commit>`. A pull request from this
+repository publishes `ghcr.io/abyrne55/tickets-homelab:pr-<number>`. Each tag
+is one multi-architecture image.
 
 GitHub creates the registry package as private on the first publish. A
 repository admin must make it public once. Open the `tickets-homelab` package on

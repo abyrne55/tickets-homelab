@@ -6,14 +6,36 @@ import { walkSourceFiles } from "#test-utils/walk-src.ts";
 
 const imagePath = ".github/workflows/publish-image.yml";
 const releasePath = ".github/workflows/release.yml";
+// A GitHub expression, written without a literal placeholder in the source.
+const expr = (body: string): string => `\${{ ${body} }}`;
 const readImage = (): string => Deno.readTextFileSync(imagePath);
 
 describe("Image publication workflow", () => {
-  test("runs on pushes to main and by hand only", () => {
+  test("runs on pushes to main, pull requests to main, and by hand", () => {
     const triggers = readImage().match(/^on:\n([\s\S]*?)(?=^\S)/m)?.[1];
     expect(triggers?.trim()).toBe(
-      ["push:", "    branches: [main]", "  workflow_dispatch:"].join("\n"),
+      [
+        "push:",
+        "    branches: [main]",
+        "  pull_request:",
+        "    branches: [main]",
+        "  workflow_dispatch:",
+      ].join("\n"),
     );
+  });
+
+  test("tags pull requests pr-<number> and main latest and sha-<commit>", () => {
+    expectIncludesAll(readImage(), [
+      "type=ref,event=pr\n",
+      `type=raw,value=latest,enable=${expr("github.ref == 'refs/heads/main'")}`,
+      `type=sha,prefix=sha-,format=long,enable=${expr("github.ref == 'refs/heads/main'")}`,
+    ]);
+  });
+
+  test("skips pull requests from forks, which cannot push", () => {
+    const guard =
+      "if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository";
+    expect(readImage().split(guard)).toHaveLength(3);
   });
 
   test("builds each platform on a runner of the same architecture", () => {
@@ -35,8 +57,7 @@ describe("Image publication workflow", () => {
     const workflow = readImage();
     expectIncludesAll(workflow, [
       "push-by-digest=true,name-canonical=true,push=true",
-      `-t "\${image}:latest"`,
-      `-t "\${image}:sha-\${GITHUB_SHA}"`,
+      "DOCKER_METADATA_OUTPUT_JSON",
       "IMAGE_NAME: abyrne55/tickets-homelab",
     ]);
     expect(workflow.match(/docker buildx imagetools create/g)).toHaveLength(1);
