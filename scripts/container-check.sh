@@ -1,9 +1,11 @@
 #!/usr/bin/env bash
 # Boots the image and checks that it serves, keeps its data, and stops cleanly.
 # CONTAINER_IMAGE names the image. The default is the published latest tag.
+# CONTAINER_ENGINE names the engine that holds the image. The default is podman,
+# or docker when podman is missing.
 set -euo pipefail
 
-engine="$(command -v podman || command -v docker)"
+engine="${CONTAINER_ENGINE:-$(command -v podman || command -v docker)}"
 image="${CONTAINER_IMAGE:-ghcr.io/abyrne55/tickets-homelab:latest}"
 container="tickets-verify"
 volume="tickets-verify-data"

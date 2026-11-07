@@ -1,4 +1,3 @@
-import { assertStringIncludes } from "@std/assert";
 import { expect } from "@std/expect";
 import { describe, it as test } from "@std/testing/bdd";
 import { expectIncludesAll } from "#test-utils/assertions.ts";
@@ -50,7 +49,11 @@ describe("Image publication workflow", () => {
     const check = workflow.indexOf("run: scripts/container-check.sh");
     expect(check).toBeGreaterThan(workflow.indexOf("load: true"));
     expect(check).toBeLessThan(workflow.indexOf("push-by-digest=true"));
-    assertStringIncludes(workflow, "CONTAINER_IMAGE: tickets-check");
+    // The image sits in Docker, and the runner also has Podman.
+    expectIncludesAll(workflow, [
+      "CONTAINER_ENGINE: docker",
+      "CONTAINER_IMAGE: tickets-check",
+    ]);
   });
 
   test("pushes each platform by digest, then tags one manifest", () => {

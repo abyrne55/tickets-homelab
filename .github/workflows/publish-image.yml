@@ -72,6 +72,7 @@ jobs:
       # 200 to answer. It then checks that SIGTERM stops the container cleanly.
       - name: Verify the image boots and serves
         env:
+          CONTAINER_ENGINE: docker
           CONTAINER_IMAGE: tickets-check
         run: scripts/container-check.sh
 
