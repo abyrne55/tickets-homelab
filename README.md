@@ -440,6 +440,10 @@ docker run -p 3000:3000 \
   65532 (`chown 65532 <dir>`, or `podman unshare chown 65532 <dir>`). If `/data`
   is not writable, the first database write fails and the error is in the log.
 - If you set `LOCAL_STORAGE_PATH`, the path must be under `/data`.
+- The server unpacks its database library into `/tmp` and loads it from there.
+  With `--read-only`, mount a `/tmp` that allows programs to run:
+  `--tmpfs /tmp:rw,exec,mode=1777`. A `noexec` mount, which is the Docker
+  default for `--tmpfs`, stops the server at start.
 
 ### Platforms
 

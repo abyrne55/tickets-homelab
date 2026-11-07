@@ -69,9 +69,10 @@ done
 echo "Server answered its built-in assets."
 stop_cleanly
 
-# A new container on the same volume must start, with a read-only root and the
-# user that the image runs as.
-start --read-only --tmpfs /tmp
+# A new container on the same volume must start, with a read-only root. The
+# server unpacks its database library into /tmp and loads it from there, so
+# the /tmp mount must allow programs to run. Docker mounts tmpfs as noexec.
+start --read-only --tmpfs /tmp:rw,exec,mode=1777
 wait_for_health
 echo "Server restarted on the same volume with a read-only root."
 stop_cleanly
