@@ -1,5 +1,6 @@
 import { expect } from "@std/expect";
 import { it as test } from "@std/testing/bdd";
+import { stub } from "@std/testing/mock";
 import { stopOnSignals } from "#src/shutdown.ts";
 
 const fakeSignals = () => {
@@ -50,3 +51,23 @@ for (const signal of ["SIGTERM", "SIGINT"] as const) {
     expect(exits).toEqual([0]);
   });
 }
+
+test("uses the Deno signal listener and exit by default", async () => {
+  const handlers = new Map<string, () => void>();
+  using _listener = stub(
+    Deno,
+    "addSignalListener",
+    (signal: Deno.Signal, handler: () => void) => {
+      handlers.set(signal, handler);
+    },
+  );
+  const codes: number[] = [];
+  using _exit = stub(Deno, "exit", (code?: number): never => {
+    codes.push(code ?? -1);
+    return undefined as never;
+  });
+  stopOnSignals({ shutdown: () => Promise.resolve() });
+  expect([...handlers.keys()]).toEqual(["SIGTERM", "SIGINT"]);
+  await handlers.get("SIGTERM")?.();
+  expect(codes).toEqual([0]);
+});
