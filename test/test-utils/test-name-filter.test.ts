@@ -32,7 +32,10 @@ const fakeContext = (entered: string[]): Deno.TestContext => {
     await body?.(fakeContext(entered));
     return true;
   };
-  return { name: "fake context", origin: "fake", step };
+  const assertSnapshot = (): never => {
+    throw new Error("The name filter never asserts a snapshot.");
+  };
+  return { assertSnapshot, name: "fake context", origin: "fake", step };
 };
 
 /** The piece of std's bdd contract the filter leans on: a describe body runs

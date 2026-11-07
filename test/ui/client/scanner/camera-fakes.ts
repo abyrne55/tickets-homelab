@@ -195,12 +195,12 @@ export const cameraFakes = (h: ScannerHarness) => {
     ],
   };
 
-  const setTimeoutFake: typeof setTimeout = (fn, ms = 0) => {
+  const setTimeoutFake = (fn: () => void, ms = 0): number => {
     const id = nextId++;
-    pending.set(id, { at: now + ms, fn: fn as () => void });
+    pending.set(id, { at: now + ms, fn });
     return id;
   };
-  const clearTimeoutFake: typeof clearTimeout = (id) => {
+  const clearTimeoutFake = (id?: number): void => {
     if (id !== undefined) pending.delete(id);
   };
   const originalNow = Date.now;

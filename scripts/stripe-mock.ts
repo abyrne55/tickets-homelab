@@ -113,7 +113,7 @@ const raceWithDelay = async <T>(
   delayMs: number,
   delayedValue: () => T,
 ): Promise<T> => {
-  let timeout: number | undefined;
+  let timeout: ReturnType<typeof setTimeout> | undefined;
   const delayed = new Promise<T>((resolve) => {
     timeout = setTimeout(() => resolve(delayedValue()), delayMs);
   });
@@ -255,7 +255,7 @@ const stoppedMockStderr = async (
   timeoutMs: number,
 ): Promise<string> => {
   const read = spawned.stderr();
-  let timer = 0;
+  let timer: ReturnType<typeof setTimeout> | undefined;
   const giveUp = new Promise<null>((resolve) => {
     timer = setTimeout(() => resolve(null), timeoutMs);
   });

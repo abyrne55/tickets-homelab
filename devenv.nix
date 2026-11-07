@@ -7,7 +7,7 @@
 }:
 
 let
-  # Deno stays at the supported Bunny runtime floor.
+  # Deno matches the version the container image builds with.
   deno = (import inputs.nixpkgs-deno { system = pkgs.stdenv.hostPlatform.system; }).deno;
   browserTools = config.ticketsBrowserTools && pkgs.stdenv.isLinux;
   checkTools = with pkgs; [
@@ -51,7 +51,7 @@ let
   shellSetup = pkgs.replaceVars ./scripts/devenv/shell.sh {
     inherit runtimeSetup;
     deno = "${deno}/bin/deno";
-    denoVersion = "2.5.6";
+    denoVersion = "2.9.8";
     chromium = lib.optionalString browserTools "${pkgs.chromium}/bin/chromium";
   };
 in

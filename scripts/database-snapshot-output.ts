@@ -22,7 +22,7 @@ interface RenderedProgress {
 
 interface ActiveProgress {
   progress: RenderedProgress;
-  timer: number;
+  timer: ReturnType<typeof setInterval>;
 }
 
 export const createSnapshotProgressOutput = ({

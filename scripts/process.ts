@@ -69,7 +69,7 @@ const beforeTimeout = async (
   status: Promise<unknown>,
   timeoutMs: number,
 ): Promise<boolean> => {
-  let timeout = 0;
+  let timeout: ReturnType<typeof setTimeout> | undefined;
   const delayed = new Promise<boolean>((resolve) => {
     timeout = setTimeout(() => resolve(false), timeoutMs);
   });

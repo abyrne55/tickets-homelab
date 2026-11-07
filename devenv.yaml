@@ -2,6 +2,6 @@ inputs:
   nixpkgs:
     url: github:NixOS/nixpkgs/3e41b24abd260e8f71dbe2f5737d24122f972158
   nixpkgs-deno:
-    url: github:NixOS/nixpkgs/ee09932cedcef15aaf476f9343d1dea2cb77e261
+    url: github:NixOS/nixpkgs/d553f82236c2b151dc8b4b4f60beb77e7ef84927
   git-hooks:
     url: github:cachix/git-hooks.nix

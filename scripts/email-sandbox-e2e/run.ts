@@ -132,7 +132,7 @@ const legTimeout = (): {
   signal: AbortSignal;
 } => {
   const controller = new AbortController();
-  const timer = { id: 0 };
+  const timer: { id?: ReturnType<typeof setTimeout> } = {};
   const expired = new Promise<never>((_, reject) => {
     timer.id = setTimeout(() => {
       // Cancel the request still in flight, so a stalled provider leaves

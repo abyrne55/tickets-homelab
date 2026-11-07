@@ -45,8 +45,8 @@ Code must work in both environments.
 
 ## Deno Version
 
-This repo pins Deno 2.5.6, the lowest Bunny Edge Scripting runtime version this
-project runs on. `enterShell` in `devenv.nix` refuses to enter when the pinned
+This repo pins Deno 2.9.8, the version that the container image builds with.
+Development, tests, and the image run the same Deno. `enterShell` in `devenv.nix` refuses to enter when the pinned
 nixpkgs provides anything else:
 
 ```bash
