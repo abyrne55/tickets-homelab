@@ -2,13 +2,12 @@ spec:
   name: chobble-tickets
   services:
     - name: web
-      # Prebuilt OCI image assembled by devenv (devenv.nix,
-      # outputs.tickets-image) and published by
+      # Prebuilt OCI image built from the Containerfile and published by
       # .github/workflows/publish-image.yml on every merge to main.
       image:
         registry_type: GHCR
-        registry: chobbledotcom
-        repository: tickets
+        registry: abyrne55
+        repository: tickets-homelab
         tag: latest
       http_port: 3000
       instance_count: 1

@@ -1,87 +1,133 @@
 name: Publish Docker image
 
-# Create Release calls this workflow after the GitHub release succeeds.
-# Only GitHub's latest release can replace the registry's latest image.
+# Builds the Containerfile natively for amd64 and arm64, then joins the two
+# images into one multi-architecture tag on GitHub Container Registry.
 
 on:
-  workflow_call:
-    inputs:
-      release_tag:
-        required: true
-        type: string
+  push:
+    branches: [main]
+  workflow_dispatch:
 
-# Serialise image pushes. The release lookup also excludes superseded retries.
+# Serialise image pushes so an older run cannot replace a newer :latest tag.
 concurrency:
   group: publish-image
   cancel-in-progress: false
-  queue: max
 
 permissions:
   contents: read
   packages: write
 
-defaults:
-  run:
-    shell: devenv --profile ci shell bash -- -e {0}
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: abyrne55/tickets-homelab
 
 jobs:
-  publish:
-    # Release dispatches on other refs and forks cannot publish this image.
-    if: github.repository == 'chobbledotcom/tickets' && github.ref == 'refs/heads/main'
-    runs-on: ubuntu-latest
+  build:
+    strategy:
+      fail-fast: true
+      matrix:
+        include:
+          - platform: linux/amd64
+            runner: ubuntu-24.04
+          - platform: linux/arm64
+            runner: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runner }}
     timeout-minutes: 30
 
     steps:
       - name: Checkout repository
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
-          ref: ${{ github.sha }}
           persist-credentials: false
 
-      - name: Set up devenv
-        uses: ./.github/actions/setup-devenv
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@594f3bf4285d9ea8dc53c9a0c9c4092420091003 # v4.4.0
+
+      - name: Log into registry
+        uses: docker/login-action@81c6f93d4bc991e510b342a00b419b3bb4efc5c6 # v4.7.0
         with:
-          profile: ci
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
 
-      # Builds the static assets and assembles the OCI image. See devenv.nix
-      # (scripts.container-build) for why the Deno step runs in the shell
-      # rather than in the sandbox.
-      - name: Build the runtime image
-        run: container-build
+      - name: Build the image for the check
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: .
+          file: ./Containerfile
+          platforms: ${{ matrix.platform }}
+          load: true
+          tags: tickets-check
+          cache-from: type=gha,scope=build-${{ matrix.platform }}
+          cache-to: type=gha,mode=max,scope=build-${{ matrix.platform }}
 
-      - name: Load the image into the container engine
-        run: container-load
-
-      # `container-check` boots the loaded image and requires /health,
-      # home 503, and setup 200 to answer, then checks SIGTERM stops the
-      # container cleanly.
+      # The check boots the image and requires /health, home 503, and setup
+      # 200 to answer. It then checks that SIGTERM stops the container cleanly.
       - name: Verify the image boots and serves
-        run: container-check
-
-      - name: Copy the image to the registry
         env:
-          GHCR_USER: ${{ github.actor }}
-          GHCR_TOKEN: ${{ github.token }}
-          RELEASE_TAG: ${{ inputs.release_tag }}
+          CONTAINER_IMAGE: tickets-check
+        run: scripts/container-check.sh
+
+      - name: Push the image by digest
+        id: build
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: .
+          file: ./Containerfile
+          platforms: ${{ matrix.platform }}
+          cache-from: type=gha,scope=build-${{ matrix.platform }}
+          outputs: type=image,name=${{ env.REGISTRY }}/${{ env.IMAGE_NAME }},push-by-digest=true,name-canonical=true,push=true
+
+      - name: Prepare platform pair
+        id: platform
+        run: echo "pair=$(echo '${{ matrix.platform }}' | tr '/' '-')" >> "$GITHUB_OUTPUT"
+
+      - name: Export digest
         run: |
-          set -euo pipefail
-          # GHCR creates the package private on the first push. Make it public
-          # once, so platforms and self-hosters can pull without credentials:
-          # GitHub → the chobbledotcom org → the tickets package → Package
-          # settings → Change visibility.
-          engine="$(command -v podman || command -v docker)"
-          echo "$GHCR_TOKEN" | "$engine" login ghcr.io -u "$GHCR_USER" --password-stdin
-          image="ghcr.io/chobbledotcom/tickets"
-          # Keep the commit image even when a newer release supersedes this run.
-          "$engine" tag "$image:latest" "$image:sha-${GITHUB_SHA}"
-          "$engine" push "$image:sha-${GITHUB_SHA}"
-          latest_tag="$(curl -fsS \
-            -H "Authorization: Bearer $GHCR_TOKEN" \
-            -H "Accept: application/vnd.github+json" \
-            "https://api.github.com/repos/${GITHUB_REPOSITORY}/releases/latest" \
-            | jq -er '.tag_name | select(type == "string" and length > 0)')"
-          if [ "$latest_tag" != "$RELEASE_TAG" ]; then
-            echo "::warning::Release $RELEASE_TAG is not the latest release ($latest_tag). Published the commit tag. Left :latest unchanged."
-            exit 0
-          fi
-          "$engine" push "$image:latest"
+          mkdir -p "${{ runner.temp }}/digests"
+          digest="${{ steps.build.outputs.digest }}"
+          touch "${{ runner.temp }}/digests/${digest#sha256:}"
+
+      - name: Upload digest
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: digest-${{ steps.platform.outputs.pair }}
+          path: ${{ runner.temp }}/digests/*
+          if-no-files-found: error
+          retention-days: 1
+
+  merge:
+    runs-on: ubuntu-24.04
+    needs: build
+    timeout-minutes: 10
+
+    steps:
+      - name: Download digests
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
+        with:
+          path: ${{ runner.temp }}/digests
+          pattern: digest-*
+          merge-multiple: true
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@594f3bf4285d9ea8dc53c9a0c9c4092420091003 # v4.4.0
+
+      - name: Log into registry
+        uses: docker/login-action@81c6f93d4bc991e510b342a00b419b3bb4efc5c6 # v4.7.0
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # GHCR creates the package private on the first push. Make it public
+      # once in the package settings, so self-hosters can pull without
+      # credentials.
+      - name: Create the manifest list and push
+        working-directory: ${{ runner.temp }}/digests
+        run: |
+          image="${REGISTRY}/${IMAGE_NAME}"
+          # shellcheck disable=SC2046
+          docker buildx imagetools create \
+            -t "${image}:latest" \
+            -t "${image}:sha-${GITHUB_SHA}" \
+            $(printf "${image}@sha256:%s " *)

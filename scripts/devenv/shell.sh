@@ -14,10 +14,7 @@ printf '%s\n' \
   "  deno task build:edge - build for edge" \
   "  deno task screenshot - capture representative pages" \
   "  deno task precommit  - typecheck + lint + cpd + build + test" \
-  "  pc                   - run precommit" \
-  "  container-build      - assemble the OCI runtime image" \
-  "  container-load       - load the image into Docker/Podman" \
-  "  container-check      - boot the image and verify it serves"
+  "  pc                   - run precommit"
 
 # Some npm packages carry broken Biome configs. Keep their cache outside the project.
 export DENO_DIR="$HOME/.cache/deno"

@@ -1,0 +1,16 @@
+.git
+.github
+.claude
+.devenv
+.direnv
+.scratch
+node_modules
+coverage*
+cov*
+test
+specs
+docs
+verification
+*.db*
+.db-key
+.env

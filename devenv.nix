@@ -56,8 +56,6 @@ let
   };
 in
 {
-  imports = [ ./nix/container.nix ];
-
   options.ticketsBrowserTools = lib.mkOption {
     type = lib.types.bool;
     default = true;
