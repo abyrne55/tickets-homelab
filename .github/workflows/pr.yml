@@ -1,7 +1,9 @@
 name: PR checks
 
 # Typecheck, lint and test inside the dev image, and build and check the prod
-# image without pushing it.
+# image without pushing it. Each job runs only when files it depends on have
+# changed (a skipped job counts as passing for required checks). A manual
+# run always runs everything.
 
 on:
   pull_request:
@@ -19,7 +21,47 @@ env:
   CONTAINER_ENGINE: docker
 
 jobs:
+  changes:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      pull-requests: read
+    outputs:
+      code: ${{ github.event_name == 'workflow_dispatch' || steps.filter.outputs.code }}
+      image: ${{ github.event_name == 'workflow_dispatch' || steps.filter.outputs.image }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - name: Check for relevant changes
+        uses: dorny/paths-filter@ceb8a2b8f2d89434be7ff52d3de7ec3738c5cc9d # v4.0.3
+        id: filter
+        with:
+          filters: |
+            code:
+              - 'src/**'
+              - 'test/**'
+              - 'scripts/**'
+              - 'deno.json'
+              - 'deno.lock'
+              - 'biome.json'
+              - 'Containerfile.dev'
+              - 'dev'
+              - '.github/workflows/pr.yml'
+            image:
+              - 'src/**'
+              - 'scripts/**'
+              - 'deno.json'
+              - 'deno.lock'
+              - 'Containerfile'
+              - '.dockerignore'
+              - '.github/workflows/pr.yml'
+
   static:
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     steps:
@@ -52,6 +94,8 @@ jobs:
         run: DEV_DENO_DIR="$RUNNER_TEMP/deno-dir" ./dev biome check --error-on-warnings src test scripts
 
   test:
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
     runs-on: ubuntu-24.04
     timeout-minutes: 40
     steps:
@@ -80,6 +124,8 @@ jobs:
         run: DEV_DENO_DIR="$RUNNER_TEMP/deno-dir" ./dev scripts/test.sh
 
   image:
+    needs: changes
+    if: needs.changes.outputs.image == 'true'
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     steps:
