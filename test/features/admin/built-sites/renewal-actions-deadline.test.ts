@@ -8,7 +8,7 @@ import { getAllActivityLog } from "#test-utils/activity-log.ts";
 import { expectFlashRedirect } from "#test-utils/assertions.ts";
 import { describeWithEnv } from "#test-utils/db.ts";
 import { createTestBuiltSite } from "#test-utils/db-helpers/built-sites.ts";
-import { adminFormPost } from "#test-utils/session.ts";
+import { adminFormPost, refreshTestCsrfToken } from "#test-utils/session.ts";
 import {
   findSite,
   renewalSuiteHelpers,
@@ -26,6 +26,7 @@ const expectBumpClamps = async (
   expectedMonths: number,
 ): Promise<void> => {
   using _fakeTime = new FakeTime(NOW_MS);
+  await refreshTestCsrfToken();
   const site = await createTestBuiltSite({
     hostingId: scriptId,
     name: siteName,
@@ -50,6 +51,7 @@ describeWithEnv(
     describe("POST /admin/built-sites/:id/bump-deadline", () => {
       test("bumps from current deadline on future-dated site", async () => {
         using _fakeTime = new FakeTime(NOW_MS);
+        await refreshTestCsrfToken();
         const site = await createTestBuiltSite({
           hostingId: "6010",
           name: "Bump Future",
@@ -78,6 +80,7 @@ describeWithEnv(
 
       test("bumps from now on expired site", async () => {
         using _fakeTime = new FakeTime(NOW_MS);
+        await refreshTestCsrfToken();
         const site = await createTestBuiltSite({
           hostingId: "6011",
           name: "Bump Expired",
@@ -97,6 +100,7 @@ describeWithEnv(
 
       test("bumps from now on deadline-less site", async () => {
         using _fakeTime = new FakeTime(NOW_MS);
+        await refreshTestCsrfToken();
         const site = await createTestBuiltSite({
           hostingId: "6012",
           name: "Bump No Deadline",

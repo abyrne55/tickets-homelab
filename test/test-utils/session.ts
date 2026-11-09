@@ -126,6 +126,15 @@ export const reloginAsAdmin = async (
   setTestSession(await loginAsAdmin(username, password));
 };
 
+/** Re-sign the cached session's CSRF token with the current clock. The setup
+ * ceremony signs it at the real time, and the verifier rejects a token that
+ * is more than 60 seconds ahead of a frozen `FakeTime`. Call it right after
+ * installing `FakeTime`. */
+export const refreshTestCsrfToken = async (): Promise<void> => {
+  const session = await getTestSession();
+  setTestSession({ ...session, csrfToken: await signCsrfToken() });
+};
+
 export const createTestManagerSession = async (
   token = "mgr-session",
   rawUsername = "testmanager",

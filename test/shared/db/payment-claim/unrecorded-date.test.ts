@@ -10,6 +10,7 @@ import type { PaymentRowState } from "#payment/row-state.ts";
 import { describeWithEnv } from "#test-utils/db.ts";
 import { claimCurrentAttendeeRows } from "#test-utils/payment-claim.ts";
 import { bookedWithPayment } from "#test-utils/processed-payments.ts";
+import { refreshTestCsrfToken } from "#test-utils/session.ts";
 
 const rowState = async (
   attendeeId: number,
@@ -48,6 +49,7 @@ describeWithEnv(
   () => {
     test("a retry preserves when returned money was first found", async () => {
       using time = new FakeTime(new Date("2026-08-11T10:00:00.000Z"));
+      await refreshTestCsrfToken();
       const sessionId = "sess-returned-date";
       const attendeeId = await bookedWithPayment(sessionId, "pi_returned_date");
 
