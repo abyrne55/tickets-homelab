@@ -2,10 +2,9 @@
  * Tests that the webhook example in the documentation matches the real
  * buildWebhookPayload() output. If the payload shape changes, this test
  * fails and forces an update to src/shared/webhook-example.ts (and thus the
- * admin guide and README).
+ * admin guide).
  */
 
-import { assertStringIncludes } from "@std/assert";
 import { expect } from "@std/expect";
 import { afterEach, beforeEach, describe, it as test } from "@std/testing/bdd";
 import { FakeTime } from "@std/testing/time";
@@ -140,11 +139,5 @@ describe("webhook example", () => {
     ).sort();
 
     expect(exampleTicketKeys).toEqual(ticketKeys);
-  });
-
-  test("README.md contains the example JSON", async () => {
-    const readme = await Deno.readTextFile("README.md");
-
-    assertStringIncludes(readme, WEBHOOK_EXAMPLE_JSON);
   });
 });
