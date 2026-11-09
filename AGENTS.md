@@ -41,7 +41,7 @@ CI (`.github/workflows/pr.yml`) runs typecheck, Biome, the test suite, and the i
 
 If your shell commands run in a sandbox, `git` and `gh` commands typically need to run outside it. `git commit` triggers the prek hooks, which write a log under `~/.cache/prek`, and `gh` fails TLS verification through a filtering proxy. `git push` can also fail to set upstream tracking. Read-only commands such as `git status` and `git log` work inside the sandbox. Don't work around a hook failure with `--no-verify`.
 
-`prek.toml` defines the pre-commit hooks (built-in checks only). Running `repomix` produces `repomix-output.xml` (gitignored): a compressed, single-file pack of the repo for agent use, configured by `repomix.config.json` and `.repomixignore`. It is about 9 MB and 2.1 million tokens, so search it or read sections rather than loading it whole. Nothing regenerates it automatically; rerun `repomix` if it looks stale.
+`prek.toml` defines the pre-commit hooks (built-in checks only). Running `repomix` produces `repomix-output.xml` (gitignored): a compressed, single-file pack of the repo's `src/` code for agent use, configured by `repomix.config.json` (output settings) and `.repomixignore` (exclusions). It leaves out tests, locales, templates, styles, migrations, and lockfiles, and strips comments (about 1.8 MB, 456k tokens, down from 2.1M). Search it or read sections rather than loading it whole. For a narrower pack, add `--include "src/shared/db/**"` or similar, or use `--token-count-tree 10000` to see where tokens go. Read the excluded areas from the files directly. Nothing regenerates it automatically; rerun `repomix` if it looks stale.
 
 ## Things the code won't tell you quickly
 
