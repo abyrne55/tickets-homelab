@@ -1,4 +1,4 @@
-# Build with: podman build --format docker -t tickets .
+# Build with: podman build -t tickets .
 FROM quay.io/hummingbird/curl:8-builder AS build
 USER 0
 ARG TARGETARCH
@@ -42,7 +42,5 @@ WORKDIR /data
 VOLUME /data
 EXPOSE 3000
 USER 65532
-HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
-  CMD ["/usr/bin/curl", "-fsS", "-o", "/dev/null", "http://127.0.0.1:3000/health"]
 ENTRYPOINT ["/usr/local/bin/tickets"]
 CMD []
