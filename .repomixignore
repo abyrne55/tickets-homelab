@@ -2,3 +2,4 @@
 deno.lock
 LICENSE
 **/*.snapshot.html
+src/**/migrations/
