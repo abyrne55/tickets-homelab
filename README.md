@@ -10,9 +10,11 @@
 ### Run with Podman
 
 ```bash
-podman build --format docker -t tickets .
+DB_ENCRYPTION_KEY="$(openssl rand -base64 32)"
+podman build -t tickets .
+podman volume create tickets-data
 podman run --rm -p 3000:3000 -v tickets-data:/data \
-  -e DB_ENCRYPTION_KEY="$(openssl rand -base64 32)" tickets
+  -e DB_ENCRYPTION_KEY=$DB_ENCRYPTION_KEY tickets
 curl http://localhost:3000/health   # Up :)
 ```
 
