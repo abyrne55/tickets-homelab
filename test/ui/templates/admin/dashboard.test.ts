@@ -1,0 +1,466 @@
+import { assert, assertStringIncludes } from "@std/assert";
+import { beforeAll, describe, it as test } from "@std/testing/bdd";
+import {
+  activeListingStatsSection,
+  adminDashboardPage,
+} from "#templates/admin/dashboard.tsx";
+import { listingTable } from "#templates/admin/listing-table.tsx";
+import {
+  OWNER_SESSION,
+  setupAdminPageTest,
+} from "#test-utils/admin-page-test.ts";
+import { expectIncludesAll } from "#test-utils/assertions.ts";
+import { describeWithEnv } from "#test-utils/db.ts";
+import { testAttendee, testListingWithCount } from "#test-utils/factories.ts";
+import { withRequestContext } from "#test-utils/request-context.ts";
+
+describe("adminDashboardPage", () => {
+  beforeAll(setupAdminPageTest);
+
+  test("renders empty state when no listings", () => {
+    const html = adminDashboardPage([], OWNER_SESSION);
+    expectIncludesAll(html, ["Listings", "No listings yet"]);
+  });
+
+  test("renders listings table", () => {
+    const listings = [testListingWithCount({ attendee_count: 25 })];
+    const html = adminDashboardPage(listings, OWNER_SESSION);
+    expectIncludesAll(html, ["Test Listing", "25 / 100", "/admin/listing/1"]);
+  });
+
+  test("displays listing name", () => {
+    const listings = [testListingWithCount({ name: "My Test Listing" })];
+    const html = adminDashboardPage(listings, OWNER_SESSION);
+    expectIncludesAll(html, ["My Test Listing", "Listing name"]);
+  });
+
+  test("renders the add-listing and add-attendee quick actions", () => {
+    const html = adminDashboardPage([], OWNER_SESSION);
+    expectIncludesAll(html, [
+      'href="/admin/listing/new"',
+      "Add Listing",
+      'href="/admin/attendees/new"',
+      "Add Attendee",
+    ]);
+  });
+
+  test("does not render the multi-booking link builder", () => {
+    const listings = [
+      testListingWithCount({ active: true, id: 1, slug: "ab12c" }),
+      testListingWithCount({ active: true, id: 2, slug: "cd34e" }),
+    ];
+    const html = adminDashboardPage(listings, OWNER_SESSION);
+    assert(!html.includes("Multi-booking link"));
+    assert(!html.includes("data-multi-booking-slug"));
+  });
+
+  test("includes logout link", async () => {
+    await withRequestContext(() => {
+      const html = adminDashboardPage([], OWNER_SESSION);
+      assertStringIncludes(html, "/admin/logout");
+    });
+  });
+
+  test("renders newest attendees in an open details element", () => {
+    const listings = [testListingWithCount({ id: 1, name: "Gala Night" })];
+    const attendees = [
+      testAttendee({ id: 1, listing_id: 1, name: "Alice" }),
+      testAttendee({ id: 2, listing_id: 1, name: "Bob" }),
+    ];
+    const html = adminDashboardPage(
+      listings,
+      OWNER_SESSION,
+      undefined,
+      attendees,
+    );
+    expectIncludesAll(html, ["<details open", "Newest 2 Attendees"]);
+  });
+
+  test("newest attendees section not shown when no attendees", () => {
+    const html = adminDashboardPage([], OWNER_SESSION, undefined, []);
+    assert(!html.includes("Newest"));
+    assert(!html.includes("<details open"));
+  });
+  test("renders upcoming holidays in a constrained scrollable table", () => {
+    const html = adminDashboardPage(
+      [],
+      OWNER_SESSION,
+      undefined,
+      [],
+      undefined,
+      undefined,
+      undefined,
+      "all",
+      [
+        {
+          end_date: "2026-12-26",
+          id: 1,
+          name: "Winter Break",
+          start_date: "2026-12-24",
+        },
+      ],
+    );
+
+    expectIncludesAll(html, [
+      "Upcoming holidays</summary>",
+      'class="table-scroll dashboard-holidays-scroll"',
+      'href="/admin/holidays/1"',
+      "Winter Break",
+      "2026-12-24",
+      "2026-12-26",
+    ]);
+  });
+
+  test("renders upcoming service events with listing details and edit links", () => {
+    const listings = [testListingWithCount({ id: 7, name: "Room A" })];
+    const html = adminDashboardPage(
+      listings,
+      OWNER_SESSION,
+      undefined,
+      [],
+      undefined,
+      undefined,
+      undefined,
+      "all",
+      [],
+      [
+        {
+          bookings: [{ listingId: 7, quantity: 2 }],
+          date: "2099-07-01",
+          id: 42,
+          name: "Boiler Service",
+          totalQuantity: 2,
+        },
+        {
+          bookings: [{ listingId: 999, quantity: 1 }],
+          date: null,
+          id: 43,
+          name: "Unassigned Service",
+          totalQuantity: 1,
+        },
+      ],
+    );
+    expectIncludesAll(html, [
+      "Upcoming service events</summary>",
+      'href="/admin/servicing/42"',
+      "Boiler Service",
+      "2099",
+      "1 listing · 2",
+      'href="/admin/servicing/43"',
+      "Unassigned Service",
+    ]);
+  });
+
+  test("newest attendees shows singular for single attendee", () => {
+    const listings = [testListingWithCount({ id: 1 })];
+    const attendees = [testAttendee({ id: 1, listing_id: 1 })];
+    const html = adminDashboardPage(
+      listings,
+      OWNER_SESSION,
+      undefined,
+      attendees,
+    );
+    assertStringIncludes(html, "Newest 1 Attendee</summary>");
+  });
+
+  test("newest attendees shows the Listings column", () => {
+    const listings = [testListingWithCount({ id: 1, name: "Workshop" })];
+    const attendees = [testAttendee({ id: 1, listing_id: 1 })];
+    const html = adminDashboardPage(
+      listings,
+      OWNER_SESSION,
+      undefined,
+      attendees,
+    );
+    expectIncludesAll(html, ["<th>Listings</th>", "Workshop"]);
+  });
+
+  test("newest attendees groups an attendee's bookings into one row, listings in display order", () => {
+    // `listings` arrives pre-sorted (Gala first); the attendee's lines arrive
+    // in the opposite order, so the cell order proves the display order wins.
+    const listings = [
+      testListingWithCount({ id: 1, name: "Gala" }),
+      testListingWithCount({ id: 2, name: "Workshop" }),
+    ];
+    const attendees = [
+      testAttendee({ id: 1, listing_id: 2, name: "Alice" }),
+      testAttendee({ id: 1, listing_id: 1, name: "Alice" }),
+    ];
+    const html = adminDashboardPage(
+      listings,
+      OWNER_SESSION,
+      undefined,
+      attendees,
+    );
+    expectIncludesAll(html, [
+      "Newest 1 Attendee</summary>",
+      '<span class="listings-cell" title="Gala, Workshop">' +
+        '<a href="/admin/listing/1">Gala</a>, ' +
+        '<a href="/admin/listing/2">Workshop</a></span>',
+    ]);
+  });
+
+  test("newest attendees not shown when all attendees have unknown listing_id", () => {
+    const listings = [testListingWithCount({ id: 1 })];
+    const attendees = [testAttendee({ id: 1, listing_id: 999 })];
+    const html = adminDashboardPage(
+      listings,
+      OWNER_SESSION,
+      undefined,
+      attendees,
+    );
+    assert(!html.includes("Newest"));
+    assert(!html.includes("<details open"));
+  });
+
+  test("newest attendees skips attendees with unknown listing_id", () => {
+    const listings = [testListingWithCount({ id: 1, name: "Known Listing" })];
+    const attendees = [
+      testAttendee({ id: 1, listing_id: 1, name: "Valid" }),
+      testAttendee({ id: 2, listing_id: 999, name: "Orphan" }),
+    ];
+    const html = adminDashboardPage(
+      listings,
+      OWNER_SESSION,
+      undefined,
+      attendees,
+    );
+    assertStringIncludes(html, "Valid");
+    assert(!html.includes("Orphan"));
+    assertStringIncludes(html, "Newest 1 Attendee</summary>");
+  });
+});
+
+describe("adminDashboardPage inactive listings", () => {
+  beforeAll(setupAdminPageTest);
+
+  test("hides inactive listings from home", () => {
+    const listings = [
+      testListingWithCount({
+        active: false,
+        attendee_count: 5,
+        name: "Inactive",
+      }),
+    ];
+    const html = adminDashboardPage(listings, OWNER_SESSION);
+    assert(!html.includes("inactive-row"));
+    assert(!html.includes('href="/admin/listing/1"'));
+    assertStringIncludes(html, "No listings yet");
+  });
+});
+
+describe("adminDashboardPage with column template filters", () => {
+  beforeAll(setupAdminPageTest);
+
+  test("applies date filter to created column", () => {
+    const listings = [
+      testListingWithCount({ created: "2026-04-10T14:00:00Z" }),
+    ];
+    const html = adminDashboardPage(
+      listings,
+      OWNER_SESSION,
+      undefined,
+      [],
+      undefined,
+      null,
+      listingTable.layout.parse('{{name}}, {{created | date: "%B %Y"}}'),
+    );
+    assertStringIncludes(html, "April 2026");
+  });
+
+  test("renders default cell format when no filter applied", () => {
+    const listings = [
+      testListingWithCount({ created: "2026-04-10T14:00:00Z" }),
+    ];
+    const html = adminDashboardPage(
+      listings,
+      OWNER_SESSION,
+      undefined,
+      [],
+      undefined,
+      null,
+      listingTable.layout.parse("{{name}}, {{created}}"),
+    );
+    assertStringIncludes(html, "Friday 10 April 2026");
+  });
+});
+
+describe("activeListingStatsSection", () => {
+  test("renders income, tickets, and attendees", () => {
+    const html = activeListingStatsSection({
+      attendees: 52,
+      income: 5000,
+      tickets: 30,
+    });
+    expectIncludesAll(html, [
+      "Active Listing Statistics",
+      "<strong>Income:</strong>",
+      "<strong>Tickets:</strong>",
+      "<strong>Attendees:</strong>",
+      "30",
+      "52",
+    ]);
+  });
+
+  test("renders zero values", () => {
+    const html = activeListingStatsSection({
+      attendees: 0,
+      income: 0,
+      tickets: 0,
+    });
+    expectIncludesAll(html, [
+      "<strong>Tickets:</strong> 0",
+      "<strong>Attendees:</strong> 0",
+    ]);
+  });
+
+  test("renders as closed details element", () => {
+    const html = activeListingStatsSection({
+      attendees: 0,
+      income: 0,
+      tickets: 0,
+    });
+    assertStringIncludes(html, "<details>");
+    assert(!html.includes("<details open"));
+  });
+});
+
+describe("adminDashboardPage active listing statistics", () => {
+  beforeAll(setupAdminPageTest);
+
+  test("shows stats section when stats provided", () => {
+    const html = adminDashboardPage(
+      [],
+      OWNER_SESSION,
+      undefined,
+      [],
+      undefined,
+      {
+        attendees: 10,
+        income: 1000,
+        tickets: 5,
+      },
+    );
+    assertStringIncludes(html, "Active Listing Statistics");
+  });
+
+  test("does not show stats section when stats is null", () => {
+    const html = adminDashboardPage(
+      [],
+      OWNER_SESSION,
+      undefined,
+      [],
+      undefined,
+      null,
+    );
+    assert(!html.includes("Active Listing Statistics"));
+  });
+
+  test("does not show stats section when stats not provided", () => {
+    const html = adminDashboardPage([], OWNER_SESSION);
+    assert(!html.includes("Active Listing Statistics"));
+  });
+});
+
+describe("adminDashboardPage type filter", () => {
+  beforeAll(setupAdminPageTest);
+
+  const standard = testListingWithCount({
+    id: 1,
+    listing_type: "standard",
+    name: "Standard Listing",
+    slug: "std01",
+  });
+  const daily = testListingWithCount({
+    id: 2,
+    listing_type: "daily",
+    name: "Daily Listing",
+    slug: "day01",
+  });
+
+  test("shows the filter bar when more than one type is present", () => {
+    const html = adminDashboardPage([standard, daily], OWNER_SESSION);
+    expectIncludesAll(html, [
+      "Showing:",
+      'href="/admin/?type=standard"',
+      'href="/admin/?type=daily"',
+    ]);
+  });
+
+  test("hides the filter bar when only one type is present", () => {
+    const onlyStandard = testListingWithCount({
+      id: 3,
+      listing_type: "standard",
+      slug: "std02",
+    });
+    const html = adminDashboardPage([standard, onlyStandard], OWNER_SESSION);
+    assert(!html.includes("Showing:"));
+  });
+
+  test("shows every type and marks 'All' active on the default view", () => {
+    const html = adminDashboardPage([standard, daily], OWNER_SESSION);
+    expectIncludesAll(html, [
+      "Standard Listing",
+      "Daily Listing",
+      "<strong><u>All</u></strong>",
+    ]);
+  });
+
+  test("filters the listing table to the active type", () => {
+    // Standard is inactive, so it never reaches the active-only table.
+    const standardInactive = testListingWithCount({
+      active: false,
+      id: 1,
+      listing_type: "standard",
+      name: "Standard Listing",
+      slug: "std01",
+    });
+    const html = adminDashboardPage(
+      [standardInactive, daily],
+      OWNER_SESSION,
+      undefined,
+      [],
+      undefined,
+      null,
+      undefined,
+      "daily",
+    );
+    assertStringIncludes(html, "Daily Listing");
+    assert(!html.includes("Standard Listing"));
+    expectIncludesAll(html, [
+      "<strong><u>Daily</u></strong>",
+      // The "All" option links back to the unfiltered dashboard.
+      '<a href="/admin/">All</a>',
+    ]);
+  });
+
+  test("does not show a CSV export footer (the dashboard table is active-only)", () => {
+    const html = adminDashboardPage([standard, daily], OWNER_SESSION);
+    assert(!html.includes("/admin/listings/csv"));
+  });
+});
+
+describeWithEnv(
+  "listing images",
+  { env: { STORAGE_ZONE_KEY: "testkey", STORAGE_ZONE_NAME: "testzone" } },
+  () => {
+    describe("adminDashboardPage with images", () => {
+      beforeAll(setupAdminPageTest);
+
+      test("shows thumbnail when listing has image_url", () => {
+        const listings = [testListingWithCount({ image_url: "thumb.jpg" })];
+        const html = adminDashboardPage(listings, OWNER_SESSION);
+        expectIncludesAll(html, [
+          "/image/thumb.jpg",
+          'class="listing-thumbnail"',
+        ]);
+      });
+
+      test("does not show thumbnail when listing has no image_url", () => {
+        const listings = [testListingWithCount({ image_url: "" })];
+        const html = adminDashboardPage(listings, OWNER_SESSION);
+        assert(!html.includes('src="/image/'));
+      });
+    });
+  },
+);

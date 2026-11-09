@@ -1,0 +1,76 @@
+/** Shared arrange helpers for the admin group route tests. */
+
+import { expect } from "@std/expect";
+import { hmacHash } from "#crypto/hashing.ts";
+import type { GroupInput } from "#shared/catalog-fields/fields.ts";
+import {
+  createSoldPackageMember,
+  createTestGroup,
+} from "#test-utils/db-helpers/groups.ts";
+import { createTestListing } from "#test-utils/db-helpers/listings.ts";
+import { apiRequest } from "#test-utils/session.ts";
+import type { Group, ListingWithCount } from "#types";
+
+/** The group input the validators read, with only the fields a test varies.
+ * The slug index is the real one-way code for the slug, as a saved group's
+ * would be. */
+export const groupInput = async (
+  overrides: Partial<GroupInput> = {},
+): Promise<GroupInput> => {
+  const slug = overrides.slug ?? "fresh-name";
+  return {
+    description: "",
+    hidden: false,
+    isPackage: false,
+    maxAttendees: 0,
+    name: "Fresh name",
+    termsAndConditions: "",
+    ...overrides,
+    slug,
+    slugIndex: await hmacHash(slug),
+  };
+};
+
+/** A package with one member and one sold ticket stamped with it. */
+export const soldPackage = async (
+  name: string,
+  hidden: boolean,
+): Promise<Group> => (await createSoldPackageMember(name, hidden)).group;
+
+/** Create a package group with one member carrying a `price` override via the
+ *  JSON API, returning the group. */
+export const packagedGroup = async (
+  name: string,
+  price: number,
+): Promise<Group> => {
+  const group = await createTestGroup({ isPackage: true, name });
+  const listing = await createTestListing({ groupId: group.id });
+  const response = await apiRequest(`/api/admin/groups/${group.id}`, {
+    body: {
+      is_package: true,
+      package_members: [{ listing_id: listing.id, price }],
+    },
+    method: "PUT",
+  });
+  expect(response.status).toBe(200);
+  return group;
+};
+
+/** A fresh group with one member listing, for package PUT tests. The member's
+ *  cap defaults to the column default of one; a test posting a bigger quantity
+ *  raises the cap to match the member rules. */
+export const groupWithMember = async (
+  name: string,
+  maxQuantity = 1,
+): Promise<{ group: Group; listing: ListingWithCount }> => {
+  const group = await createTestGroup({ name });
+  const listing = await createTestListing({ groupId: group.id, maxQuantity });
+  return { group, listing };
+};
+
+/** PUT a group via the JSON API. */
+export const putGroup = (
+  groupId: number,
+  body: Record<string, unknown>,
+): Promise<Response> =>
+  apiRequest(`/api/admin/groups/${groupId}`, { body, method: "PUT" });

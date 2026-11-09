@@ -1,0 +1,251 @@
+import { expect } from "@std/expect";
+import { describe, it as test } from "@std/testing/bdd";
+import { stub } from "@std/testing/mock";
+import { settings } from "#db/settings.ts";
+import { sanitizeStripeError } from "#shared/stripe/runtime.ts";
+import type { StripeWebhookEvent } from "#shared/stripe/webhook.ts";
+import { stripeApi } from "#shared/stripe.ts";
+import { stripePaymentProvider } from "#shared/stripe-provider.ts";
+import { expectClosedCheckoutFailure } from "#test-utils/checkout-failure.ts";
+import { checkoutIntent, checkoutItem } from "#test-utils/checkout-items.ts";
+import { withEnv } from "#test-utils/env.ts";
+import { withMocks } from "#test-utils/mocks.ts";
+import { asSession } from "#test-utils/payment-session.ts";
+import { activateStripe } from "#test-utils/settings.ts";
+import {
+  signedWebhook,
+  stripeCheckoutSession,
+  stripeClient,
+} from "#test-utils/stripe/fixtures.ts";
+import { describeStripe } from "#test-utils/stripe/harness.ts";
+import { checkoutSessionEvent } from "#test-utils/webhooks.ts";
+
+describeStripe("stripe-provider", () => {
+  describe("verifyWebhookSignature delegation", () => {
+    test("delegates to Stripe webhook verification", async () => {
+      const TEST_SECRET = "whsec_provider_verify_test";
+      await activateStripe(TEST_SECRET, "we_provider_test");
+
+      const listing: StripeWebhookEvent = {
+        data: { object: { id: "cs_test" } },
+        id: "evt_provider",
+        type: "checkout.session.completed",
+      };
+
+      const { payload, signature } = await signedWebhook(listing, TEST_SECRET);
+
+      const result = await stripePaymentProvider.verifyWebhookSignature(
+        payload,
+        signature,
+        "https://example.com/payment/webhook",
+        new TextEncoder().encode(payload),
+      );
+      expect(result.valid).toBe(true);
+      if (result.valid) {
+        expect(result.listing.id).toBe("evt_provider");
+      }
+    });
+
+    test("returns error for invalid signature", async () => {
+      const TEST_SECRET = "whsec_provider_invalid_test";
+      await activateStripe(TEST_SECRET, "we_provider_inv");
+
+      const timestamp = Math.floor(Date.now() / 1000);
+      const body = '{"test": true}';
+      const result = await stripePaymentProvider.verifyWebhookSignature(
+        body,
+        `t=${timestamp},v1=invalid_sig`,
+        "https://example.com/payment/webhook",
+        new TextEncoder().encode(body),
+      );
+
+      expect(result.valid).toBe(false);
+      if (!result.valid) {
+        expect(result.error).toBe("Signature verification failed");
+      }
+    });
+  });
+
+  describe("setupWebhookEndpoint delegation", () => {
+    test("delegates to stripe.ts setupWebhookEndpoint", async () => {
+      // Mock stripeApi since setupWebhookEndpointImpl creates its own client
+      using _mockSetup = stub(stripeApi, "setupWebhookEndpoint", () =>
+        Promise.resolve({
+          endpointId: "we_provider_created",
+          secret: "whsec_provider_secret",
+          success: true,
+        }),
+      );
+      const result = await stripePaymentProvider.setupWebhookEndpoint(
+        "sk_test_mock",
+        "https://example.com/payment/webhook",
+      );
+
+      expect(result.success).toBe(true);
+      if (result.success) {
+        expect(result.endpointId).toBe("we_provider_created");
+        expect(result.secret).toBe("whsec_provider_secret");
+      }
+    });
+  });
+
+  describe("sanitizeStripeError edge cases", () => {
+    test("returns err.name when no statusCode/code/type and name is set", () => {
+      const err = new TypeError("something went wrong");
+      const detail = sanitizeStripeError(err);
+      expect(detail).toBe("TypeError");
+    });
+  });
+
+  describe("getMockConfig without STRIPE_MOCK_HOST", () => {
+    test("creates client without mock config when STRIPE_MOCK_HOST not set", async () => {
+      await settings.update.stripe.secretKey("sk_test_123");
+      using _env = withEnv({
+        STRIPE_MOCK_HOST: undefined,
+        STRIPE_MOCK_PORT: undefined,
+      });
+      const client = await stripeClient("sk_test_123");
+      expect(client.balance.retrieve).toBeInstanceOf(Function);
+    });
+  });
+
+  describe("createCheckoutSession - via provider", () => {
+    test("refuses a created session that names no address", async () => {
+      const client = await stripeClient();
+      await withMocks(
+        () =>
+          stub(client.checkout.sessions, "create", () =>
+            Promise.resolve(
+              stripeCheckoutSession({
+                id: "cs_multi_nourl",
+                url: null,
+              }),
+            ),
+          ),
+        () =>
+          expectClosedCheckoutFailure(
+            stripePaymentProvider.createCheckoutSession(
+              checkoutIntent({ email: "jane@example.com", name: "Jane" }),
+              "http://localhost:3000",
+            ),
+            { provider: "stripe", reason: "invalid_response" },
+          ),
+      );
+    });
+  });
+
+  describe("metadata size limits", () => {
+    test("returns error when items metadata exceeds Stripe limit", async () => {
+      await settings.update.stripe.secretKey("sk_test_mock");
+      // Generate enough items to exceed 500-char serialized metadata
+      const items = Array.from({ length: 40 }, (_, i) =>
+        checkoutItem({
+          listingId: i + 1,
+          name: `Listing ${i + 1}`,
+          slug: `listing-${i + 1}`,
+        }),
+      );
+      const result = await stripePaymentProvider.createCheckoutSession(
+        checkoutIntent({ email: "alice@example.com", items, name: "Alice" }),
+        "http://localhost:3000",
+      );
+      expect(result).not.toBeNull();
+      expect(result).toHaveProperty("error");
+      expect((result as { error: string }).error).toMatch(/too many listings/i);
+    });
+
+    test("propagates non-PaymentUserError exceptions", async () => {
+      await settings.update.stripe.secretKey("sk_test_mock");
+      using _mockCreate = stub(stripeApi, "createCheckoutSession", () =>
+        Promise.reject(new TypeError("unexpected")),
+      );
+      await expect(
+        stripePaymentProvider.createCheckoutSession(
+          checkoutIntent({ email: "john@example.com", name: "John" }),
+          "http://localhost:3000",
+        ),
+      ).rejects.toThrow("unexpected");
+    });
+
+    test("propagates checkout client failures from the production path", async () => {
+      const client = await stripeClient();
+      const failure = new TypeError("Stripe connection failed");
+      await withMocks(
+        () =>
+          stub(client.checkout.sessions, "create", () =>
+            Promise.reject(failure),
+          ),
+        async () => {
+          await expect(
+            stripePaymentProvider.createCheckoutSession(
+              checkoutIntent({ email: "john@example.com", name: "John" }),
+              "http://localhost:3000",
+            ),
+          ).rejects.toBe(failure);
+        },
+      );
+    });
+  });
+
+  describe("resolveWebhookSession", () => {
+    test("extracts session directly from listing with complete metadata", async () => {
+      const result = await stripePaymentProvider.resolveWebhookSession(
+        checkoutSessionEvent({
+          amountTotal: 2000,
+          eventId: "evt_resolve_1",
+          metadata: {
+            email: "alice@example.com",
+            items: '[{"e":1,"q":1,"p":0}]',
+            name: "Alice",
+          },
+          paymentIntent: "pi_resolve_1",
+          sessionId: "cs_resolve_1",
+        }),
+      );
+      expect(result).not.toBe("skip");
+      expect(result).not.toBeNull();
+      if (result && result !== "skip") {
+        expect(asSession(result).id).toBe("cs_resolve_1");
+        expect(asSession(result).paymentStatus).toBe("paid");
+        expect(asSession(result).paymentReference).toBe("pi_resolve_1");
+        expect(asSession(result).provider).toBe("stripe");
+        expect(asSession(result).amountTotal).toBe(2000);
+      }
+    });
+
+    test("falls back to retrieveSession when listing lacks metadata", async () => {
+      const mockRetrieve = stub(stripeApi, "retrieveCheckoutSession", () =>
+        Promise.resolve(null),
+      );
+
+      try {
+        const result = await stripePaymentProvider.resolveWebhookSession(
+          checkoutSessionEvent({
+            amountTotal: 0,
+            eventId: "evt_no_meta",
+            metadata: {},
+            sessionId: "cs_no_meta",
+          }),
+        );
+        // retrieveSession called with listing object id
+        expect(mockRetrieve.calls[0]!.args[0]).toBe("cs_no_meta");
+        expect(result).toBeNull();
+      } finally {
+        mockRetrieve.restore();
+      }
+    });
+
+    test("returns null when listing has no id", async () => {
+      const result = await stripePaymentProvider.resolveWebhookSession({
+        data: {
+          object: {
+            some_field: "value",
+          },
+        },
+        id: "evt_no_obj_id",
+        type: "checkout.session.completed",
+      });
+      expect(result).toBeNull();
+    });
+  });
+});

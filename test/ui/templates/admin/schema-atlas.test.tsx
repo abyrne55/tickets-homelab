@@ -1,0 +1,261 @@
+import { assert, assertStringIncludes } from "@std/assert";
+import { expect } from "@std/expect";
+import { beforeAll, describe, it as test } from "@std/testing/bdd";
+import { ensureMessageGroups, t } from "#i18n";
+import { MESSAGE_GROUPS } from "#locales/message-groups.generated.ts";
+import { SCHEMA_ATLAS_MACHINES } from "#shared/schema-atlas/index.ts";
+import { adminSchemaAtlasPage } from "#templates/admin/schema-atlas.tsx";
+import { setupAdminPageTest } from "#test-utils/admin-page-test.ts";
+import { expectIncludesAll } from "#test-utils/assertions.ts";
+
+const NO_UNANSWERED = { rows: [], total: 0 };
+
+const html = (): string =>
+  adminSchemaAtlasPage({ adminLevel: "owner" }, "light", [], NO_UNANSWERED);
+
+describe("the system map page", () => {
+  beforeAll(async () => {
+    await setupAdminPageTest();
+    await ensureMessageGroups(MESSAGE_GROUPS);
+  });
+
+  test("renders under the settings nav with its own title", () => {
+    assertStringIncludes(html(), "<h1>System map</h1>");
+    assertStringIncludes(html(), 'href="/admin/schema"');
+  });
+
+  test("the legend names each actor with its own colour class", () => {
+    const page = html();
+    expect(page).toMatch(/<div class="prose">\s*<p class="schema-legend">/);
+    assertStringIncludes(page, "</strong> <span");
+    for (const actor of ["system", "provider", "owner"]) {
+      assertStringIncludes(
+        page,
+        `class="schema-actor schema-actor-${actor}">${t(`schema.legend.${actor}`)}`,
+      );
+    }
+    // Exactly two commas join the three actors.
+    expect(page.match(/<\/span>, <span/g)).toHaveLength(2);
+  });
+
+  test("every atlas label resolves to catalog copy, not to a raw key", () => {
+    const page = html();
+    for (const machine of SCHEMA_ATLAS_MACHINES) {
+      assert(!page.includes(machine.titleKey));
+      assertStringIncludes(page, t(machine.titleKey));
+      for (const state of machine.states) {
+        assert(!page.includes(`>${state.labelKey}<`));
+        expectIncludesAll(page, [t(state.labelKey), t(state.detailKey)]);
+        for (const edge of state.edges) {
+          assertStringIncludes(page, t(edge.labelKey));
+        }
+      }
+    }
+  });
+
+  test("the static list answers the map question for a partial return", () => {
+    const page = html();
+    // The one-exit owner decision, in plain words, with its way forward.
+    expectIncludesAll(page, [
+      "Your decision needed: some money is back",
+      "You confirm the money came back → Money back",
+      // A terminal state says so.
+      "Recorded: done",
+      "Nothing. This state is an ending.",
+    ]);
+  });
+
+  test("marks the start states and carries each machine's section", () => {
+    const page = html();
+    expectIncludesAll(page, [
+      "Ready to send · where every record starts",
+      'id="refund"',
+      'id="review"',
+      'id="row"',
+      "A refund at the payment provider",
+      "A payment row kept for review",
+      "One payment row's held work",
+    ]);
+  });
+
+  test("keeps every static and interactive schema hook", () => {
+    const page = html();
+    const states = SCHEMA_ATLAS_MACHINES.flatMap((machine) => machine.states);
+    expect(page.match(/class="schema-state"/g)).toHaveLength(states.length);
+    expect(page.match(/class="schema-facts"/g)).toHaveLength(
+      states.filter((state) => state.facts.length > 0).length,
+    );
+    expect(page.match(/class="schema-machine"/g)).toHaveLength(
+      SCHEMA_ATLAS_MACHINES.length,
+    );
+    expect(page.match(/class="schema-widget"/g)).toHaveLength(
+      SCHEMA_ATLAS_MACHINES.length,
+    );
+    expect(page.match(/class="schema-widget-hint"/g)).toHaveLength(
+      SCHEMA_ATLAS_MACHINES.length,
+    );
+  });
+
+  test("the live check answers clean when the scan found nothing", () => {
+    const page = html();
+    expectIncludesAll(page, [
+      'id="schema-check"',
+      "All stored records fit the system rules.",
+    ]);
+  });
+
+  test("the live check names an unknown SumUp state", () => {
+    const page = adminSchemaAtlasPage(
+      { adminLevel: "owner" },
+      "light",
+      [
+        {
+          key: "sumup_unknown_state",
+          recordId: "idx_unknown",
+          state: "abandoned",
+        },
+      ],
+      NO_UNANSWERED,
+    );
+    expectIncludesAll(page, [
+      "A SumUp recovery record has a state this site does not know.",
+      "<code>idx_unknown</code> <code>abandoned</code>",
+    ]);
+  });
+
+  test("the live check names a SumUp checkout id mismatch", () => {
+    const page = adminSchemaAtlasPage(
+      { adminLevel: "owner" },
+      "light",
+      [
+        {
+          key: "sumup_checkout_id_mismatch",
+          recordId: "idx_mismatch",
+          state: "staged",
+        },
+      ],
+      NO_UNANSWERED,
+    );
+    expectIncludesAll(page, [
+      "A SumUp recovery record's state and checkout ID do not match.",
+      "<code>idx_mismatch</code> <code>staged</code>",
+    ]);
+  });
+
+  test("the live check names a SumUp check time mismatch", () => {
+    const page = adminSchemaAtlasPage(
+      { adminLevel: "owner" },
+      "light",
+      [
+        {
+          key: "sumup_check_time_mismatch",
+          recordId: "idx_clock",
+          state: "waiting",
+        },
+      ],
+      NO_UNANSWERED,
+    );
+    expectIncludesAll(page, [
+      "A SumUp recovery record's state and next check time do not match.",
+      "<code>idx_clock</code> <code>waiting</code>",
+    ]);
+  });
+
+  test("the unanswered section answers clean when nothing is waiting", () => {
+    const page = html();
+    expectIncludesAll(page, [
+      'id="schema-unanswered"',
+      "Money nobody has answered for",
+      "No SumUp checkout needs your attention.",
+    ]);
+  });
+
+  test("the unanswered section counts and lists the oldest rows", () => {
+    const page = adminSchemaAtlasPage({ adminLevel: "owner" }, "light", [], {
+      rows: [
+        {
+          createdAt: "2026-08-01T00:00:00.000Z",
+          referenceIndex: "idx_owed_row",
+          state: "owed",
+        },
+      ],
+      total: 3,
+    });
+    expectIncludesAll(page, [
+      "3 checkouts need an answer.",
+      "Showing the oldest 1.",
+      "Money not accounted for",
+      "<code>idx_owed_row</code>",
+    ]);
+    assert(!page.includes("No SumUp checkout needs your attention."));
+  });
+
+  test("the unanswered section falls back to the stored time on clock skew", () => {
+    // A writer's clock slightly ahead of the renderer's makes a fresh row
+    // read as future, where an age label would be a lie — the raw stored
+    // time is shown instead.
+    const page = adminSchemaAtlasPage({ adminLevel: "owner" }, "light", [], {
+      rows: [
+        {
+          createdAt: "2999-01-01T00:00:00.000Z",
+          referenceIndex: "idx_skewed_row",
+          state: "owed",
+        },
+      ],
+      total: 1,
+    });
+    // The exact joined row: label, separator, stored time, then the code —
+    // deterministic here because the fallback shows the raw stored time.
+    assertStringIncludes(
+      page,
+      "Money not accounted for · 2999-01-01T00:00:00.000Z " +
+        "<code>idx_skewed_row</code>",
+    );
+  });
+
+  test("the unanswered section says nothing about truncation when whole", () => {
+    const page = adminSchemaAtlasPage({ adminLevel: "owner" }, "light", [], {
+      rows: [
+        {
+          createdAt: "2026-08-01T00:00:00.000Z",
+          referenceIndex: "idx_waiting_row",
+          state: "waiting",
+        },
+      ],
+      total: 1,
+    });
+    assertStringIncludes(page, "1 checkout needs an answer.");
+    assert(!page.includes("Showing the oldest"));
+    expectIncludesAll(page, [
+      "Waiting for an answer",
+      "<code>idx_waiting_row</code>",
+    ]);
+  });
+
+  test("embeds the resolved diagram data as safe JSON", () => {
+    const page = html();
+    const start = page.indexOf('<script id="schema-atlas-data"');
+    const end = page.indexOf("</script>", start);
+    expect(start).toBeGreaterThan(-1);
+    const body = page.slice(page.indexOf(">", start) + 1, end);
+    assert(!body.includes("<"));
+    const parsed = JSON.parse(body) as {
+      machines: {
+        states: {
+          edges: { to: string }[];
+          id: string;
+          label: string;
+        }[];
+      }[];
+    };
+    expect(parsed.machines.map((machine) => machine.states.length)).toEqual(
+      SCHEMA_ATLAS_MACHINES.map((machine) => machine.states.length),
+    );
+    const refund = parsed.machines[0]!;
+    const choice = refund.states.find(
+      (state) => state.id === "choice_returned",
+    );
+    expect(choice?.label).toBe("Your decision needed: some money is back");
+    expect(choice?.edges.map((edge) => edge.to)).toEqual(["returned"]);
+  });
+});

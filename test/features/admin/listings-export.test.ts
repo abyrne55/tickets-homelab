@@ -1,0 +1,153 @@
+import { assert, assertArrayIncludes, assertStringIncludes } from "@std/assert";
+import { it as test } from "@std/testing/bdd";
+import { getAllActivityLog } from "#db/activity-log.ts";
+import { moveTickets } from "#db/attendees/update.ts";
+import { saveAttendeeAnswers } from "#db/questions/attendee-answers/save.ts";
+import { listingQuestions } from "#db/questions/queries.ts";
+import { answersTable, questionsTable } from "#db/questions/tables.ts";
+import { expectIncludesAll } from "#test-utils/assertions.ts";
+import { describeWithEnv } from "#test-utils/db.ts";
+import {
+  createDailyTestAttendee,
+  createTestAttendeeDirect,
+} from "#test-utils/db-helpers/attendees.ts";
+import { createTestListing } from "#test-utils/db-helpers/listings.ts";
+import { adminGet, withTestSession } from "#test-utils/session.ts";
+
+describeWithEnv("the listing CSV export", { db: true }, () => {
+  /** A listing with one checked-in (AliceIn) and one not (BobOut). */
+  const setup = async () => {
+    const listing = await createTestListing({
+      maxAttendees: 100,
+      name: "Gala",
+      thankYouUrl: "https://example.com",
+    });
+    const { attendee: alice } = await createTestAttendeeDirect(
+      listing.id,
+      "AliceIn",
+      "alice@example.com",
+    );
+    await createTestAttendeeDirect(listing.id, "BobOut", "bob@example.com");
+    await moveTickets("admit", [
+      { attendeeId: alice.id, count: 1, listingId: listing.id },
+    ]);
+    return listing;
+  };
+
+  test("?filter=in exports only checked-in attendees", async () => {
+    const listing = await setup();
+    const response = await adminGet(
+      `/admin/listing/${listing.id}/export?filter=in`,
+    );
+    const csv = await response.text();
+    assertStringIncludes(csv, "AliceIn");
+    assert(!csv.includes("BobOut"));
+  });
+
+  test("?filter=out exports only checked-out attendees", async () => {
+    const listing = await setup();
+    const response = await adminGet(
+      `/admin/listing/${listing.id}/export?filter=out`,
+    );
+    const csv = await response.text();
+    assertStringIncludes(csv, "BobOut");
+    assert(!csv.includes("AliceIn"));
+  });
+
+  test("no check-in filter exports everyone", async () => {
+    const listing = await setup();
+    const response = await adminGet(`/admin/listing/${listing.id}/export`);
+    const csv = await response.text();
+    expectIncludesAll(csv, ["AliceIn", "BobOut"]);
+  });
+
+  test("notes the export in the record of what was done", async () => {
+    const listing = await setup();
+    await adminGet(`/admin/listing/${listing.id}/export`);
+    const entries = await withTestSession(() => getAllActivityLog(20));
+    assertArrayIncludes(
+      entries.map((entry) => entry.message),
+      ["CSV exported for 'Gala'"],
+    );
+  });
+
+  test("names the chosen day in the export's activity entry", async () => {
+    const { listing } = await createDailyTestAttendee(
+      "DayPerson",
+      "dayperson@example.com",
+      "2026-08-01",
+      { name: "Day Export" },
+    );
+    await adminGet(`/admin/listing/${listing.id}/export?date=2026-08-01`);
+    const entries = await withTestSession(() => getAllActivityLog(20));
+    assertArrayIncludes(
+      entries.map((entry) => entry.message),
+      ["CSV exported for 'Day Export' (date: 2026-08-01)"],
+    );
+  });
+
+  /** A listing with two attendees: Alice (a choice answer plus a free-text
+   * answer) and Bob (no answers). Together they drive the answer-cell renderer
+   * through every branch — choice + free-text, an unanswered free-text
+   * question, a non-free-text question, and an attendee with no answers. */
+  const setupFreeText = async () => {
+    const listing = await createTestListing({
+      maxAttendees: 100,
+      name: "Gala",
+    });
+    const { attendee: alice } = await createTestAttendeeDirect(
+      listing.id,
+      "Alice",
+      "alice@example.com",
+    );
+    await createTestAttendeeDirect(listing.id, "Bob", "bob@example.com");
+    const question = await questionsTable.insert({
+      displayType: "free_text",
+      text: "Dietary needs?",
+    });
+    const choiceQuestion = await questionsTable.insert({
+      displayType: "radio",
+      text: "Seat?",
+    });
+    const aisle = await answersTable.insert({
+      questionId: choiceQuestion.id,
+      sortOrder: 0,
+      text: "Aisle",
+    });
+    const unanswered = await questionsTable.insert({
+      displayType: "free_text",
+      text: "Allergies?",
+    });
+    await listingQuestions.setIds(listing.id, [
+      question.id,
+      choiceQuestion.id,
+      unanswered.id,
+    ]);
+    await saveAttendeeAnswers(
+      new Map([
+        [
+          alice.id,
+          {
+            answerIds: [aisle.id],
+            textAnswers: [{ questionId: question.id, text: "Coeliac" }],
+          },
+        ],
+      ]),
+    );
+    return listing;
+  };
+
+  test("includes the decrypted free-text answer in the CSV export", async () => {
+    const listing = await setupFreeText();
+    const response = await adminGet(`/admin/listing/${listing.id}/export`);
+    const csv = await response.text();
+    expectIncludesAll(csv, ["Dietary needs?", "Coeliac"]);
+  });
+
+  test("shows the decrypted free-text answer on the roster tab", async () => {
+    const listing = await setupFreeText();
+    const response = await adminGet(`/admin/listing/${listing.id}/attendees`);
+    const html = await response.text();
+    assertStringIncludes(html, "Coeliac");
+  });
+});

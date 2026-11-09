@@ -1,0 +1,336 @@
+import { assert, assertStringIncludes } from "@std/assert";
+import { expect } from "@std/expect";
+import { describe, it as test } from "@std/testing/bdd";
+import { ListingEditPanel } from "#templates/admin/listings/edit-panel.tsx";
+import { adminListingNewPage } from "#templates/admin/listings/form-pages.tsx";
+import {
+  editPanelHtml,
+  registerListingTemplateHooks,
+  withBuilder,
+} from "#test/ui/templates/admin/listings/helpers.ts";
+import { OWNER_SESSION } from "#test-utils/admin-page-test.ts";
+import { expectIncludesAll } from "#test-utils/assertions.ts";
+import { withEnv } from "#test-utils/env.ts";
+import { testGroup, testListingWithCount } from "#test-utils/factories.ts";
+
+/** An edit-panel render with both always-open URLs cleared, so only the field
+ *  named in `overrides` can force the Advanced disclosure open. */
+const ADVANCED_OPEN = '<details class="listing-advanced" open>';
+const advancedPanelHtml = (
+  overrides: Parameters<typeof testListingWithCount>[0],
+  extra: Parameters<typeof editPanelHtml>[1] = {},
+): string =>
+  editPanelHtml(
+    testListingWithCount({ thank_you_url: "", webhook_url: "", ...overrides }),
+    extra,
+  );
+
+describe("adminListingEditPage group select", () => {
+  registerListingTemplateHooks();
+
+  test("checks the listing's groups when groups exist", () => {
+    const groups = [testGroup({ id: 2, name: "Group Two" })];
+    const listing = testListingWithCount({});
+    const html = String(
+      ListingEditPanel({
+        groups,
+        listing,
+        selectedGroupIds: [2],
+        session: OWNER_SESSION,
+      }),
+    );
+    expectIncludesAll(html, ['name="group_ids"', 'value="2"', "checked"]);
+  });
+
+  test("does not link to the JSON export (that now lives on the Actions tab)", () => {
+    const listing = testListingWithCount({ id: 9 });
+    const html = String(
+      ListingEditPanel({ groups: [], listing, session: OWNER_SESSION }),
+    );
+    // The Actions tab is now editor-visible too, so the export link lives
+    // only there — the Edit panel no longer duplicates it.
+    assert(!html.includes(`/admin/listing/${listing.id}/export.json`));
+  });
+});
+
+describe("adminListingEditPage duration warning", () => {
+  registerListingTemplateHooks();
+
+  test("includes duration warning + confirmation gate with current duration", () => {
+    const listing = testListingWithCount({
+      duration_days: 3,
+      listing_type: "daily",
+    });
+    const html = String(
+      ListingEditPanel({ groups: [], listing, session: OWNER_SESSION }),
+    );
+    expectIncludesAll(html, [
+      "Changing booking duration will update existing bookings",
+      'id="duration-warning"',
+      'id="duration-warning-confirm"',
+      // The current duration is exposed via a data attribute so the bundled
+      // admin script can compare against the form's input.
+      'data-duration-original="3"',
+      // Every other element initDurationWarning() hooks into must be present —
+      // if any of these IDs change, the client-side gate silently no-ops.
+      'id="listing-edit-form"',
+      'id="listing-edit-submit"',
+    ]);
+    // The duration input the script reads is pre-filled with the stored value.
+    expect(html).toMatch(/name="duration_days"[^>]*value="3"/);
+  });
+});
+
+describe("adminListingEditPage day prices", () => {
+  registerListingTemplateHooks();
+
+  test("renders priced day-count inputs and checks the customisable toggle", () => {
+    const listing = testListingWithCount({
+      customisable_days: true,
+      day_prices: { 1: 1000, 2: 1800 },
+      duration_days: 2,
+    });
+    const html = String(
+      ListingEditPanel({ groups: [], listing, session: OWNER_SESSION }),
+    );
+    // One input per day up to the maximum duration, pre-filled from day_prices.
+    expectIncludesAll(html, [
+      'name="day_price_1"',
+      'value="10.00"',
+      'name="day_price_2"',
+      'value="18.00"',
+      // The customisable-days checkbox is rendered checked for such a listing.
+      'name="customisable_days"',
+      "Day Prices (customisable days)",
+    ]);
+  });
+
+  test("renders a single blank day-price row on the new-listing form", () => {
+    const html = adminListingNewPage([], OWNER_SESSION);
+    assertStringIncludes(html, 'name="day_price_1"');
+    // The maximum defaults to 1 day for a new listing, so only one row shows.
+    assert(!html.includes('name="day_price_2"'));
+  });
+});
+
+describe("adminListingEditPage form sections", () => {
+  registerListingTemplateHooks();
+
+  /** Render the edit panel for a listing whose stored counts drifted from the
+   *  recount, so the mismatch-shown and read-only tests share one setup. */
+  const renderMismatchPanel = (): {
+    html: string;
+    listing: ReturnType<typeof testListingWithCount>;
+  } => {
+    const listing = testListingWithCount({
+      attendee_count: 7,
+      tickets_count: 3,
+    });
+    const html = String(
+      ListingEditPanel({
+        aggregateRecalculation: {
+          booked_quantity: { current: 7, recalculated: 4 },
+          tickets_count: { current: 3, recalculated: 3 },
+        },
+        groups: [],
+        listing,
+        session: OWNER_SESSION,
+      }),
+    );
+    return { html, listing };
+  };
+
+  test("groups fields under section legends and an Advanced disclosure", () => {
+    const listing = testListingWithCount();
+    const html = String(
+      ListingEditPanel({ groups: [], listing, session: OWNER_SESSION }),
+    );
+    expectIncludesAll(html, [
+      "<legend>Basics</legend>",
+      "<legend>Tickets &amp; Pricing</legend>",
+      "<legend>Daily Scheduling</legend>",
+      "<legend>Booking duration &amp; day prices</legend>",
+      "<legend>Options &amp; Visibility</legend>",
+      "<summary>Advanced settings</summary>",
+    ]);
+  });
+
+  test("renders the day-prices block immediately after the customisable-days checkbox", () => {
+    const listing = testListingWithCount({
+      customisable_days: true,
+      day_prices: { 1: 1000 },
+      duration_days: 1,
+    });
+    const html = String(
+      ListingEditPanel({ groups: [], listing, session: OWNER_SESSION }),
+    );
+    const customisableIdx = html.indexOf('name="customisable_days"');
+    const dayPriceIdx = html.indexOf('name="day_price_1"');
+    const contactFieldsIdx = html.indexOf('name="fields"');
+    // The prices follow the checkbox, and both sit before the later Options
+    // section — i.e. no longer dumped at the bottom of the form.
+    expect(customisableIdx).toBeGreaterThan(-1);
+    expect(customisableIdx).toBeLessThan(dayPriceIdx);
+    expect(dayPriceIdx).toBeLessThan(contactFieldsIdx);
+  });
+
+  test("places the technical fields inside the Advanced disclosure", () => {
+    const listing = testListingWithCount();
+    const html = String(
+      ListingEditPanel({ groups: [], listing, session: OWNER_SESSION }),
+    );
+    const advancedIdx = html.indexOf("<summary>Advanced settings</summary>");
+    expect(advancedIdx).toBeGreaterThan(-1);
+    expect(advancedIdx).toBeLessThan(html.indexOf('name="webhook_url"'));
+    expect(advancedIdx).toBeLessThan(html.indexOf('name="thank_you_url"'));
+    expect(advancedIdx).toBeLessThan(html.indexOf('name="slug"'));
+  });
+
+  test("renders editable running totals with a recalculation link", () => {
+    const listing = testListingWithCount({
+      attendee_count: 7,
+      tickets_count: 3,
+    });
+    const html = String(
+      ListingEditPanel({ groups: [], listing, session: OWNER_SESSION }),
+    );
+    expectIncludesAll(html, [
+      "<legend>Running totals</legend>",
+      "Accuracy is not guaranteed",
+      'name="booked_quantity"',
+      'value="7"',
+      'name="tickets_count"',
+      'value="3"',
+    ]);
+    // Income is not a count override in the running-totals form — that form keeps
+    // only the two count aggregates, which post to the recalculate route.
+    const totalsForm = html.slice(
+      html.indexOf("<legend>Running totals</legend>"),
+      html.indexOf("Adjust income"),
+    );
+    assert(!totalsForm.includes('name="income"'));
+    assertStringIncludes(html, `/admin/listings/recalculate/${listing.id}`);
+  });
+
+  test("renders the separate income-correction form (decision 14)", () => {
+    const listing = testListingWithCount();
+    const html = String(
+      ListingEditPanel({ groups: [], listing, session: OWNER_SESSION }),
+    );
+    // Income correction stays in a dedicated warned form, apart from counts.
+    expectIncludesAll(html, [
+      "<h2>Adjust income</h2>",
+      `action="/admin/listing/${listing.id}/income"`,
+      'name="income"',
+      "This adds a correction to Money.",
+    ]);
+  });
+
+  test("links from the income form to the detail page's money breakdown", () => {
+    const listing = testListingWithCount({ id: 4 });
+    const html = String(
+      ListingEditPanel({ groups: [], listing, session: OWNER_SESSION }),
+    );
+    // A compact pointer beside the adjust-income form to the full reconciliation
+    // section on the detail page, so the two figures are explained in one place.
+    expectIncludesAll(html, [
+      'href="/admin/listing/4#income-ledger"',
+      "Money in and out",
+    ]);
+  });
+
+  test("shows a running-total mismatch on the edit page", () => {
+    const { html, listing } = renderMismatchPanel();
+    expectIncludesAll(html, [
+      "Mismatch",
+      "expected <strong>4</strong>, got",
+      `/admin/listings/recalculate/${listing.id}`,
+    ]);
+  });
+
+  test("hides the recalculate link in read-only mode", () => {
+    using _env = withEnv({ READ_ONLY_FROM: "2020-01-01T00:00:00.000Z" });
+    const { html, listing } = renderMismatchPanel();
+    // The mismatch is still surfaced, but the recalculate action would route
+    // to a write page blocked in read-only mode, so its link is dropped.
+    assertStringIncludes(html, "Mismatch");
+    assert(!html.includes(`/admin/listings/recalculate/${listing.id}`));
+  });
+});
+
+describe("adminListingEditPage Advanced section auto-open", () => {
+  registerListingTemplateHooks();
+
+  test("stays collapsed when only the slug is set", () => {
+    // Slug is always populated; on its own it must not force the section open.
+    const html = advancedPanelHtml({});
+    assertStringIncludes(html, '<details class="listing-advanced">');
+    assert(!html.includes(ADVANCED_OPEN));
+  });
+
+  test("opens when a thank-you URL is set", () => {
+    const html = advancedPanelHtml({
+      thank_you_url: "https://example.com/thanks",
+    });
+    assertStringIncludes(html, ADVANCED_OPEN);
+  });
+
+  test("opens when a webhook URL is set", () => {
+    const html = advancedPanelHtml({
+      webhook_url: "https://hooks.example.com/notify",
+    });
+    assertStringIncludes(html, ADVANCED_OPEN);
+  });
+
+  test("opens on a validation error so hidden fields stay reachable", () => {
+    const html = advancedPanelHtml({}, { error: "Bad input" });
+    assertStringIncludes(html, ADVANCED_OPEN);
+  });
+});
+
+describe("adminListingEditPage Advanced section auto-open (builder fields)", () => {
+  registerListingTemplateHooks();
+
+  test("opens when a renewal tier (months per unit) is set", () => {
+    withBuilder(() => {
+      assertStringIncludes(
+        advancedPanelHtml({ months_per_unit: 3 }),
+        ADVANCED_OPEN,
+      );
+    });
+  });
+
+  test("opens when initial site months is set", () => {
+    withBuilder(() => {
+      assertStringIncludes(
+        advancedPanelHtml({ initial_site_months: 6, months_per_unit: 0 }),
+        ADVANCED_OPEN,
+      );
+    });
+  });
+
+  test("opens when a built site is assigned on booking", () => {
+    withBuilder(() => {
+      assertStringIncludes(
+        advancedPanelHtml({
+          assign_built_site: true,
+          initial_site_months: 0,
+          months_per_unit: 0,
+        }),
+        ADVANCED_OPEN,
+      );
+    });
+  });
+
+  test("stays collapsed when no advanced field is set even with the builder enabled", () => {
+    withBuilder(() => {
+      const html = advancedPanelHtml({
+        assign_built_site: false,
+        initial_site_months: 0,
+        months_per_unit: 0,
+      });
+      assertStringIncludes(html, '<details class="listing-advanced">');
+      assert(!html.includes(ADVANCED_OPEN));
+    });
+  });
+});

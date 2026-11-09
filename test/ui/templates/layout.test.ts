@@ -1,0 +1,358 @@
+import { assert, assertStringIncludes } from "@std/assert";
+import { expect } from "@std/expect";
+import { afterEach, beforeAll, describe, it as test } from "@std/testing/bdd";
+import { buildTicketListing } from "#booking/model.ts";
+import { settings } from "#db/settings.ts";
+import { Raw } from "#jsx/jsx-runtime.ts";
+import {
+  CSS_PATH,
+  IFRAME_RESIZER_CHILD_JS_PATH,
+  JS_PATH,
+} from "#shared/asset-paths.ts";
+import { setDemoModeForTest } from "#shared/demo/mode.ts";
+import { consumeFlash, setFlashContext } from "#shared/flash-context.ts";
+import { getImageProxyUrl } from "#shared/image-proxy-url.ts";
+import { detectIframeMode } from "#shared/request-context.ts";
+import { adminLoginPage } from "#templates/admin/login.tsx";
+import { AdminNav } from "#templates/admin/nav.tsx";
+import { Layout } from "#templates/layout.tsx";
+import { ticketPage } from "#templates/public/reservations/ticket-page.tsx";
+import {
+  OWNER_SESSION,
+  setupAdminPageTest,
+} from "#test-utils/admin-page-test.ts";
+import { expectIncludesAll } from "#test-utils/assertions.ts";
+import { describeWithEnv } from "#test-utils/db.ts";
+import { withEnv } from "#test-utils/env.ts";
+import { testListingWithCount } from "#test-utils/factories.ts";
+import { withStorageDisabled, withStorageEnabled } from "#test-utils/mocks.ts";
+import { withRequestContext } from "#test-utils/request-context.ts";
+import type { AdminSession } from "#types";
+
+const EDITOR_SESSION: AdminSession = { adminLevel: "editor" };
+
+/** Set `RENEWAL_URL`, render `AdminNav`, assert the renewal link is present,
+ *  and clean up the env var. Both the read-only and warning-banner describe
+ *  blocks repeat this exact sequence. */
+const expectRenewalLink = async (): Promise<void> => {
+  using _env = withEnv({ RENEWAL_URL: "https://example.com/renew" });
+  const html = String(AdminNav({ active: "/admin/", session: OWNER_SESSION }));
+  expectIncludesAll(html, ["Renew now", "https://example.com/renew"]);
+};
+
+const setupLayoutTest = async (): Promise<void> => {
+  await setupAdminPageTest();
+  setDemoModeForTest(false);
+};
+
+const resetLayoutTest = (): void => {
+  settings.clearTestOverrides();
+  setDemoModeForTest(false);
+};
+
+describe("asset-paths", () => {
+  beforeAll(setupLayoutTest);
+  afterEach(resetLayoutTest);
+
+  test("pages include CSS_PATH in stylesheet link", () => {
+    const html = adminLoginPage();
+    expectIncludesAll(html, [`href="${CSS_PATH}"`, 'rel="stylesheet"']);
+  });
+
+  test("pages include JS_PATH in deferred script tag", () => {
+    const html = adminLoginPage();
+    expectIncludesAll(html, [`src="${JS_PATH}"`, "defer"]);
+  });
+
+  test("pages link /custom.css cache-busted by the settings version", () => {
+    const html = adminLoginPage();
+    assertStringIncludes(html, `href="/custom.css?v=${settings.version}"`);
+  });
+});
+
+describe("Layout skip navigation", () => {
+  beforeAll(setupLayoutTest);
+  afterEach(resetLayoutTest);
+
+  test("renders skip-nav link targeting main-content", () => {
+    const html = String(
+      Layout({ children: "", family: "public", title: "Test" }),
+    );
+    expectIncludesAll(html, [
+      'class="skip-nav"',
+      'href="#main-content"',
+      "Skip to content",
+      'id="main-content"',
+      'tabindex="-1"',
+    ]);
+  });
+
+  test("keeps global chrome direct while grouping page regions", () => {
+    const html = String(
+      Layout({
+        beforeContent: Raw({ html: '<nav class="example-nav">Menu</nav>' }),
+        children: Raw({ html: "<h1>Heading</h1><p>Body</p>" }),
+        contentClassName: "example-page",
+        family: "public",
+        title: "Test",
+      }),
+    );
+
+    assertStringIncludes(
+      html,
+      '<main id="main-content" tabindex="-1"><nav class="example-nav">Menu</nav><div class="page-regions example-page"><h1>Heading</h1><p>Body</p></div></main>',
+    );
+  });
+});
+
+describe("Layout document shell", () => {
+  beforeAll(setupLayoutTest);
+  afterEach(resetLayoutTest);
+
+  test("renders the required document metadata and stylesheet contracts", () => {
+    const html = String(
+      Layout({ children: "", family: "public", title: "Test" }),
+    );
+
+    expect(html.slice(0, "<!DOCTYPE html>".length)).toBe("<!DOCTYPE html>");
+    expectIncludesAll(html, [
+      '<meta charset="UTF-8"><meta content="width=device-width, initial-scale=1.0" name="viewport">',
+      `<link href="${CSS_PATH}" rel="stylesheet">`,
+      `<link href="/custom.css?v=${settings.version}" rel="stylesheet">`,
+    ]);
+  });
+
+  test("renders head extras as markup", () => {
+    const extra = '<meta content="raw" name="test-extra">';
+    const html = String(
+      Layout({
+        children: "",
+        family: "public",
+        headExtra: extra,
+        title: "Test",
+      }),
+    );
+
+    assertStringIncludes(html, extra);
+    assert(!html.includes("&lt;meta"));
+  });
+
+  test("applies an explicit body class without adding the iframe script", () => {
+    const html = String(
+      Layout({
+        bodyClass: "example-page",
+        children: "",
+        family: "public",
+        title: "Test",
+      }),
+    );
+
+    assertStringIncludes(
+      html,
+      '<body class="example-page" data-page-family="public">',
+    );
+    assert(!html.includes(IFRAME_RESIZER_CHILD_JS_PATH));
+  });
+
+  test("adds the iframe script only for an iframe body class", () => {
+    const html = String(
+      Layout({
+        bodyClass: "example iframe",
+        children: "",
+        family: "public",
+        title: "Test",
+      }),
+    );
+
+    expectIncludesAll(html, [
+      '<body class="example iframe" data-page-family="public">',
+      `<script src="${IFRAME_RESIZER_CHILD_JS_PATH}"></script>`,
+    ]);
+  });
+
+  test("renders the configured header image with decorative semantics", () => {
+    settings.setForTest({ header_image_url: "header.jpg" });
+    const html = String(
+      Layout({ children: "", family: "public", title: "Test" }),
+    );
+
+    assertStringIncludes(
+      html,
+      `<img alt="" class="header-image" src="${getImageProxyUrl(
+        "header.jpg",
+      )}">`,
+    );
+  });
+
+  test("hides the configured header image in iframe mode", async () => {
+    settings.setForTest({ header_image_url: "header.jpg" });
+    const html = await withRequestContext(() => {
+      detectIframeMode(new URL("https://example.com/?iframe=true"));
+      return String(Layout({ children: "", family: "public", title: "Test" }));
+    });
+
+    assert(!html.includes("header-image"));
+    assert(!html.includes(getImageProxyUrl("header.jpg")));
+  });
+
+  test("renders the demo banner only in demo mode", () => {
+    const normalHtml = String(
+      Layout({ children: "", family: "public", title: "Test" }),
+    );
+    setDemoModeForTest(true);
+    const demoHtml = String(
+      Layout({ children: "", family: "public", title: "Test" }),
+    );
+
+    assert(!normalHtml.includes('class="demo-banner"'));
+    assertStringIncludes(demoHtml, 'class="demo-banner"');
+  });
+
+  test("renders an unconsumed request flash before the page content", async () => {
+    const html = await withRequestContext(() => {
+      setFlashContext({ success: "Saved from context" });
+      return String(
+        Layout({ children: "Page body", family: "public", title: "Test" }),
+      );
+    });
+
+    assertStringIncludes(
+      html,
+      '<div class="success" role="alert">Saved from context</div><div class="page-regions">Page body</div>',
+    );
+  });
+
+  test("does not repeat a consumed request flash", async () => {
+    const html = await withRequestContext(() => {
+      setFlashContext({ error: "Already shown" });
+      consumeFlash();
+      return String(
+        Layout({ children: "Page body", family: "public", title: "Test" }),
+      );
+    });
+
+    assert(!html.includes("Already shown"));
+    assertStringIncludes(html, '<div class="page-regions">Page body</div>');
+  });
+});
+
+describe("adminLoginPage", () => {
+  beforeAll(setupLayoutTest);
+  afterEach(resetLayoutTest);
+
+  test("renders login form", () => {
+    const html = adminLoginPage();
+    expectIncludesAll(html, [
+      "Login",
+      'action="/admin/login"',
+      'type="password"',
+      'name="csrf_token"',
+    ]);
+  });
+
+  test("shows error when provided", () => {
+    const html = adminLoginPage("Invalid password");
+    expectIncludesAll(html, ["Invalid password", 'class="error"']);
+  });
+
+  test("escapes error message", () => {
+    const html = adminLoginPage("<script>evil()</script>");
+    assertStringIncludes(html, "&lt;script&gt;");
+  });
+});
+
+describe("AdminNav image storage gating", () => {
+  beforeAll(setupLayoutTest);
+  afterEach(resetLayoutTest);
+
+  test("shows Images only when file storage is enabled", () => {
+    const hasImagesLink = (session: AdminSession): boolean =>
+      String(AdminNav({ active: "/admin/", session })).includes(
+        'href="/admin/images"',
+      );
+
+    withStorageEnabled(() => {
+      expect(hasImagesLink(OWNER_SESSION)).toBe(true);
+      expect(hasImagesLink(EDITOR_SESSION)).toBe(true);
+    });
+    withStorageDisabled(() => {
+      expect(hasImagesLink(OWNER_SESSION)).toBe(false);
+      expect(hasImagesLink(EDITOR_SESSION)).toBe(false);
+    });
+  });
+});
+
+describeWithEnv(
+  "read-only mode templates",
+  { env: { READ_ONLY_FROM: "2020-01-01T00:00:00.000Z" } },
+  () => {
+    beforeAll(setupLayoutTest);
+    afterEach(resetLayoutTest);
+
+    test("AdminNav shows read-only banner", () => {
+      const html = String(
+        AdminNav({ active: "/admin/", session: OWNER_SESSION }),
+      );
+      expectIncludesAll(html, [
+        "read-only-banner",
+        "This site is in read-only mode",
+      ]);
+    });
+
+    test("AdminNav read-only banner includes renewal link when RENEWAL_URL is set", async () => {
+      await expectRenewalLink();
+    });
+
+    test("ticketPage hides booking form in read-only mode", () => {
+      const listing = testListingWithCount({ attendee_count: 0 });
+      const html = ticketPage({
+        dates: [],
+        listings: [buildTicketListing(listing, false, undefined)],
+        slugs: [listing.slug],
+      });
+      assertStringIncludes(html, "Registration closed.");
+      assert(!html.includes("Continue"));
+    });
+  },
+);
+
+describeWithEnv(
+  "read-only warning banner",
+  {
+    env: {
+      READ_ONLY_FROM: new Date(Date.now() + 5 * 86400000).toISOString(),
+    },
+  },
+  () => {
+    beforeAll(setupLayoutTest);
+    afterEach(resetLayoutTest);
+
+    test("AdminNav shows warning banner before expiry", () => {
+      const html = String(
+        AdminNav({ active: "/admin/", session: OWNER_SESSION }),
+      );
+      expectIncludesAll(html, ["read-only-banner-warning", "expires on"]);
+    });
+
+    test("AdminNav warning banner includes renewal link when RENEWAL_URL is set", async () => {
+      await expectRenewalLink();
+    });
+
+    test("AdminNav warning banner falls back when the cutoff date cannot be displayed", () => {
+      const original = Date.prototype.toLocaleDateString;
+      Date.prototype.toLocaleDateString = () => "";
+      try {
+        const html = String(
+          AdminNav({ active: "/admin/", session: OWNER_SESSION }),
+        );
+        expectIncludesAll(html, [
+          "read-only-banner-warning",
+          "Your site is approaching its expiry",
+        ]);
+        assert(!html.includes("expires on"));
+      } finally {
+        Date.prototype.toLocaleDateString = original;
+      }
+    });
+  },
+);

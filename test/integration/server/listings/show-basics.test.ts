@@ -1,0 +1,211 @@
+import { assert, assertStringIncludes } from "@std/assert";
+import { expect } from "@std/expect";
+import { describe, it as test } from "@std/testing/bdd";
+import { listingAggregates } from "#db/listings/aggregates.ts";
+import {
+  assertAdminHtml,
+  expectHtmlResponse,
+  expectIncludesAll,
+  testRequiresAuth,
+} from "#test-utils/assertions.ts";
+import { describeWithEnv } from "#test-utils/db.ts";
+import { createTestAttendee } from "#test-utils/db-helpers/attendees.ts";
+import { postAttendeeRefund, postListingSale } from "#test-utils/ledger.ts";
+import { awaitTestRequest } from "#test-utils/mocks.ts";
+import {
+  adminGet,
+  createTestManagerSession,
+  setupListingAndLogin,
+} from "#test-utils/session.ts";
+import { enableFeature } from "#test-utils/settings.ts";
+import type { Attendee, Listing } from "#types";
+
+describeWithEnv("server listings > show basics", { db: true }, () => {
+  describe("GET /admin/listing/:id", () => {
+    testRequiresAuth("/admin/listing/1");
+
+    /** Fetches a listing's detail page HTML with an authenticated cookie —
+     *  shared by the income & ledger checks below. */
+    const getListingDetailHtml = async (
+      listingId: number,
+      cookie: string,
+    ): Promise<string> => {
+      const response = await awaitTestRequest(`/admin/listing/${listingId}`, {
+        cookie,
+      });
+      return response.text();
+    };
+
+    /** Sets up a logged-in listing with a single £50 ticket sale from buyer
+     *  "Ada", returning the listing, admin cookie, and buyer for the income &
+     *  ledger checks below. */
+    const setupListingWithFiftyPoundSale = async (
+      name: string,
+    ): Promise<{ listing: Listing; cookie: string; buyer: Attendee }> => {
+      const { listing, cookie } = await setupListingAndLogin({
+        maxAttendees: 100,
+        name,
+        thankYouUrl: "https://example.com",
+      });
+      const buyer = await createTestAttendee(
+        listing.id,
+        listing.slug,
+        "Ada",
+        "ada@example.com",
+      );
+      await postListingSale({
+        attendeeId: buyer.id,
+        gross: 5000,
+        listingId: listing.id,
+      });
+      return { buyer, cookie, listing };
+    };
+
+    test("returns 404 for non-existent listing", async () => {
+      const response = await adminGet("/admin/listing/999");
+      expect(response.status).toBe(404);
+    });
+
+    test("shows listing details when authenticated", async () => {
+      const { listing } = await setupListingAndLogin({
+        maxAttendees: 100,
+        name: "Test Listing",
+        thankYouUrl: "https://example.com",
+      });
+
+      await assertAdminHtml("/admin/listing/1", listing.name);
+    });
+
+    test("renders the income & ledger breakdown reconciling income with the balance", async () => {
+      const { listing, cookie, buyer } =
+        await setupListingWithFiftyPoundSale("Ledger Listing");
+      // A £50 sale, then a refunded £20 booking (postAttendeeRefund posts a
+      // self-contained net-zero order — a sale plus its full reversal). So gross
+      // credits total £70 and recognised income is £70 (refund-agnostic), while
+      // the net ledger balance is £50 once the £20 refund_sale debit is netted —
+      // a legitimate divergence the page must show reconciled.
+      await postAttendeeRefund({
+        attendeeId: buyer.id,
+        gross: 2000,
+        listingId: listing.id,
+      });
+
+      const html = await getListingDetailHtml(listing.id, cookie);
+      expectIncludesAll(html, [
+        "Money in and out",
+        "Gross ticket sales",
+        "Total income earned",
+        "Net after refunds and costs",
+        // Recognised income £70 differs from the net ledger balance £50 by the £20
+        // refund — both rendered, reconciled.
+        "£70",
+        "£50",
+        "−£20",
+        `href="/admin/ledger?listing=${listing.id}"`,
+      ]);
+    });
+
+    test("does not eagerly render the full revenue statement on listing detail pages", async () => {
+      const { listing, cookie } =
+        await setupListingWithFiftyPoundSale("Busy Listing");
+
+      const html = await getListingDetailHtml(listing.id, cookie);
+      expectIncludesAll(html, [
+        "Money in and out",
+        `href="/admin/ledger?listing=${listing.id}"`,
+      ]);
+      assert(!html.includes('<div class="page-block" id="ledger">'));
+      assert(!html.includes("<th>Other side</th>"));
+    });
+
+    test("does not offer managers a forbidden ledger link", async () => {
+      const { listing } = await setupListingAndLogin({
+        maxAttendees: 100,
+        name: "Manager Listing",
+      });
+      const html = await getListingDetailHtml(
+        listing.id,
+        await createTestManagerSession(),
+      );
+      assertStringIncludes(html, "Money in and out");
+      assert(!html.includes(`/admin/ledger?listing=${listing.id}`));
+    });
+
+    test("shows stored-total mismatches on listing detail and edit pages", async () => {
+      const { listing } = await setupListingAndLogin({
+        maxAttendees: 100,
+        maxQuantity: 100,
+        name: "Mismatch Listing",
+        thankYouUrl: "https://example.com",
+      });
+      await createTestAttendee(
+        listing.id,
+        listing.slug,
+        "Actual User",
+        "actual@example.com",
+        2,
+      );
+      await listingAggregates.update(listing.id, {
+        booked_quantity: 9,
+        tickets_count: 1,
+      });
+
+      const detail = await adminGet(`/admin/listing/${listing.id}`);
+      await expectHtmlResponse(
+        detail,
+        200,
+        "Running total check",
+        "expected <strong>2</strong>, got",
+        "Review and recalculate totals",
+      );
+
+      const edit = await adminGet(`/admin/listing/${listing.id}/edit`);
+      await expectHtmlResponse(
+        edit,
+        200,
+        "Running totals",
+        "expected <strong>2</strong>, got",
+        "Review and recalculate totals",
+      );
+    });
+
+    test("shows Edit link on listing page", async () => {
+      const { cookie } = await setupListingAndLogin({
+        maxAttendees: 100,
+        thankYouUrl: "https://example.com",
+      });
+
+      const response = await awaitTestRequest("/admin/listing/1", {
+        cookie: cookie,
+      });
+      const html = await response.text();
+      expectIncludesAll(html, ["/admin/listing/1/edit", ">Edit<"]);
+    });
+
+    test("hides Attributes and Questions tabs while their features are disabled", async () => {
+      const { listing } = await setupListingAndLogin({
+        name: "Simple listing",
+      });
+      const html = await (
+        await adminGet(`/admin/listing/${listing.id}`)
+      ).text();
+      assert(!html.includes(`/admin/listing/${listing.id}/attributes`));
+      assert(!html.includes(`/admin/listing/${listing.id}/questions`));
+    });
+
+    test("shows Attributes and Questions tabs when their features are enabled", async () => {
+      const { listing } = await setupListingAndLogin({
+        name: "Detailed listing",
+      });
+      await enableFeature("attributes");
+      await enableFeature("questions");
+      const html = await (
+        await adminGet(`/admin/listing/${listing.id}`)
+      ).text();
+      expectIncludesAll(html, [
+        `/admin/listing/${listing.id}/attributes`,
+        `/admin/listing/${listing.id}/questions`,
+      ]);
+    });
+  });
+});

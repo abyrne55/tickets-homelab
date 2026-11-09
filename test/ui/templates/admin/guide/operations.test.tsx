@@ -1,0 +1,110 @@
+import { assert, assertStringIncludes } from "@std/assert";
+import { expect } from "@std/expect";
+import { describe, it as test } from "@std/testing/bdd";
+import { t } from "#i18n";
+import { formatBytes } from "#shared/format-units.ts";
+import { MAX_IMAGE_SIZE } from "#shared/limits.ts";
+import {
+  type GuideSection,
+  renderGuideSections,
+} from "#templates/admin/guide/components.tsx";
+import { operationsSections } from "#templates/admin/guide/operations.tsx";
+import { listingTable } from "#templates/admin/listing-table.tsx";
+import { attendeeTable } from "#templates/attendee-table/columns.tsx";
+import { expectIncludesAll } from "#test-utils/assertions.ts";
+
+const sections = operationsSections();
+
+const columnOrderSection = (): GuideSection => {
+  const section = sections.find(({ titleKey }) => titleKey === "column_order");
+  if (section === undefined) throw new Error("Column order guide is missing");
+  return section;
+};
+
+const imagesSection = (): GuideSection => {
+  const section = sections.find(({ titleKey }) => titleKey === "images");
+  if (section === undefined) throw new Error("Images guide is missing");
+  return section;
+};
+
+describe("operations guide schema", () => {
+  test("states the image size limit the site actually uses", () => {
+    const html = String(renderGuideSections([imagesSection()]));
+    assertStringIncludes(
+      html,
+      `up to <strong>${formatBytes(MAX_IMAGE_SIZE)}</strong>`,
+    );
+  });
+
+  test("says the custom CSS change appears when you save it", () => {
+    const html = String(
+      renderGuideSections([
+        sections.find(({ titleKey }) => titleKey === "customising_your_site")!,
+      ]),
+    );
+    expectIncludesAll(html, [
+      "Saving gives every visitor a fresh copy",
+      "your change appears at once",
+    ]);
+    assert(!html.includes("cached for up to an hour"));
+  });
+
+  test("keeps every operations section in its intended order", () => {
+    expect(sections.map(({ id, titleKey }) => ({ id, titleKey }))).toEqual([
+      { id: "servicing", titleKey: "servicing" },
+      { id: "logistics", titleKey: "logistics" },
+      { id: "images", titleKey: "images" },
+      { id: "attendee-statuses", titleKey: "attendee_statuses" },
+      { id: "attendees", titleKey: "attendees" },
+      { id: "backups", titleKey: "backups" },
+      { id: "read-only-mode", titleKey: "read_only_mode" },
+      { id: "software-updates", titleKey: "software_updates" },
+      { id: undefined, titleKey: "customising_your_site" },
+      { id: "column-order", titleKey: "column_order" },
+    ]);
+  });
+
+  test("keeps the two table references as custom entries between the FAQs", () => {
+    expect(
+      columnOrderSection().entries.map((entry) =>
+        "faq" in entry
+          ? { id: entry.faq, kind: "faq" }
+          : { id: entry.custom, kind: "custom" },
+      ),
+    ).toEqual([
+      { id: "customise_table_columns", kind: "faq" },
+      { id: "listing_table_columns", kind: "custom" },
+      { id: "attendee_table_columns", kind: "custom" },
+      { id: "column_format_filters", kind: "faq" },
+    ]);
+  });
+
+  test("renders each custom table answer with its own default and notes", () => {
+    const html = String(renderGuideSections([columnOrderSection()]));
+    const listingStart = html.indexOf(t("guide.q.listing_table_columns"));
+    const attendeeStart = html.indexOf(t("guide.q.attendee_table_columns"));
+    const filtersStart = html.indexOf(t("guide.q.column_format_filters"));
+
+    expect(listingStart).toBeGreaterThan(-1);
+    expect(attendeeStart).toBeGreaterThan(listingStart);
+    expect(filtersStart).toBeGreaterThan(attendeeStart);
+
+    const listingAnswer = html.slice(listingStart, attendeeStart);
+    const attendeeAnswer = html.slice(attendeeStart, filtersStart);
+    assertStringIncludes(
+      listingAnswer,
+      `<code>${listingTable.layout.defaultTemplate}</code>`,
+    );
+    assertStringIncludes(
+      attendeeAnswer,
+      `<code>${attendeeTable.layout.defaultTemplate}</code>`,
+    );
+    assert(!listingAnswer.includes(t("guide.table_columns.attendee_hidden")));
+    assertStringIncludes(
+      attendeeAnswer,
+      t("guide.table_columns.attendee_hidden"),
+    );
+    assertStringIncludes(listingAnswer, "<code>{{name}}</code>");
+    assertStringIncludes(attendeeAnswer, "<code>{{email}}</code>");
+  });
+});

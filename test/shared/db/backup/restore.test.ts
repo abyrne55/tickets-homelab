@@ -1,0 +1,290 @@
+import { assert } from "@std/assert";
+import { expect } from "@std/expect";
+import { describe, it as test } from "@std/testing/bdd";
+import { zipSync } from "fflate";
+import {
+  createBackupZip,
+  PostResetError,
+  restoreFromSql,
+  restoreFromZip,
+} from "#db/backup.ts";
+import { exportTable, snapshotReader } from "#db/backup-snapshot.ts";
+import { getDb, queryAll, queryOne, withReadSnapshot } from "#db/client.ts";
+import { verifyCurrentAppSchema } from "#db/migrations/schema-sync.ts";
+import { initDb } from "#db/migrations.ts";
+import { CONFIG_KEYS, settings } from "#db/settings.ts";
+import { describeWithEnv } from "#test-utils/db.ts";
+import {
+  bookTestAttendee,
+  decryptFirstAttendee,
+} from "#test-utils/db-helpers/attendees.ts";
+import {
+  createTestListing,
+  storedListingNames,
+} from "#test-utils/db-helpers/listings.ts";
+
+/**
+ * Regression tests for restoring a backup taken before a column-dropping
+ * migration. The restore rebuilds the database at the CURRENT schema and then
+ * replays the dump, so an INSERT that still writes a since-dropped column
+ * (e.g. listings.image_url, dropped by 2026-07-05_first_class_images) used to
+ * fail with "table listings has no column named image_url" — aborting the
+ * restore after the wipe. The dump's own schema_migrations rows record the
+ * drop migration as pending, so restoring the column lets the next boot
+ * replay it exactly as a live upgrade would.
+ */
+describeWithEnv("db > backup restore", { db: true, triggers: true }, () => {
+  const listingCount = async (): Promise<number> =>
+    (await queryOne<{ n: number }>("SELECT COUNT(*) AS n FROM listings"))!.n;
+  /** Export one table through its own snapshot, as a dump would. */
+  const exportInSnapshot = async (table: string): Promise<string> =>
+    (
+      await withReadSnapshot((snapshot) =>
+        exportTable(table, snapshotReader(snapshot)),
+      )
+    ).sql;
+  const zipSql = (file: string, sql: string): Uint8Array =>
+    zipSync({ [file]: new TextEncoder().encode(sql) });
+  const listingTotals = (
+    listingId: number,
+  ): Promise<{ booked_quantity: number; tickets_count: number } | null> =>
+    queryOne(
+      "SELECT booked_quantity, tickets_count FROM listings WHERE id = ?",
+      [listingId],
+    );
+
+  const listingColumnNames = async (): Promise<string[]> => {
+    const rows = await queryAll<{ name: string }>(
+      "SELECT name FROM pragma_table_info('listings')",
+    );
+    return rows.map((row) => row.name);
+  };
+
+  test("preserves stored listing totals while replaying booking rows", async () => {
+    const listing = await createTestListing({ name: "Stored totals" });
+    await bookTestAttendee([listing.id]);
+    const zip = await createBackupZip();
+
+    await restoreFromZip(zip);
+
+    expect(await listingTotals(listing.id)).toEqual({
+      booked_quantity: 1,
+      tickets_count: 1,
+    });
+  });
+
+  test("restores encrypted attendee details with their booking", async () => {
+    const listing = await createTestListing({ name: "Attendee details" });
+    await bookTestAttendee([listing.id], "Jane Doe", "jane.doe@example.test");
+
+    await restoreFromZip(await createBackupZip());
+    await settings.loadKeys([CONFIG_KEYS.WRAPPED_PRIVATE_KEY]);
+
+    const attendee = await decryptFirstAttendee(listing.id);
+    expect(attendee.name).toBe("Jane Doe");
+    expect(attendee.email).toBe("jane.doe@example.test");
+    expect(attendee.quantity).toBe(1);
+  });
+
+  test("reinstalls listing total triggers after importing rows", async () => {
+    const listing = await createTestListing({ name: "Restored triggers" });
+    await restoreFromZip(await createBackupZip());
+
+    const attendee = await getDb().execute(
+      "INSERT INTO attendees (created, pii_blob) VALUES ('2026-07-22T00:00:00.000Z', '')",
+    );
+    await getDb().execute({
+      args: [listing.id, Number(attendee.lastInsertRowid)],
+      sql: "INSERT INTO listing_attendees (listing_id, attendee_id) VALUES (?, ?)",
+    });
+
+    expect(await listingTotals(listing.id)).toEqual({
+      booked_quantity: 1,
+      tickets_count: 1,
+    });
+  });
+
+  test("keeps validation triggers active while importing rows", async () => {
+    await expect(
+      restoreFromSql("INSERT INTO attendee_answers (attendee_id) VALUES (1);"),
+    ).rejects.toThrow("invalid attendee answer");
+
+    expect(
+      await queryOne<{ count: number }>(
+        "SELECT COUNT(*) AS count FROM attendee_answers",
+      ),
+    ).toEqual({ count: 0 });
+    await verifyCurrentAppSchema();
+  });
+
+  test("keeps unique indexes active while importing rows", async () => {
+    const listing =
+      "INSERT INTO listings (created, max_attendees, slug_index) " +
+      "VALUES ('2026-07-22T00:00:00.000Z', 1, 'duplicate');";
+
+    await expect(restoreFromSql(`${listing}\n${listing}`)).rejects.toThrow(
+      "UNIQUE constraint failed: listings.slug_index",
+    );
+
+    expect(await listingCount()).toBe(0);
+    await verifyCurrentAppSchema();
+  });
+
+  test("rejects one oversized statement before wiping existing data", async () => {
+    await createTestListing({ name: "Still here" });
+    const statement = `INSERT INTO "settings" ("key", "value") VALUES ('oversized', '${"x".repeat(
+      600_000,
+    )}');`;
+
+    await expect(
+      restoreFromZip(zipSql("settings.sql", statement)),
+    ).rejects.toThrow("Backup SQL statement is larger than 524288 bytes");
+
+    expect(await listingCount()).toBe(1);
+  });
+
+  test("rejects a statement for the wrong table before wiping existing data", async () => {
+    await createTestListing({ name: "Still here" });
+    const statement = 'INSERT INTO "events" ("id") VALUES (1);';
+
+    await expect(
+      restoreFromZip(zipSql("settings.sql", statement)),
+    ).rejects.toThrow(
+      "Backup file settings.sql contains SQL for events instead of settings",
+    );
+
+    expect(await listingCount()).toBe(1);
+  });
+
+  test("rejects non-insert SQL before wiping existing data", async () => {
+    await createTestListing({ name: "Still here" });
+
+    await expect(
+      restoreFromZip(zipSql("settings.sql", "DELETE FROM settings;")),
+    ).rejects.toThrow(
+      "Backup file settings.sql contains a statement that is not an INSERT",
+    );
+
+    expect(await listingCount()).toBe(1);
+  });
+
+  test("rejects a partial backup without a manifest before wiping existing data", async () => {
+    await createTestListing({ name: "From partial backup" });
+    const sql = await exportInSnapshot("listings");
+    await createTestListing({ name: "Must stay" });
+
+    await expect(restoreFromZip(zipSql("listings.sql", sql))).rejects.toThrow(
+      "Backup without a manifest is missing required data for tables: settings, schema_migrations, attendee_statuses",
+    );
+
+    expect(await storedListingNames()).toEqual([
+      "From partial backup",
+      "Must stay",
+    ]);
+  });
+
+  test("keeps restored data when the final progress callback fails", async () => {
+    await createTestListing({ name: "From backup" });
+    const zip = await createBackupZip();
+    await createTestListing({ name: "Not in backup" });
+
+    const error = await restoreFromZip(zip, ({ stage }) => {
+      if (stage === "clearing-caches") throw new Error("progress stopped");
+    }).catch((caught: unknown) => caught);
+
+    expect(error).toEqual(new Error("progress stopped"));
+    expect(await storedListingNames()).toEqual(["From backup"]);
+  });
+
+  describe("backups taken before a column-dropping migration", () => {
+    const FIRST_CLASS_IMAGES_ID = "2026-07-05_first_class_images";
+
+    /** Reshape the test database into its pre-first-class-images form: the
+     *  legacy encrypted image columns are back on listings and the migration
+     *  that drops them is not yet recorded. */
+    const downgradeToLegacyImageColumns = async (): Promise<void> => {
+      await getDb().executeMultiple(
+        "ALTER TABLE listings ADD COLUMN image_url TEXT NOT NULL DEFAULT '';" +
+          "ALTER TABLE listings ADD COLUMN image_thumb_url TEXT NOT NULL DEFAULT '';",
+      );
+      await getDb().execute({
+        args: [FIRST_CLASS_IMAGES_ID],
+        sql: "DELETE FROM schema_migrations WHERE id = ?",
+      });
+      await getDb().execute(
+        "UPDATE settings SET value = 'pre-images' WHERE key = 'db_schema_hash'",
+      );
+    };
+
+    test("restores the legacy column and replays the migration on next boot", async () => {
+      // Create the listing first: the admin route it posts through runs
+      // initDb, which would replay the un-recorded migration and drop the
+      // legacy columns again if the downgrade had already happened.
+      await createTestListing({ name: "Legacy Image Listing" });
+      await downgradeToLegacyImageColumns();
+      await getDb().execute(
+        "UPDATE listings SET image_url = 'legacy-image-cipher'",
+      );
+      const zip = await createBackupZip();
+
+      await restoreFromZip(zip);
+
+      // The replayed dump carried the since-dropped column; the restore must
+      // re-add it so the data survives for the pending migration to pick up.
+      const replayed = await queryOne<{ image_url: string }>(
+        "SELECT image_url FROM listings",
+      );
+      expect(replayed?.image_url).toBe("legacy-image-cipher");
+
+      // The next boot sees the restored (older) markers and replays the
+      // pending migration: the image is promoted to a first-class record and
+      // the legacy columns are dropped again.
+      await initDb();
+      const image = await queryOne<{
+        filename: string;
+        filename_thumb: string;
+      }>("SELECT filename, filename_thumb FROM images");
+      expect(image?.filename).toBe("legacy-image-cipher");
+      expect(image?.filename_thumb).toBe("legacy-image-cipher");
+      const use = await queryOne<{ item_type: string }>(
+        "SELECT item_type FROM image_uses",
+      );
+      expect(use?.item_type).toBe("listing");
+      assert(!(await listingColumnNames()).includes("image_url"));
+    });
+  });
+
+  describe("backups this build cannot replay", () => {
+    test("an orphaned marker from a historically renamed migration is not refused", async () => {
+      // Real databases carry schema_migrations rows whose migration was later
+      // renamed (e.g. 2026-06-18_answer_price_modifiers); the old marker is
+      // never cleaned up, so its unrecognised id must not read as "newer".
+      await createTestListing({ name: "Orphan Marker Survivor" });
+      const recorded = await exportInSnapshot("schema_migrations");
+      const dump =
+        `${recorded}\n` +
+        `INSERT INTO "schema_migrations" ("id", "description", "applied_at") ` +
+        `VALUES ('2026-06-18_answer_price_modifiers', 'Renamed since', '2026-06-18T00:00:00.000Z');\n` +
+        `${await exportInSnapshot("listings")}\n`;
+
+      await restoreFromSql(dump);
+
+      expect(await listingCount()).toBe(1);
+    });
+
+    test("an unknown column with no pending migration fails instead of being re-added", async () => {
+      // The dump records every known migration, so nothing pending could
+      // consume a stray column — it is corruption, and the INSERT must fail.
+      const recorded = await exportInSnapshot("schema_migrations");
+      const dump =
+        `${recorded}\n` +
+        `INSERT INTO "holidays" ("id", "date", "stray_col") VALUES (1, '2026-01-01', 'x');\n`;
+
+      await expect(restoreFromSql(dump)).rejects.toThrow(PostResetError);
+      const holidayColumns = await queryAll<{ name: string }>(
+        "SELECT name FROM pragma_table_info('holidays')",
+      );
+      assert(!holidayColumns.map((c) => c.name).includes("stray_col"));
+    });
+  });
+});

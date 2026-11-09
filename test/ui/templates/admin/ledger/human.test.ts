@@ -1,0 +1,292 @@
+import { assert, assertStringIncludes } from "@std/assert";
+import { expect } from "@std/expect";
+import { beforeAll, describe, it as test } from "@std/testing/bdd";
+import { KIND } from "#accounting/kinds.ts";
+import { account } from "#shared/ledger/account.ts";
+import { ledgerEntryMemo } from "#templates/admin/ledger/formatting.tsx";
+import { setupAdminPageTest } from "#test-utils/admin-page-test.ts";
+import { expectIncludesAll } from "#test-utils/assertions.ts";
+import {
+  attendeeLinkRefs,
+  ledgerRows,
+  names,
+  renderLedger,
+  transfer,
+} from "./helpers.ts";
+
+describe("HumanLedgerTable", () => {
+  beforeAll(setupAdminPageTest);
+
+  test("renders plain-language descriptions for every known ledger event family", () => {
+    const refs = names({
+      attendees: attendeeLinkRefs([[1, "Ada"]]),
+      listings: new Map([[1, "Concert"]]),
+      modifiers: new Map([[1, "Helmet hire"]]),
+    });
+    const html = renderLedger(
+      [
+        transfer({
+          destination: account("attendee", 1),
+          id: 1,
+          kind: "payment",
+          source: account("external", "world"),
+        }),
+        transfer({
+          destination: account("revenue", 1),
+          id: 2,
+          kind: "payment",
+          source: account("external", "world"),
+        }),
+        transfer({
+          destination: account("external", "world"),
+          id: 3,
+          kind: "refund_cash",
+          source: account("attendee", 1),
+        }),
+        transfer({
+          destination: account("attendee", 1),
+          id: 4,
+          kind: "refund_sale",
+          source: account("revenue", 1),
+        }),
+        transfer({
+          destination: account("fee_income", "booking"),
+          id: 5,
+          kind: "fee",
+          source: account("attendee", 1),
+        }),
+        transfer({
+          destination: account("attendee", 1),
+          id: 6,
+          kind: "refund_fee",
+          source: account("fee_income", "booking"),
+        }),
+        transfer({
+          destination: account("revenue", 1),
+          id: 7,
+          kind: "adjustment",
+          source: account("writeoff", "default"),
+        }),
+        transfer({
+          destination: account("writeoff", "default"),
+          id: 8,
+          kind: "adjustment",
+          source: account("revenue", 1),
+        }),
+        transfer({
+          destination: account("revenue", 1),
+          id: 9,
+          kind: "adjustment",
+          source: account("attendee", 1),
+        }),
+        transfer({
+          destination: account("attendee", 1),
+          id: 10,
+          kind: "manual_attendee_payment",
+          source: account("external", "world"),
+        }),
+        transfer({
+          destination: account("writeoff", "default"),
+          id: 11,
+          kind: "manual_attendee_charge",
+          source: account("attendee", 1),
+        }),
+        transfer({
+          destination: account("attendee", 1),
+          id: 12,
+          kind: "manual_attendee_writeoff",
+          source: account("writeoff", "default"),
+        }),
+        transfer({
+          destination: account("revenue", 1),
+          id: 13,
+          kind: "manual_listing_income",
+          source: account("external", "world"),
+        }),
+        transfer({
+          destination: account("external", "world"),
+          id: 14,
+          kind: "manual_listing_cost",
+          source: account("revenue", 1),
+        }),
+        transfer({
+          destination: account("modifier", 1),
+          id: 15,
+          kind: "manual_modifier_income",
+          source: account("writeoff", "default"),
+        }),
+        transfer({
+          destination: account("writeoff", "default"),
+          id: 16,
+          kind: "manual_modifier_reduction",
+          source: account("modifier", 1),
+        }),
+        transfer({
+          destination: account("external", "world"),
+          id: 17,
+          kind: "service_cost",
+          source: account("cost", 1),
+        }),
+        transfer({
+          destination: account("cost", 1),
+          id: 18,
+          kind: "service_cost",
+          source: account("external", "world"),
+        }),
+        transfer({
+          destination: account("revenue", 1),
+          id: 19,
+          kind: "future_kind",
+          source: account("attendee", 1),
+        }),
+        transfer({
+          destination: account("attendee", 1),
+          id: 20,
+          kind: "refund_manual_attendee_charge",
+          source: account("writeoff", "default"),
+        }),
+        transfer({
+          destination: account("writeoff", "default"),
+          id: 21,
+          kind: "refund_manual_attendee_writeoff",
+          source: account("attendee", 1),
+        }),
+      ],
+      refs,
+    );
+
+    for (const phrase of [
+      "Payment received for",
+      "Refund paid to",
+      "Refund removed income from",
+      "Booking fee recorded",
+      "Booking fee refunded",
+      "Correction increased",
+      "Correction reduced",
+      "Money moved from",
+      "Payment received another way for",
+      "Extra amount now owed by",
+      "Amount no longer owed by",
+      "Income received another way for",
+      "Listing cost paid another way for",
+      "Extra option income added for",
+      "Option income reduced for",
+      "Service event cost added for",
+      "Service event cost reduced for",
+      "Extra amount no longer owed by",
+      "Amount owed again by",
+    ]) {
+      assertStringIncludes(html, phrase);
+    }
+    expectIncludesAll(html, [
+      "Ada",
+      "Concert",
+      "Helmet hire",
+      'Payment received for <a href="/admin/attendees/1">Ada</a>',
+      'Correction reduced <a href="/admin/listing/1">Concert</a>',
+    ]);
+    const rows = ledgerRows(html);
+    assertStringIncludes(rows[2] ?? "", "+£50");
+    assertStringIncludes(rows[4] ?? "", "−£50");
+    assertStringIncludes(rows[18] ?? "", "−£50");
+    assertStringIncludes(rows[19] ?? "", "+£50");
+    // The reversed owner charge lowers the debt. The reversed write-off
+    // raises it again.
+    assertStringIncludes(rows[21] ?? "", "−£50");
+    assertStringIncludes(rows[22] ?? "", "+£50");
+  });
+
+  test("uses attendee-balance wording for adjustment legs against writeoff", () => {
+    const refs = names({ attendees: attendeeLinkRefs([[1, "Ada"]]) });
+    const html = renderLedger(
+      [
+        transfer({
+          destination: account("writeoff", "default"),
+          id: 1,
+          kind: "adjustment",
+          source: account("attendee", 1),
+        }),
+        transfer({
+          destination: account("attendee", 1),
+          id: 2,
+          kind: "adjustment",
+          source: account("writeoff", "default"),
+        }),
+      ],
+      refs,
+    );
+    expectIncludesAll(html, [
+      "Extra amount now owed by",
+      "Amount no longer owed by",
+      "Ada",
+    ]);
+    assert(!html.includes("Correction reduced"));
+    assert(!html.includes("Correction increased"));
+    const rows = ledgerRows(html);
+    assertStringIncludes(rows[2] ?? "", "+£50");
+    assertStringIncludes(rows[3] ?? "", "−£50");
+  });
+
+  test("shows modifier income and refund directions with matching signs", () => {
+    const modifier = account("modifier", 1);
+    const html = renderLedger(
+      [
+        transfer({
+          destination: modifier,
+          id: 1,
+          kind: KIND.modifier,
+          source: account("attendee", 1),
+        }),
+        transfer({
+          destination: account("attendee", 1),
+          id: 2,
+          kind: KIND.modifier,
+          source: modifier,
+        }),
+        transfer({
+          destination: account("attendee", 1),
+          id: 3,
+          kind: KIND.refundModifier,
+          source: modifier,
+        }),
+        transfer({
+          destination: modifier,
+          id: 4,
+          kind: KIND.refundModifier,
+          source: account("attendee", 1),
+        }),
+      ],
+      names({ modifiers: new Map([[1, "Helmet hire"]]) }),
+    );
+    const rows = ledgerRows(html);
+    assertStringIncludes(rows[2] ?? "", "+£50");
+    assertStringIncludes(rows[3] ?? "", "−£50");
+    assertStringIncludes(rows[4] ?? "", "−£50");
+    assertStringIncludes(rows[5] ?? "", "+£50");
+  });
+
+  test("the operator's description suffix names only owner-entered entries", () => {
+    // A manual attendee charge shows its memo as the description suffix.
+    expect(
+      ledgerEntryMemo(
+        transfer({
+          destination: account("writeoff", "default"),
+          id: 9,
+          kind: "manual_attendee_charge",
+          memo: "Delivery",
+          source: account("attendee", 1),
+        }),
+      ),
+    ).toBe(" Delivery.");
+    // A checkout leg with a memo (a refund reason code) shows none.
+    expect(
+      ledgerEntryMemo(
+        transfer({ id: 10, kind: KIND.refundCash, memo: "provider refund" }),
+      ),
+    ).toBe("");
+    // A leg with no memo shows none.
+    expect(ledgerEntryMemo(transfer({ id: 11 }))).toBe("");
+    // A leg with a memo but no kind at all is not an owner-entered entry.
+    expect(ledgerEntryMemo(transfer({ id: 12, memo: "stray note" }))).toBe("");
+  });
+});

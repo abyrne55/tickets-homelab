@@ -1,0 +1,181 @@
+import { assert } from "@std/assert";
+import { expect } from "@std/expect";
+import { describe, it as test } from "@std/testing/bdd";
+import { CLAIM_MIRROR } from "#payment/admit-move.ts";
+import {
+  createPaidListing,
+  createRefundableAttendee,
+  markAsRefunded,
+  setupRefundTest,
+} from "#test/features/admin/refunds-helpers.ts";
+import {
+  expectFlashRedirect,
+  expectHtmlResponse,
+} from "#test-utils/assertions.ts";
+import { describeWithEnv } from "#test-utils/db.ts";
+import { createPaidAttendeeWithoutLedger } from "#test-utils/db-helpers/attendee-payments.ts";
+import { postListingSale } from "#test-utils/ledger.ts";
+import { awaitTestRequest } from "#test-utils/mocks.ts";
+import {
+  protectedStateOf,
+  putRowState,
+  staleClaimSlot,
+} from "#test-utils/payment-claim.ts";
+import {
+  finalizeProcessedPayment,
+  taggedPaymentReference,
+} from "#test-utils/processed-payments.ts";
+import {
+  postRefundAll,
+  refundAllUrl,
+  refundCompletes,
+  refundUrl,
+  submitRefund,
+  withRefundMock,
+} from "#test-utils/refund-routes.ts";
+import { testCookie } from "#test-utils/session.ts";
+
+describeWithEnv("server (admin refund state)", { db: true }, () => {
+  describe("already-refunded guard", () => {
+    test("GET refund page shows error for already-refunded attendee", async () => {
+      const ctx = await setupRefundTest("pi_already_refunded");
+      await markAsRefunded(ctx.attendee.id);
+
+      const response = await awaitTestRequest(refundUrl(ctx.attendee.id), {
+        cookie: ctx.cookie,
+      });
+      await expectHtmlResponse(response, 400, "already been refunded");
+    });
+
+    test("POST refund returns error for already-refunded attendee", async () => {
+      const ctx = await setupRefundTest("pi_post_already");
+      await markAsRefunded(ctx.attendee.id);
+
+      const response = await submitRefund(ctx);
+      await expectFlashRedirect(
+        `/admin/attendees/${ctx.attendee.id}/refund`,
+        expect.stringContaining("already been refunded"),
+        false,
+      )(response);
+    });
+
+    test("refund-all excludes already-refunded attendees", async () => {
+      const listing = await createPaidListing();
+      const refundedAttendee = await createRefundableAttendee(
+        listing.id,
+        "Refunded",
+        "refunded@example.com",
+        "pi_ra_1",
+      );
+      await createRefundableAttendee(
+        listing.id,
+        "Not Refunded",
+        "notrefunded@example.com",
+        "pi_ra_2",
+      );
+      await markAsRefunded(refundedAttendee.id);
+
+      const response = await awaitTestRequest(refundAllUrl(listing.id), {
+        cookie: await testCookie(),
+      });
+      await expectHtmlResponse(response, 200, "1 attendee(s) with payments");
+    });
+
+    // The fault this closes: a run refunded the money, marked the charge and
+    // posted the ledger, then lost the write that lets go of its hold. That
+    // hold refuses the person's delete AND their merge, and tells the operator
+    // to re-run the refund — but a person whose money was all back was no
+    // longer picked up, so no re-run could ever reach them. Stuck for good.
+    test("refund-all frees an attendee a crashed run is still holding", async () => {
+      const sessionId = "sess_stranded";
+      const listing = await createPaidListing();
+      const attendee = await createPaidAttendeeWithoutLedger(
+        listing.id,
+        "Stranded",
+        "stranded@example.com",
+        "",
+      );
+      await postListingSale({
+        attendeeId: attendee.id,
+        eventId: sessionId,
+        gross: 500,
+        listingId: listing.id,
+      });
+      await finalizeProcessedPayment(
+        sessionId,
+        attendee.id,
+        "",
+        taggedPaymentReference("pi_stranded"),
+      );
+      await markAsRefunded(attendee.id);
+      await putRowState(
+        sessionId,
+        await staleClaimSlot(attendee.id),
+        CLAIM_MIRROR,
+      );
+
+      await withRefundMock(refundCompletes, async () => {
+        await postRefundAll(listing);
+      });
+
+      expect(await protectedStateOf(sessionId)).toBe("");
+    });
+
+    // A provider-capable claim may have sent money before its worker crashed.
+    // Recovery must observe it through refresh, never expose another send form.
+    test("a crashed provider claim leaves no refund form to send again", async () => {
+      const listing = await createPaidListing();
+      const attendee = await createPaidAttendeeWithoutLedger(
+        listing.id,
+        "Held Open",
+        "held-open@example.com",
+        "",
+      );
+      await postListingSale({
+        attendeeId: attendee.id,
+        eventId: "sess_held",
+        gross: 500,
+        listingId: listing.id,
+      });
+      await finalizeProcessedPayment(
+        "sess_held",
+        attendee.id,
+        "",
+        taggedPaymentReference("pi_held"),
+      );
+      await markAsRefunded(attendee.id);
+      await putRowState(
+        "sess_held",
+        await staleClaimSlot(attendee.id),
+        CLAIM_MIRROR,
+      );
+
+      const response = await awaitTestRequest(refundUrl(attendee.id), {
+        cookie: await testCookie(),
+      });
+
+      const html = await expectHtmlResponse(response, 400, "still settling");
+      assert(!html.includes("Refund Attendee</button>"));
+    });
+
+    test("admits one canonical charge, records it, and refuses a second send", async () => {
+      const ctx = await setupRefundTest("pi_mark_refund");
+
+      await withRefundMock(refundCompletes, async (mockRefund) => {
+        const response = await submitRefund(ctx);
+        await expectFlashRedirect(
+          `/admin/attendees/${ctx.attendee.id}/actions`,
+          "Refund issued",
+        )(response);
+
+        const retryResponse = await submitRefund(ctx);
+        await expectFlashRedirect(
+          `/admin/attendees/${ctx.attendee.id}/refund`,
+          expect.stringContaining("already been refunded"),
+          false,
+        )(retryResponse);
+        expect(mockRefund.calls.length).toBe(1);
+      });
+    });
+  });
+});

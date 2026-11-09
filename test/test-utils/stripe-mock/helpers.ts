@@ -1,0 +1,381 @@
+import { join } from "node:path";
+import { fileURLToPath } from "node:url";
+import { expect } from "@std/expect";
+import { stub } from "@std/testing/mock";
+import { installLockPath } from "#scripts/stripe-mock/install.ts";
+import type { startStripeMock } from "#scripts/stripe-mock.ts";
+import { withTempDir } from "#test-utils/files.ts";
+import { wait } from "#test-utils/mocks.ts";
+import type { StandInMode } from "#test-utils/stripe-mock/stand-in-mock.ts";
+
+export type TestStripeMockPaths = { binDir: string; binaryPath: string };
+export type StartOptions = NonNullable<Parameters<typeof startStripeMock>[0]>;
+
+export { wait };
+
+const makeSignal = (): { done: () => void; wait: Promise<void> } => {
+  let done!: () => void;
+  const wait = new Promise<void>((resolve) => {
+    done = resolve;
+  });
+  return { done, wait };
+};
+
+export const testEnv = (values: Record<string, string | undefined>) => ({
+  get: (key: string) => values[key],
+});
+
+export const withTempStripeMockPaths = async (
+  body: (paths: TestStripeMockPaths) => Promise<void>,
+): Promise<void> =>
+  await withTempDir(async (binDir) => {
+    const paths = { binaryPath: join(binDir, "stripe-mock"), binDir };
+    await body(paths);
+  });
+
+export const withInstallLockHeld = async (
+  paths: TestStripeMockPaths,
+  body: (releaseLock: () => Promise<void>) => Promise<void>,
+  writeTimestamp = true,
+): Promise<void> => {
+  const lockPath = installLockPath(paths);
+  const lock = await Deno.open(lockPath, { createNew: true, write: true });
+  if (writeTimestamp) await Deno.writeTextFile(lockPath, String(Date.now()));
+  let released = false;
+  const releaseLock = async (): Promise<void> => {
+    if (released) return;
+    released = true;
+    lock.close();
+    await Deno.remove(lockPath);
+  };
+
+  try {
+    await body(releaseLock);
+  } finally {
+    await releaseLock();
+  }
+};
+
+export const withSecondLockRefreshHeld = async (
+  lockPath: string,
+  body: (lockWrite: {
+    releaseWrite: () => void;
+    waitForWrite: () => Promise<void>;
+    writesSoFar: () => number;
+  }) => Promise<void>,
+): Promise<void> => {
+  const writeTextFile = Deno.writeTextFile;
+  const writeStarted = makeSignal();
+  const writeCanFinish = makeSignal();
+  let lockWrites = 0;
+  const writeTextFileStub = stub(
+    Deno,
+    "writeTextFile",
+    async (path, data, options) => {
+      if (String(path) === lockPath && ++lockWrites === 3) {
+        writeStarted.done();
+        await writeCanFinish.wait;
+      }
+      return await writeTextFile(path, data, options);
+    },
+  );
+
+  try {
+    await body({
+      releaseWrite: writeCanFinish.done,
+      waitForWrite: () => writeStarted.wait,
+      writesSoFar: () => lockWrites,
+    });
+  } finally {
+    writeCanFinish.done();
+    writeTextFileStub.restore();
+  }
+};
+
+const withDenoMethodStub = async <
+  Method extends "open" | "readTextFile" | "remove" | "writeTextFile",
+>(
+  method: Method,
+  replacement: (original: (typeof Deno)[Method]) => (typeof Deno)[Method],
+  body: () => Promise<void>,
+): Promise<void> => {
+  const original = Deno[method];
+  const methodStub = stub(Deno, method, replacement(original) as never);
+
+  try {
+    await body();
+  } finally {
+    methodStub.restore();
+  }
+};
+
+export const withLockRemovedDuringRead = async (
+  lockPath: string,
+  body: () => Promise<void>,
+): Promise<void> => {
+  let removeLock = true;
+  await withDenoMethodStub(
+    "readTextFile",
+    (readTextFile) => async (path) => {
+      if (String(path) === lockPath && removeLock) {
+        removeLock = false;
+        await Deno.remove(lockPath);
+      }
+      return await readTextFile(path);
+    },
+    body,
+  );
+};
+
+export const withLockReadFailure = async (
+  lockPath: string,
+  body: () => Promise<void>,
+): Promise<void> => {
+  await withDenoMethodStub(
+    "readTextFile",
+    () => (path) => {
+      expect(String(path)).toBe(lockPath);
+      throw new Error("stale check failed");
+    },
+    body,
+  );
+};
+
+export const withInstallLockOpenFailure = async (
+  paths: TestStripeMockPaths,
+  body: () => Promise<void>,
+): Promise<void> => {
+  const lockPath = installLockPath(paths);
+  await withDenoMethodStub(
+    "open",
+    (open) => (path, options) => {
+      if (String(path) !== lockPath || !options?.createNew) {
+        return open(path, options);
+      }
+      throw new Error("install lock create failed");
+    },
+    body,
+  );
+};
+
+export const withInstallLockWriteFailure = async (
+  paths: TestStripeMockPaths,
+  body: (lock: { isClosed: () => boolean }) => Promise<void>,
+): Promise<void> => {
+  const lockPath = installLockPath(paths);
+  let lockClosed = false;
+  const fakeLock = {
+    close: () => {
+      lockClosed = true;
+    },
+  } as unknown as Deno.FsFile;
+  await withDenoMethodStub(
+    "open",
+    (open) => async (path, options) => {
+      if (String(path) !== lockPath || !options?.createNew) {
+        return await open(path, options);
+      }
+      return fakeLock;
+    },
+    async () => {
+      await withDenoMethodStub(
+        "writeTextFile",
+        () => async (path) => {
+          expect(String(path)).toBe(lockPath);
+          throw new Error("install lock write failed");
+        },
+        () => body({ isClosed: () => lockClosed }),
+      );
+    },
+  );
+};
+
+export const withInstallLockRemoveFailure = async (
+  lockPath: string,
+  error: Error,
+  body: () => Promise<void>,
+): Promise<void> => {
+  await withDenoMethodStub(
+    "remove",
+    (remove) => (path, options) => {
+      if (String(path) === lockPath) throw error;
+      return remove(path, options);
+    },
+    body,
+  );
+};
+
+export const waitForFile = async (path: string): Promise<void> => {
+  while (true) {
+    try {
+      if ((await Deno.stat(path)).isFile) return;
+    } catch {
+      // Keep waiting for the install to finish writing the file.
+    }
+    await wait(1);
+  }
+};
+
+/**
+ * Wait until the install's `stripe-mock-*` temp directory has been cleaned up.
+ * That removal is the last real-async step before the download flow returns and
+ * runs `stopRefreshingLock` — so once it is gone, the remaining path to the lock
+ * refresh being stopped is pure microtasks. Waiting on it lets a test release a
+ * held refresh write *after* the refresh is stopped, deterministically.
+ */
+export const waitForNoInstallTempDir = async (
+  binDir: string,
+): Promise<void> => {
+  while (true) {
+    let hasTempDir = false;
+    for await (const entry of Deno.readDir(binDir)) {
+      if (entry.isDirectory && entry.name.startsWith("stripe-mock-")) {
+        hasTempDir = true;
+        break;
+      }
+    }
+    if (!hasTempDir) return;
+    await wait(1);
+  }
+};
+
+const runCommand = async (command: Deno.Command): Promise<void> => {
+  const result = await command.output();
+  expect(result.success).toBe(true);
+};
+
+const chmod = (mode: string, path: string): Promise<void> =>
+  runCommand(
+    new Deno.Command("chmod", {
+      args: [mode, path],
+      stderr: "null",
+      stdout: "null",
+    }),
+  );
+
+export const makeExecutable = (path: string): Promise<void> =>
+  chmod("+x", path);
+
+export const createFakeArchive = async (): Promise<{
+  archivePath: string;
+  cleanup: () => Promise<void>;
+}> => {
+  const dir = await Deno.makeTempDir();
+  const sourceDir = `${dir}/src`;
+  const archivePath = `${dir}/stripe-mock.tar.gz`;
+  await Deno.mkdir(sourceDir);
+  const fakeBinaryPath = `${sourceDir}/stripe-mock`;
+  await Deno.writeTextFile(fakeBinaryPath, "#!/bin/sh\nexit 0\n");
+  await makeExecutable(fakeBinaryPath);
+  await runCommand(
+    new Deno.Command("tar", {
+      args: ["-czf", archivePath, "-C", sourceDir, "stripe-mock"],
+      stderr: "null",
+      stdout: "null",
+    }),
+  );
+
+  return {
+    archivePath,
+    cleanup: () => Deno.remove(dir, { recursive: true }),
+  };
+};
+
+export const shellQuote = (value: string): string =>
+  `'${value.replaceAll("'", "'\\''")}'`;
+
+const STAND_IN_PATH = fileURLToPath(
+  new URL("./stand-in-mock.ts", import.meta.url),
+);
+
+/** The permissions each stand-in mode needs: the network for a hold, and the
+ * marker folder for the mode that notes its first start. */
+const MODE_PERMISSIONS: Record<StandInMode, (binDir: string) => string> = {
+  exit: () => "",
+  "exit-then-hold": (binDir) =>
+    `--allow-net --allow-read=${shellQuote(binDir)} --allow-write=${shellQuote(
+      binDir,
+    )}`,
+  "hold-after": () => "--allow-net",
+  "hold-port": () => "--allow-net",
+  "hold-stderr": (binDir) =>
+    `--allow-run=sleep --allow-write=${shellQuote(binDir)}`,
+};
+
+/**
+ * Write a stand-in mock: a two-line executable that runs one mode of the
+ * stand-in module, with the mode in front of the harness's own arguments.
+ * A Deno body behaves the same on every machine the suite runs on — the
+ * shell `nc` hold it replaces answered to different flags on different
+ * machines.
+ */
+export const writeStandInMock = async (
+  paths: TestStripeMockPaths,
+  mode: StandInMode,
+  argument?: string,
+): Promise<void> => {
+  const flags = ["run", "--quiet", MODE_PERMISSIONS[mode](paths.binDir)].filter(
+    (flag) => flag !== "",
+  );
+  const words = [
+    "exec deno",
+    flags.join(" "),
+    shellQuote(STAND_IN_PATH),
+    mode,
+    ...(argument !== undefined ? [shellQuote(argument)] : []),
+    '"$@"',
+  ];
+  await Deno.writeTextFile(
+    paths.binaryPath,
+    ["#!/bin/sh", words.join(" ")].join("\n"),
+  );
+  await makeExecutable(paths.binaryPath);
+};
+
+export const writeFailingMock = async (
+  paths: TestStripeMockPaths,
+  message: string,
+): Promise<void> => {
+  await Deno.writeTextFile(
+    paths.binaryPath,
+    [
+      "#!/bin/sh",
+      `echo ${shellQuote(message)} >&2`,
+      "sleep 0.05",
+      "exit 1",
+    ].join("\n"),
+  );
+  await makeExecutable(paths.binaryPath);
+};
+
+export const writeTermIgnoringMock = async (
+  paths: TestStripeMockPaths,
+): Promise<void> => {
+  await Deno.writeTextFile(
+    paths.binaryPath,
+    [
+      "#!/bin/sh",
+      'exec perl -MIO::Socket::INET -e \'$SIG{TERM}=sub{}; my $socket=IO::Socket::INET->new(LocalAddr=>"127.0.0.1", LocalPort=>$ARGV[1], Proto=>"tcp", Listen=>5, Reuse=>1) or die $!; while (1) { my $client=$socket->accept(); close $client if $client; }\' -- "$@"',
+    ].join("\n"),
+  );
+  await makeExecutable(paths.binaryPath);
+};
+
+/** Runs a body with a stand-in command of the given name in place. */
+export type WithFakeCommand = (
+  script: string,
+  body: (path: string) => Promise<void>,
+) => Promise<void>;
+
+/** Stand in for a command the installer runs, with a script of our own. */
+export const fakeCommand =
+  (name: string): WithFakeCommand =>
+  async (script, body) =>
+    await withTempDir(async (dir) => {
+      const fake = `${dir}/${name}`;
+      await Deno.writeTextFile(fake, `#!/bin/sh\n${script}\n`);
+      await makeExecutable(fake);
+      await body(fake);
+    });
+
+export const withFakeCurl: WithFakeCommand = fakeCommand("curl");

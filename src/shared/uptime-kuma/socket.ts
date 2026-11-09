@@ -38,7 +38,7 @@ const AckFrameMatchSchema = v.tuple([v.string(), v.string(), v.string()]);
 type PendingAck = {
   reject: (error: Error) => void;
   resolve: (value: unknown) => void;
-  timer: number;
+  timer: ReturnType<typeof setTimeout>;
 };
 
 export const uptimeKumaConnectionError = (value: unknown): Error =>
@@ -90,7 +90,7 @@ class KumaSocket implements UptimeKumaSocket {
   #ackId = 0;
   #ackTimeoutMs: number;
   #acks = new Map<number, PendingAck>();
-  #connectTimer: number | null = null;
+  #connectTimer: ReturnType<typeof setTimeout> | null = null;
   #connected = false;
   #everConnected = false;
   #closedByClient = false;

@@ -1,0 +1,40 @@
+import { expect } from "@std/expect";
+import { it as test } from "@std/testing/bdd";
+import {
+  followRedirectWithFlash,
+  testRequiresAuth,
+} from "#test-utils/assertions.ts";
+import { describeWithEnv } from "#test-utils/db.ts";
+
+describeWithEnv("test-utils/assertions", { db: true }, () => {
+  testRequiresAuth("/admin/settings");
+
+  testRequiresAuth("/admin/groups", {
+    body: { name: "test" },
+    method: "POST",
+  });
+
+  testRequiresAuth("/admin/listing", {
+    body: { max_attendees: "10", name: "test" },
+    multipart: true,
+  });
+
+  testRequiresAuth("/admin/backup", {
+    setup: async () => {
+      const { withEnv } = await import("#test-utils/env.ts");
+      const scope = withEnv({ BUNNY_API_KEY: "test" });
+      return () => scope.dispose();
+    },
+  });
+
+  test("followRedirectWithFlash works when response has no flash cookies", async () => {
+    const response = new Response(null, {
+      headers: { location: "/admin" },
+      status: 302,
+    });
+    const result = await followRedirectWithFlash(response, (request) =>
+      Promise.resolve(new Response(request.url)),
+    );
+    expect(await result.text()).toBe("http://localhost/admin");
+  });
+});

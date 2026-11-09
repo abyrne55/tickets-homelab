@@ -1,0 +1,247 @@
+import type { Transaction } from "@libsql/client";
+import { expect } from "@std/expect";
+import { it as test } from "@std/testing/bdd";
+import { getDb, queryBatch, setDb, withTransaction } from "#db/client.ts";
+
+import {
+  BUNNY_SUBREQUEST_LIMIT,
+  getSubrequestUsage,
+  runWithSubrequestBudget,
+  withSubrequestAllowance,
+} from "#shared/subrequest-budget.ts";
+import { describeWithEnv } from "#test-utils/db.ts";
+import { withRequestContext } from "#test-utils/request-context.ts";
+
+describeWithEnv("db > client round-trip limit", { db: true }, () => {
+  test("counts every database operation at the client boundary", async () => {
+    await withRequestContext(async () => {
+      // Eleven guarded calls below are counted, including the rolledBack
+      // rollback: a rollback is counted like any other subrequest (it is only
+      // exempt from being *blocked*), so the running total stays accurate.
+      const guardedCalls = 11;
+      const executeWithArgsCalls = 1;
+      const directCalls =
+        BUNNY_SUBREQUEST_LIMIT - guardedCalls - executeWithArgsCalls;
+      await Promise.all(
+        Array.from({ length: directCalls }, () => getDb().execute("SELECT 1")),
+      );
+      await getDb().execute("SELECT ?", [1]);
+      await queryBatch([
+        { args: [], sql: "SELECT 2" },
+        { args: [], sql: "SELECT 3" },
+      ]);
+      const transaction = await getDb().transaction("write");
+      await transaction.execute("SELECT 4");
+      await transaction.batch(["SELECT 5", "SELECT 6"]);
+      await transaction.executeMultiple("SELECT 7;");
+      await transaction.commit();
+      await getDb().executeMultiple("SELECT 8;");
+      await getDb().migrate(["SELECT 9"]);
+      await expect(getDb().sync()).rejects.toThrow('SyncNotSupported("File")');
+      const rolledBack = await getDb().transaction();
+      await rolledBack.rollback();
+
+      const blocked = async () => {
+        await getDb().execute("SELECT missing_column_that_must_not_run");
+      };
+      await expect(blocked()).rejects.toThrow(/51 calls.*limit 50.*statement/);
+    });
+  });
+
+  test("the blocked call names the operation it stopped", async () => {
+    type Operation = {
+      label: string;
+      needsTx: boolean;
+      run: (tx: Transaction) => Promise<unknown>;
+    };
+    const operations: Operation[] = [
+      {
+        label: "batch",
+        needsTx: false,
+        run: () => queryBatch([{ args: [], sql: "SELECT 1" }]),
+      },
+      {
+        label: "script",
+        needsTx: false,
+        run: () => getDb().executeMultiple("SELECT 1;"),
+      },
+      {
+        label: "migration batch",
+        needsTx: false,
+        run: () => getDb().migrate(["SELECT 1"]),
+      },
+      { label: "replica sync", needsTx: false, run: () => getDb().sync() },
+      {
+        label: "transaction begin",
+        needsTx: false,
+        run: () => getDb().transaction(),
+      },
+      {
+        label: "transaction batch",
+        needsTx: true,
+        run: (tx) => tx.batch(["SELECT 1"]),
+      },
+      {
+        label: "transaction commit",
+        needsTx: true,
+        run: (tx) => tx.commit(),
+      },
+      {
+        label: "transaction script",
+        needsTx: true,
+        run: (tx) => tx.executeMultiple("SELECT 1;"),
+      },
+      {
+        label: "transaction statement",
+        needsTx: true,
+        run: (tx) => tx.execute("SELECT 1"),
+      },
+    ];
+    for (const { label, needsTx, run } of operations) {
+      let tx: Transaction | undefined;
+      await withRequestContext(async () => {
+        if (needsTx) tx = await getDb().transaction("write");
+        const fills = BUNNY_SUBREQUEST_LIMIT - (needsTx ? 1 : 0);
+        await Promise.all(
+          Array.from({ length: fills }, () => getDb().execute("SELECT 1")),
+        );
+        const blocked = async () => {
+          await run(tx!);
+        };
+        await expect(blocked()).rejects.toThrow(`Blocked operation: ${label}`);
+      });
+      // The blocked finish never ran, so the transaction is still open; roll
+      // it back outside the counted scope to leave the client clean.
+      if (tx) await tx.rollback();
+    }
+  });
+
+  test("a rollback runs within the reserved headroom, below the platform limit", async () => {
+    // A rollback is mandatory cleanup: if the guard blocked it, the interactive
+    // transaction would be left open and poison the shared write connection for
+    // the rest of the request. The migration runner reserves a few round-trips
+    // below the real limit so cleanup and bookkeeping still fit; a low allowance
+    // stands in for that reserve here. The rollback runs within it — it does not
+    // beat Bunny's hard limit, it stays under it.
+    const reservedCap = 6;
+    await runWithSubrequestBudget(() =>
+      withRequestContext(async () => {
+        await withSubrequestAllowance(
+          { database: reservedCap, external: reservedCap, total: reservedCap },
+          async () => {
+            const tx = await getDb().transaction("write");
+            await tx.execute("SELECT 1");
+            await Promise.all(
+              Array.from({ length: reservedCap - 2 }, () =>
+                getDb().execute("SELECT 1"),
+              ),
+            );
+            // A counted transaction statement is blocked at the cap (the guard
+            // throws synchronously, so wrap it to observe the rejection)...
+            const blockedStatement = async () => {
+              await tx.execute("SELECT 1");
+            };
+            await expect(blockedStatement()).rejects.toThrow(
+              /allowance exceeded/,
+            );
+            // ...but the rollback still runs, closing the transaction.
+            await expect(tx.rollback()).resolves.toBeUndefined();
+          },
+        );
+        // The whole request stayed well under Bunny's real subrequest limit, so
+        // the rollback was a genuine subrequest the platform would allow.
+        expect(getSubrequestUsage().database).toBeLessThan(
+          BUNNY_SUBREQUEST_LIMIT,
+        );
+      }),
+    );
+  });
+
+  test("a rollback is still blocked at the hard platform limit, as Bunny would", async () => {
+    // The budget exemption only lets a rollback past our own stricter reserve,
+    // never past the real round-trip limit: at the platform cap the rollback
+    // would be a genuine over-limit subrequest that Bunny rejects, so the guard
+    // blocks it here too rather than pretending it succeeds.
+    const tx = await withRequestContext(async () => {
+      const openTx = await getDb().transaction("write");
+      await Promise.all(
+        Array.from({ length: BUNNY_SUBREQUEST_LIMIT - 1 }, () =>
+          getDb().execute("SELECT 1"),
+        ),
+      );
+      const rollbackAtLimit = async () => {
+        await openTx.rollback();
+      };
+      await expect(rollbackAtLimit()).rejects.toThrow(
+        /limit 50.*Blocked operation: transaction rollback/,
+      );
+      return openTx;
+    });
+    // Clean up the still-open transaction outside the counted scope.
+    await tx.rollback();
+  });
+
+  // A write transaction begins and commits with two database calls, so an
+  // allowance of two is exactly enough for the work and nothing else.
+  const BEGIN_AND_COMMIT = 2;
+
+  const transactionWithin = (allowance: {
+    database: number;
+    total: number;
+  }): Promise<string> =>
+    runWithSubrequestBudget(async () =>
+      withRequestContext(() =>
+        withSubrequestAllowance(
+          { external: BUNNY_SUBREQUEST_LIMIT, ...allowance },
+          () => withTransaction(() => Promise.resolve("committed")),
+        ),
+      ),
+    );
+
+  test("a transaction leaves a database call spare for the rollback it may need", async () => {
+    // The reserve is what keeps a failure recoverable: a transaction that
+    // spent the last call of its allowance on the commit would have nothing
+    // left for the rollback that must close it. So it is refused one call
+    // earlier instead, and the call held back is the rollback's.
+    await expect(
+      transactionWithin({
+        database: BEGIN_AND_COMMIT,
+        total: BUNNY_SUBREQUEST_LIMIT,
+      }),
+    ).rejects.toThrow(/allowance exceeded/);
+  });
+
+  test("the spare call is held against the total allowance too", async () => {
+    // Same reserve, counted the other way: an allowance that only limits the
+    // combined total still has to fit the rollback.
+    await expect(
+      transactionWithin({
+        database: BUNNY_SUBREQUEST_LIMIT,
+        total: BEGIN_AND_COMMIT,
+      }),
+    ).rejects.toThrow(/allowance exceeded/);
+  });
+
+  test("one call above its work is all a transaction needs", async () => {
+    // One more than the work itself, on both counts, and it commits — so the
+    // reserve is a single call, not a wider margin.
+    await expect(
+      transactionWithin({
+        database: BEGIN_AND_COMMIT + 1,
+        total: BEGIN_AND_COMMIT + 1,
+      }),
+    ).resolves.toBe("committed");
+  });
+
+  test("a re-set guarded client is not wrapped again (no double counting)", async () => {
+    // Handing an already-guarded client back to setDb must not stack a second
+    // guard on top: each statement would then count two round trips, halving
+    // the real budget (the 26th statement would throw here).
+    setDb(getDb());
+    await withRequestContext(async () => {
+      await Promise.all(
+        Array.from({ length: 30 }, () => getDb().execute("SELECT 1")),
+      );
+    });
+  });
+});

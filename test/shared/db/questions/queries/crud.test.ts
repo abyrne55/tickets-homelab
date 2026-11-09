@@ -1,0 +1,112 @@
+import { expect } from "@std/expect";
+import { describe, it as test } from "@std/testing/bdd";
+import {
+  questionDisplayTypeError,
+  requireQuestionDisplayType,
+} from "#db/question-types.ts";
+import { getAttendeeAnswersBatch } from "#db/questions/attendee-answers/reads.ts";
+import { saveAttendeeAnswers } from "#db/questions/attendee-answers/save.ts";
+import { deleteAnswer, deleteQuestion } from "#db/questions/delete.ts";
+import {
+  getAllQuestionsWithAnswers,
+  getQuestionsForListing,
+  getQuestionWithAnswers,
+  listingQuestions,
+  requireQuestionWithAnswersOnPrimary,
+} from "#db/questions/queries.ts";
+import { questionsTable } from "#db/questions/tables.ts";
+import {
+  addAnswer,
+  createAttendee,
+  createQuestion,
+  createQuestionWithAnswers,
+} from "#test/shared/db/questions/helpers.ts";
+import { describeWithEnv } from "#test-utils/db.ts";
+import { createTestListing } from "#test-utils/db-helpers/listings.ts";
+
+describeWithEnv(
+  "custom questions > questions and answers",
+  { db: true },
+  () => {
+    describe("questions CRUD", () => {
+      test("rejects unsupported display types", () => {
+        expect(() => requireQuestionDisplayType("dropdown")).toThrow(
+          questionDisplayTypeError,
+        );
+      });
+
+      test("creates and retrieves a question", async () => {
+        const q = await createQuestion("Favourite colour?");
+        expect(q.id).toBeGreaterThan(0);
+
+        const found = await questionsTable.read.one({ id: q.id });
+        expect(found).not.toBeNull();
+        expect(found!.text).toBe("Favourite colour?");
+      });
+
+      test("reads a written question back from the primary with its answers", async () => {
+        const q = await createQuestionWithAnswers("Just written?", ["One"]);
+
+        const read = await requireQuestionWithAnswersOnPrimary(q.id);
+        expect(read.answers.map((answer) => answer.text)).toEqual(["One"]);
+      });
+
+      test("refuses the write read-back when the question is missing", async () => {
+        await expect(
+          requireQuestionWithAnswersOnPrimary(99999),
+        ).rejects.toThrow("Question 99999 is missing after its write");
+      });
+
+      test("updates a question", async () => {
+        const q = await createQuestion("Old text");
+        await questionsTable.update(q.id, { text: "New text" });
+        const found = await questionsTable.read.one({ id: q.id });
+        expect(found!.text).toBe("New text");
+      });
+
+      test("deletes a question and cascades", async () => {
+        const q = await createQuestion("To delete");
+        const a = await addAnswer(q.id, 0, "Opt A");
+
+        const listing = await createTestListing();
+        await listingQuestions.setIds(listing.id, [q.id]);
+
+        const attendee = await createAttendee(listing.id);
+        await saveAttendeeAnswers(new Map([[attendee.id, [a.id]]]));
+
+        await deleteQuestion(q.id);
+
+        expect(await getAllQuestionsWithAnswers()).toEqual([]);
+        expect(await getQuestionsForListing(listing.id)).toEqual([]);
+        const answers = await getAttendeeAnswersBatch([attendee.id], {
+          texts: false,
+        });
+        // The delete removed the only answer row, so no attendee has answers.
+        expect(answers).toEqual(new Map());
+      });
+    });
+    describe("answers CRUD", () => {
+      test("creates answers for a question", async () => {
+        const q = await createQuestionWithAnswers("Size?", ["Small", "Large"]);
+
+        const withAnswers = await getQuestionWithAnswers(q.id);
+        expect(withAnswers!.answers.map((answer) => answer.text)).toEqual([
+          "Small",
+          "Large",
+        ]);
+      });
+
+      test("deletes a single answer", async () => {
+        const q = await createQuestion("Size?");
+        const small = await addAnswer(q.id, 0, "Small");
+        await addAnswer(q.id, 1, "Large");
+
+        await deleteAnswer(small.id);
+
+        const withAnswers = await getQuestionWithAnswers(q.id);
+        expect(withAnswers!.answers).toHaveLength(1);
+        expect(withAnswers!.answers[0]!.text).toBe("Large");
+      });
+    });
+  },
+);

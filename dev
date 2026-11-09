@@ -1,0 +1,9 @@
+#!/usr/bin/env bash
+# Run one command in the dev image with this repo mounted. Replaces `devenv shell`.
+# Build the image first: podman build -t tickets-dev -f Containerfile.dev .
+# Example: ./dev deno task typecheck
+set -euo pipefail
+cd "$(dirname "$0")"
+exec podman run --rm $([ -t 0 ] && echo -it) --userns=keep-id:uid=1000,gid=1000 \
+  -v "$PWD:/work" -v tickets-deno-dir:/deno-dir \
+  -e DENO_V8_FLAGS="${DENO_V8_FLAGS:---max-old-space-size=3300}" -w /work tickets-dev "${@:-bash}"

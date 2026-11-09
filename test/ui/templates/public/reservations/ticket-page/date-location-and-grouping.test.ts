@@ -1,0 +1,282 @@
+import { assert, assertStringIncludes } from "@std/assert";
+import { beforeAll, describe, it as test } from "@std/testing/bdd";
+import { buildTicketListing } from "#booking/model.ts";
+import { settings } from "#db/settings.ts";
+import { addDays } from "#shared/dates.ts";
+import { todayInTz } from "#shared/timezone.ts";
+import { ticketPage } from "#templates/public/reservations/ticket-page.tsx";
+import { ticketViewPage } from "#templates/tickets.tsx";
+import { registerPublicTemplateHooks } from "#test/ui/templates/helpers.ts";
+import { setupAdminPageTest } from "#test-utils/admin-page-test.ts";
+import { expectIncludesAll } from "#test-utils/assertions.ts";
+import { testDate } from "#test-utils/dates.ts";
+import { testListingWithCount, testTokenEntry } from "#test-utils/factories.ts";
+import { withRequestContext } from "#test-utils/request-context.ts";
+import type { ListingWithCount } from "#types";
+
+describe("ticketPage listing date and location", () => {
+  beforeAll(setupAdminPageTest);
+  registerPublicTemplateHooks();
+
+  const renderTicket = async (
+    ev: ListingWithCount,
+    opts?: { iframe?: boolean },
+  ) =>
+    withRequestContext(
+      () =>
+        ticketPage({
+          dates: [],
+          listings: [buildTicketListing(ev, false, undefined)],
+          slugs: [ev.slug],
+        }),
+      { iframe: opts?.iframe ?? false },
+    );
+  test("shows date on public ticket page when listing has date", async () => {
+    const listing = testListingWithCount({
+      attendee_count: 0,
+      date: "2026-06-15T14:00:00.000Z",
+    });
+    const html = await renderTicket(listing);
+    expectIncludesAll(html, [
+      "<strong>Date:</strong>",
+      "Monday 15 June 2026 at 15:00 GMT+1",
+    ]);
+  });
+
+  test("does not show date on public ticket page when date is empty", async () => {
+    const listing = testListingWithCount({ attendee_count: 0, date: "" });
+    const html = await renderTicket(listing);
+    assert(!html.includes("<strong>Date:</strong>"));
+  });
+
+  test("shows location on public ticket page when listing has location", async () => {
+    const listing = testListingWithCount({
+      attendee_count: 0,
+      location: "Village Hall",
+    });
+    const html = await renderTicket(listing);
+    expectIncludesAll(html, ["<strong>Location:</strong>", "Village Hall"]);
+  });
+
+  test("does not show location on public ticket page when location is empty", async () => {
+    const listing = testListingWithCount({ attendee_count: 0, location: "" });
+    const html = await renderTicket(listing);
+    assert(!html.includes("<strong>Location:</strong>"));
+  });
+
+  test("hides date and location in iframe mode", async () => {
+    const listing = testListingWithCount({
+      attendee_count: 0,
+      date: "2026-06-15T14:00:00.000Z",
+      location: "Village Hall",
+    });
+    const html = await renderTicket(listing, { iframe: true });
+    assert(!html.includes("<strong>Date:</strong>"));
+    assert(!html.includes("<strong>Location:</strong>"));
+  });
+
+  test("shows past listing badge for listing with date in the past", async () => {
+    const listing = testListingWithCount({
+      attendee_count: 0,
+      date: "2020-01-15T14:00:00.000Z",
+    });
+    const html = await renderTicket(listing);
+    expectIncludesAll(html, ["badge-alert", "ago"]);
+  });
+
+  test("does not show past listing badge for future listing", async () => {
+    const listing = testListingWithCount({
+      attendee_count: 0,
+      date: "2099-06-15T14:00:00.000Z",
+    });
+    const html = await renderTicket(listing);
+    assert(!html.includes("badge-alert"));
+  });
+
+  test("does not show past listing badge when date is empty", async () => {
+    const listing = testListingWithCount({ attendee_count: 0, date: "" });
+    const html = await renderTicket(listing);
+    assert(!html.includes("badge-alert"));
+  });
+
+  test("past listing badge shows singular day for 1 day ago", async () => {
+    const yesterday = addDays(testDate(todayInTz(settings.timezone)), -1);
+    const listing = testListingWithCount({
+      attendee_count: 0,
+      date: `${yesterday}T12:00:00.000Z`,
+    });
+    const html = await renderTicket(listing);
+    assertStringIncludes(html, "1 day ago");
+    assert(!html.includes("(1 day ago)"));
+  });
+
+  test("past listing badge shows plural days for multiple days ago", async () => {
+    const threeDaysAgo = addDays(testDate(todayInTz(settings.timezone)), -3);
+    const listing = testListingWithCount({
+      attendee_count: 0,
+      date: `${threeDaysAgo}T12:00:00.000Z`,
+    });
+    const html = await renderTicket(listing);
+    assertStringIncludes(html, "3 days ago");
+    assert(!html.includes("(3 days ago)"));
+  });
+});
+
+describe("ticketViewPage package grouping", () => {
+  beforeAll(setupAdminPageTest);
+  registerPublicTemplateHooks();
+
+  const token = "PKG00011AABBCCDD";
+  const purchaseBundleGroups = new Map([
+    [1, { hideListings: false, name: "Purchase Bundle" }],
+  ]);
+  const pkgCards = [
+    {
+      entry: testTokenEntry({
+        attendee: { package_group_id: 1, quantity: 2 },
+        listing: { name: "Tent" },
+      }),
+      token,
+    },
+    {
+      entry: testTokenEntry({
+        attendee: { package_group_id: 1, quantity: 6 },
+        listing: { name: "Chair" },
+      }),
+      token,
+    },
+  ];
+
+  test("renders a non-hidden package as one card with members and booked quantities", () => {
+    const html = ticketViewPage(
+      pkgCards,
+      false,
+      false,
+      new Map([[1, { hideListings: false, name: "Camp Kit" }]]),
+    );
+    expectIncludesAll(html, [
+      "Camp Kit",
+      "Tent",
+      "&times;2",
+      "Chair",
+      "&times;6",
+      // One shared QR for the whole bundle.
+      `/t/${token}/svg`,
+    ]);
+    // No member is non-transferable, so no "ID required" notice.
+    assert(!html.includes("ID required at entry"));
+  });
+
+  test("hides member listings for a hidden package, showing only the name", () => {
+    const html = ticketViewPage(
+      pkgCards,
+      false,
+      false,
+      new Map([[1, { hideListings: true, name: "Secret Bundle" }]]),
+    );
+    assertStringIncludes(html, "Secret Bundle");
+    assert(!html.includes("<li>Tent"));
+    assert(!html.includes("<li>Chair"));
+    assertStringIncludes(html, `/t/${token}/svg`);
+  });
+
+  test("omits wallet links on a package card even when wallets are enabled", () => {
+    // Wallet routes resolve a token to a single member listing, so a saved pass
+    // would show only the first member (leaking a hidden member); package cards
+    // therefore never render wallet links.
+    const html = ticketViewPage(
+      pkgCards,
+      true,
+      true,
+      new Map([[1, { hideListings: false, name: "Camp Kit" }]]),
+    );
+    assert(!html.includes("wallet-link"));
+  });
+
+  test("omits wallet links on a standalone card sharing a token with a package", () => {
+    // After a merge, a standalone booking can share a token with a package. The
+    // wallet endpoints 404 any token containing a package row, so the standalone
+    // card must not advertise wallet links it can't honour.
+    const mixed = [
+      pkgCards[0]!,
+      {
+        entry: testTokenEntry({
+          attendee: { package_group_id: 0, quantity: 1 },
+          listing: { name: "Standalone Add-On" },
+        }),
+        token,
+      },
+    ];
+    const html = ticketViewPage(
+      mixed,
+      true,
+      true,
+      new Map([[1, { hideListings: false, name: "Camp Kit" }]]),
+    );
+    // The standalone card renders (it's not part of the package)…
+    assertStringIncludes(html, "Standalone Add-On");
+    // …but no wallet links anywhere, because the shared token's pass 404s.
+    assert(!html.includes("wallet-link"));
+  });
+
+  test("a purchase-only package omits the QR", () => {
+    const cards = [
+      {
+        entry: testTokenEntry({
+          attendee: { package_group_id: 1, quantity: 1 },
+          listing: { name: "Pass", purchase_only: true },
+        }),
+        token,
+      },
+    ];
+    const html = ticketViewPage(cards, false, false, purchaseBundleGroups);
+    assertStringIncludes(html, "Purchase Bundle");
+    assert(!html.includes(`/t/${token}/svg`));
+  });
+
+  test("shows a non-transferable notice on a package card without naming the member", () => {
+    // A hidden package conceals its members but must still warn the buyer that
+    // ID is required — the scanner enforces it regardless of the card display.
+    const cards = [
+      {
+        entry: testTokenEntry({
+          attendee: { package_group_id: 1, quantity: 1 },
+          listing: {
+            name: "Secret Pass",
+            non_transferable: true,
+          },
+        }),
+        token,
+      },
+    ];
+    const html = ticketViewPage(
+      cards,
+      false,
+      false,
+      new Map([[1, { hideListings: true, name: "Secret Bundle" }]]),
+    );
+    assertStringIncludes(html, "ID required at entry");
+    // The warning is package-level: the concealed member is never named.
+    assert(!html.includes("Secret Pass"));
+  });
+
+  test("omits the non-transferable notice when the non-transferable member is purchase-only", () => {
+    // A purchase-only member is never checked in, so its non-transferable flag
+    // raises no "ID required" warning.
+    const cards = [
+      {
+        entry: testTokenEntry({
+          attendee: { package_group_id: 1, quantity: 1 },
+          listing: {
+            name: "Pass",
+            non_transferable: true,
+            purchase_only: true,
+          },
+        }),
+        token,
+      },
+    ];
+    const html = ticketViewPage(cards, false, false, purchaseBundleGroups);
+    assert(!html.includes("ID required at entry"));
+  });
+});

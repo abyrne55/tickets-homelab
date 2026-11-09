@@ -1,0 +1,433 @@
+import { assert, assertArrayIncludes, assertStringIncludes } from "@std/assert";
+import { expect } from "@std/expect";
+import { it as test } from "@std/testing/bdd";
+import { stub } from "@std/testing/mock";
+import type { BuiltSite } from "#db/built-sites/types.ts";
+import { collectHostSecrets } from "#shared/builder.ts";
+import { bunnyCdnApi } from "#shared/bunny-cdn.ts";
+import { denoDeployApi } from "#shared/deno-deploy-api.ts";
+import { okResult } from "#shared/result.ts";
+import {
+  addMissingSiteSecrets,
+  expectedSiteSecrets,
+  hostInfraSecretNames,
+  loadSiteSecretsStatus,
+} from "#shared/site-secrets.ts";
+import {
+  recordingSecretSetter,
+  stubEdgeScriptSecrets,
+} from "#test-utils/builder-mocks.ts";
+import { describeWithEnv } from "#test-utils/db.ts";
+import { testBuiltSite } from "#test-utils/factories.ts";
+import { withMocks } from "#test-utils/mocks.ts";
+
+const buildSite = (overrides: Partial<BuiltSite> = {}): BuiltSite =>
+  testBuiltSite({
+    dbToken: "tok-123",
+    dbUrl: "libsql://site.turso.io",
+    hostingId: "555",
+    ...overrides,
+  });
+
+/** Names we'd copy to a fresh build of the standard test site. */
+const expectedNamesFor = (site: BuiltSite): string[] =>
+  expectedSiteSecrets(site).map(([name]) => name);
+
+type DenoSetResult = Awaited<ReturnType<typeof denoDeployApi.setEnvVars>>;
+
+/** Stub denoDeployApi.getEnvVarNames (returns empty) and setEnvVars (defaults to ok). */
+const stubDenoSecrets = (setResult: DenoSetResult = okResult(undefined)) => ({
+  getStub: stub(denoDeployApi, "getEnvVarNames", () =>
+    Promise.resolve(okResult([])),
+  ),
+  setStub: stub(denoDeployApi, "setEnvVars", () => Promise.resolve(setResult)),
+});
+
+describeWithEnv("hostInfraSecretNames", {}, () => {
+  test("keeps only host-level infrastructure credential names", () => {
+    expect(
+      hostInfraSecretNames([
+        "NTFY_URL",
+        "BUNNY_API_KEY",
+        "DB_URL",
+        "STORAGE_ZONE_KEY",
+        "GOOGLE_WALLET_SERVICE_ACCOUNT_KEY",
+      ]),
+    ).toEqual([
+      "BUNNY_API_KEY",
+      "STORAGE_ZONE_KEY",
+      "GOOGLE_WALLET_SERVICE_ACCOUNT_KEY",
+    ]);
+  });
+
+  test("returns an empty list when only low-privilege names are present", () => {
+    expect(
+      hostInfraSecretNames(["NTFY_URL", "DB_URL", "BUNNY_SCRIPT_ID"]),
+    ).toEqual([]);
+  });
+});
+
+describeWithEnv(
+  "collectHostSecrets",
+  { env: { NTFY_URL: "https://ntfy.example.com/t" } },
+  () => {
+    test("includes host env vars that are set and skips those that are not", () => {
+      const pairs = collectHostSecrets();
+      expect(pairs).toContainEqual(["NTFY_URL", "https://ntfy.example.com/t"]);
+      // STORAGE_ZONE_KEY is not set in this env, so it must be absent.
+      assert(!pairs.map(([name]) => name).includes("STORAGE_ZONE_KEY"));
+    });
+  },
+);
+
+describeWithEnv(
+  "collectHostSecrets (Deno provider)",
+  {
+    env: {
+      BUNNY_API_KEY: "host-key",
+      BUNNY_DNS_SUBDOMAIN_SUFFIX: ".tickets",
+      BUNNY_DNS_ZONE_ID: "zone-1",
+      NTFY_URL: "https://ntfy.example.com/t",
+      SUPPORT_PAGE_TEXT: "# Support help",
+    },
+  },
+  () => {
+    test("copies host secrets without the support message on any provider", () => {
+      expect(collectHostSecrets("deno")).toEqual([
+        ["NTFY_URL", "https://ntfy.example.com/t"],
+      ]);
+    });
+
+    test("skips the support message for a Bunny hosting provider", () => {
+      const names = collectHostSecrets("bunny").map(([name]) => name);
+      assertArrayIncludes(names, ["BUNNY_API_KEY"]);
+      assertArrayIncludes(names, ["BUNNY_DNS_ZONE_ID"]);
+      assertArrayIncludes(names, ["BUNNY_DNS_SUBDOMAIN_SUFFIX"]);
+      assert(!names.includes("SUPPORT_PAGE_TEXT"));
+    });
+  },
+);
+
+describeWithEnv(
+  "expectedSiteSecrets (Deno site, Bunny env vars set)",
+  {
+    env: {
+      BUNNY_API_KEY: "host-key",
+      BUNNY_DNS_SUBDOMAIN_SUFFIX: ".tickets",
+      BUNNY_DNS_ZONE_ID: "zone-1",
+    },
+  },
+  () => {
+    test("excludes Bunny-only secrets for a Deno-hosted site", () => {
+      const names = expectedNamesFor(
+        buildSite({ hostingId: "app_abc", hostingProvider: "deno" }),
+      );
+      expect(names.filter((name) => name.startsWith("BUNNY_"))).toEqual([]);
+    });
+  },
+);
+
+describeWithEnv(
+  "expectedSiteSecrets",
+  { env: { NTFY_URL: "https://ntfy.example.com/t" } },
+  () => {
+    test("includes base credentials plus host secrets", () => {
+      const pairs = expectedSiteSecrets(buildSite());
+      expect(pairs).toContainEqual(["DB_URL", "libsql://site.turso.io"]);
+      expect(pairs).toContainEqual(["DB_TOKEN", "tok-123"]);
+      expect(pairs).toContainEqual(["BUNNY_SCRIPT_ID", "555"]);
+      expect(pairs).toContainEqual(["NTFY_URL", "https://ntfy.example.com/t"]);
+    });
+
+    test("does not include BUNNY_SCRIPT_ID for a Deno-hosted site", () => {
+      const names = expectedNamesFor(
+        buildSite({ hostingId: "app_abc", hostingProvider: "deno" }),
+      );
+      assert(!names.includes("BUNNY_SCRIPT_ID"));
+    });
+
+    test("never includes DB_ENCRYPTION_KEY (it cannot be reproduced)", () => {
+      assert(!expectedNamesFor(buildSite()).includes("DB_ENCRYPTION_KEY"));
+    });
+
+    test("omits base credentials the site has no value for", () => {
+      const names = expectedNamesFor(
+        buildSite({ dbToken: "", dbUrl: "", hostingId: "555" }),
+      );
+      assert(!names.includes("DB_URL"));
+      assert(!names.includes("DB_TOKEN"));
+      assertArrayIncludes(names, ["BUNNY_SCRIPT_ID"]);
+    });
+
+    test("includes only host secrets when the site has no base values", () => {
+      const names = expectedNamesFor(
+        buildSite({ dbToken: "", dbUrl: "", hostingId: "" }),
+      );
+      assert(!names.includes("BUNNY_SCRIPT_ID"));
+      assert(!names.includes("DB_URL"));
+      assert(!names.includes("DB_TOKEN"));
+      assertArrayIncludes(names, ["NTFY_URL"]);
+    });
+  },
+);
+
+describeWithEnv(
+  "loadSiteSecretsStatus",
+  { env: { BUNNY_API_KEY: "k", NTFY_URL: "https://ntfy.example.com/t" } },
+  () => {
+    test("diffs expected secrets against the live list", async () => {
+      const site = buildSite();
+      // Live list has every expected secret except NTFY_URL, plus an extra
+      // (DB_ENCRYPTION_KEY) that is present but not part of the expected set.
+      const present = expectedNamesFor(site)
+        .filter((n) => n !== "NTFY_URL")
+        .concat("DB_ENCRYPTION_KEY");
+      await withMocks(
+        () => stubEdgeScriptSecrets(present),
+        async () => {
+          const view = await loadSiteSecretsStatus(site);
+          expect(view.ok).toBe(true);
+          if (!view.ok) return;
+          expect(view.missing).toEqual(["NTFY_URL"]);
+          // A live secret outside the expected set is never flagged as missing.
+          assert(!view.missing.includes("DB_ENCRYPTION_KEY"));
+          assertArrayIncludes(view.present, ["DB_ENCRYPTION_KEY"]);
+          assertArrayIncludes(view.expected, ["NTFY_URL"]);
+        },
+      );
+    });
+
+    test("reports nothing missing when every expected secret is live", async () => {
+      const site = buildSite();
+      await withMocks(
+        () => stubEdgeScriptSecrets(expectedNamesFor(site)),
+        async () => {
+          const view = await loadSiteSecretsStatus(site);
+          expect(view.ok).toBe(true);
+          if (view.ok) expect(view.missing).toEqual([]);
+        },
+      );
+    });
+
+    test("surfaces an API error instead of throwing", async () => {
+      await withMocks(
+        () =>
+          stub(bunnyCdnApi, "listEdgeScriptSecrets", () =>
+            Promise.resolve({
+              error: "List secrets failed (500)",
+              ok: false as const,
+            }),
+          ),
+        async () => {
+          const view = await loadSiteSecretsStatus(buildSite());
+          expect(view).toEqual({
+            error: "List secrets failed (500)",
+            ok: false,
+          });
+        },
+      );
+    });
+
+    test("catches a thrown fetch error", async () => {
+      await withMocks(
+        () =>
+          stub(bunnyCdnApi, "listEdgeScriptSecrets", () =>
+            Promise.reject(new Error("network down")),
+          ),
+        async () => {
+          const view = await loadSiteSecretsStatus(buildSite());
+          expect(view).toEqual({
+            error: "Failed to list secrets: network down",
+            ok: false,
+          });
+        },
+      );
+    });
+
+    test("refuses a site with no script id", async () => {
+      const view = await loadSiteSecretsStatus(buildSite({ hostingId: "" }));
+      expect(view).toEqual({
+        error: "This site has no hosting ID, so its secrets can't be read.",
+        ok: false,
+      });
+    });
+  },
+);
+
+describeWithEnv(
+  "loadSiteSecretsStatus without an API key",
+  { env: { BUNNY_API_KEY: undefined } },
+  () => {
+    test("refuses when BUNNY_API_KEY is not configured", async () => {
+      const view = await loadSiteSecretsStatus(buildSite());
+      expect(view.ok).toBe(false);
+      if (!view.ok) assertStringIncludes(view.error, "BUNNY_API_KEY");
+    });
+  },
+);
+
+describeWithEnv(
+  "loadSiteSecretsStatus (Deno site, no token)",
+  { env: { DENO_DEPLOY_TOKEN: undefined } },
+  () => {
+    test("refuses when DENO_DEPLOY_TOKEN is not configured", async () => {
+      const view = await loadSiteSecretsStatus(
+        buildSite({ hostingId: "app_abc", hostingProvider: "deno" }),
+      );
+      expect(view.ok).toBe(false);
+      if (!view.ok) assertStringIncludes(view.error, "DENO_DEPLOY_TOKEN");
+    });
+  },
+);
+
+describeWithEnv(
+  "loadSiteSecretsStatus (Deno site, with token)",
+  { env: { DENO_DEPLOY_TOKEN: "tok123" } },
+  () => {
+    test("returns present and missing secrets for a Deno site", async () => {
+      const site = buildSite({ hostingId: "app_abc", hostingProvider: "deno" });
+      await withMocks(
+        () =>
+          stub(denoDeployApi, "getEnvVarNames", () =>
+            Promise.resolve(okResult(["DB_URL", "DB_TOKEN"])),
+          ),
+        async () => {
+          const view = await loadSiteSecretsStatus(site);
+          expect(view.ok).toBe(true);
+          if (view.ok) {
+            assertArrayIncludes(view.present, ["DB_URL"]);
+            assertArrayIncludes(view.present, ["DB_TOKEN"]);
+          }
+        },
+      );
+    });
+  },
+);
+
+describeWithEnv(
+  "addMissingSiteSecrets",
+  { env: { BUNNY_API_KEY: "k", NTFY_URL: "https://ntfy.example.com/t" } },
+  () => {
+    test("sets only the missing secrets and never overwrites existing ones", async () => {
+      const site = buildSite();
+      // Everything expected is already live except NTFY_URL.
+      const present = expectedNamesFor(site).filter((n) => n !== "NTFY_URL");
+      const set = recordingSecretSetter();
+      await withMocks(
+        () => ({
+          listStub: stubEdgeScriptSecrets(present),
+          setStub: set.stub,
+        }),
+        async () => {
+          const result = await addMissingSiteSecrets(site, false);
+          expect(result).toEqual({ added: ["NTFY_URL"], ok: true });
+          // Only the missing secret is written; existing ones are left alone.
+          expect(set.calls).toEqual([
+            ["NTFY_URL", "https://ntfy.example.com/t"],
+          ]);
+        },
+      );
+    });
+
+    test("re-verifies live secrets first, so it skips ones that now exist", async () => {
+      const site = buildSite();
+      const set = recordingSecretSetter();
+      await withMocks(
+        () => ({
+          // The live list already has every expected secret (added meanwhile).
+          listStub: stubEdgeScriptSecrets(expectedNamesFor(site)),
+          setStub: set.stub,
+        }),
+        async () => {
+          const result = await addMissingSiteSecrets(site, true);
+          expect(result).toEqual({ added: [], ok: true });
+          expect(set.calls).toEqual([]);
+        },
+      );
+    });
+
+    test("returns the error when a secret fails to set", async () => {
+      await withMocks(
+        () => ({
+          listStub: stubEdgeScriptSecrets([]),
+          setStub: stub(bunnyCdnApi, "setEdgeScriptSecret", () =>
+            Promise.resolve({
+              error: "Set secret DB_URL failed (403)",
+              ok: false as const,
+            }),
+          ),
+        }),
+        async () => {
+          const result = await addMissingSiteSecrets(buildSite(), false);
+          expect(result).toEqual({
+            error: "Set secret DB_URL failed (403)",
+            ok: false,
+          });
+        },
+      );
+    });
+
+    test("returns the error when the live list cannot be read", async () => {
+      await withMocks(
+        () =>
+          stub(bunnyCdnApi, "listEdgeScriptSecrets", () =>
+            Promise.resolve({
+              error: "List secrets failed (401)",
+              ok: false as const,
+            }),
+          ),
+        async () => {
+          const result = await addMissingSiteSecrets(buildSite(), false);
+          expect(result).toEqual({
+            error: "List secrets failed (401)",
+            ok: false,
+          });
+        },
+      );
+    });
+
+    test("refuses a site with no script id", async () => {
+      const result = await addMissingSiteSecrets(
+        buildSite({ hostingId: "" }),
+        false,
+      );
+      expect(result.ok).toBe(false);
+      if (!result.ok) assertStringIncludes(result.error, "no hosting ID");
+    });
+  },
+);
+
+describeWithEnv(
+  "addMissingSiteSecrets (Deno site)",
+  { env: { DENO_DEPLOY_TOKEN: "tok123" } },
+  () => {
+    test("sets missing secrets on a Deno site via setEnvVars", async () => {
+      const site = buildSite({
+        hostingId: "app_deno",
+        hostingProvider: "deno",
+      });
+      await withMocks(
+        () => stubDenoSecrets(),
+        async () => {
+          const result = await addMissingSiteSecrets(site, true);
+          expect(result.ok).toBe(true);
+        },
+      );
+    });
+
+    test("returns error when setEnvVars fails on a Deno site", async () => {
+      const site = buildSite({
+        hostingId: "app_deno_fail",
+        hostingProvider: "deno",
+      });
+      await withMocks(
+        () =>
+          stubDenoSecrets({ error: "patch failed (500)", ok: false as const }),
+        async () => {
+          const result = await addMissingSiteSecrets(site, true);
+          expect(result.ok).toBe(false);
+        },
+      );
+    });
+  },
+);

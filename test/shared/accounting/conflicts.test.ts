@@ -1,0 +1,180 @@
+import { assertStringIncludes } from "@std/assert";
+import { expect } from "@std/expect";
+import { describe, it as test } from "@std/testing/bdd";
+import {
+  LedgerConflictError,
+  reversalConflict,
+} from "#accounting/conflicts.ts";
+import { allTransfers, transfersByEventGroup } from "#accounting/queries.ts";
+import { postTransfers } from "#accounting/store.ts";
+import { account } from "#shared/ledger/account.ts";
+import type { TransferInput } from "#shared/ledger/types.ts";
+import {
+  rejection,
+  saleAndPayment,
+  tx,
+  useTransactionalDb,
+} from "#test-utils/ledger.ts";
+
+describe("db > accounting > conflicts", () => {
+  useTransactionalDb();
+
+  describe("replay divergence", () => {
+    test("rejects a replay whose leg changed financial facts", async () => {
+      await postTransfers([tx({ amount: 5000, reference: "sale-1" })]);
+      const error = await rejection(
+        postTransfers([tx({ amount: 9999, reference: "sale-1" })]),
+      );
+      expect(error).toBeInstanceOf(LedgerConflictError);
+      expect(error.name).toBe("LedgerConflictError");
+      assertStringIncludes(error.message, "amount");
+      expect((await allTransfers()).length).toBe(1);
+    });
+
+    test("rejects a replay that adds a leg to a posted event", async () => {
+      await postTransfers(saleAndPayment());
+      const error = await rejection(
+        postTransfers([
+          ...saleAndPayment(),
+          tx({
+            destination: account("fee_income", "booking"),
+            reference: "fee-1",
+          }),
+        ]),
+      );
+      expect(error).toBeInstanceOf(LedgerConflictError);
+      expect((await allTransfers()).length).toBe(2);
+    });
+
+    test("rejects a replay that drops a leg from a posted event", async () => {
+      await postTransfers(saleAndPayment());
+      const error = await rejection(
+        postTransfers([
+          tx({ reference: "sale-1", source: account("attendee", 1) }),
+        ]),
+      );
+      expect(error).toBeInstanceOf(LedgerConflictError);
+      expect((await allTransfers()).length).toBe(2);
+    });
+
+    test("replays the same instant in a different ISO form as a no-op", async () => {
+      // The store persists time as epoch-millis and reads it back canonical, so
+      // a replay carrying the same moment without milliseconds, or as an offset,
+      // must match the stored leg rather than read as an occurredAt conflict.
+      await postTransfers([tx({ occurredAt: "2026-06-21T00:00:00Z" })]);
+      expect(
+        await postTransfers([tx({ occurredAt: "2026-06-21T01:00:00+01:00" })]),
+      ).toEqual({ inserted: 0, skipped: 1 });
+      expect((await allTransfers()).length).toBe(1);
+    });
+
+    test("preserves kind/memo/posted_by/reverses_id and replays them", async () => {
+      // A reversal always references an already-stored leg (the admin-void shape):
+      // post the original as its own event, read back its id, then void it in a
+      // separate event that links to that stored id — never a leg being inserted
+      // in the same call.
+      await postTransfers([tx({ eventGroup: "e0", reference: "orig" })]);
+      const origId = (await transfersByEventGroup("e0"))[0]!.id;
+      const voidLegs = [
+        tx({
+          destination: account("attendee", 1),
+          eventGroup: "e1",
+          kind: "reversal",
+          memo: "owner-key-ciphertext",
+          postedBy: "user:5",
+          reference: "void",
+          reversesId: origId,
+          source: account("revenue", 1),
+        }),
+      ];
+      expect(await postTransfers(voidLegs)).toEqual({
+        inserted: 1,
+        skipped: 0,
+      });
+      // Replaying exercises the reversesId/kind equality path too.
+      expect(await postTransfers(voidLegs)).toEqual({
+        inserted: 0,
+        skipped: 1,
+      });
+
+      const voided = (await transfersByEventGroup("e1"))[0]!;
+      expect(voided.kind).toBe("reversal");
+      expect(voided.memo).toBe("owner-key-ciphertext");
+      expect(voided.postedBy).toBe("user:5");
+      expect(voided.reversesId).toBe(origId);
+      const orig = (await transfersByEventGroup("e0"))[0]!;
+      expect(orig.reversesId).toBeUndefined();
+      // A kindless leg round-trips to an omitted kind, like reverses_id.
+      expect(orig.kind).toBeUndefined();
+    });
+  });
+
+  describe("reversal links", () => {
+    const postSale = (): Promise<unknown> =>
+      postTransfers([
+        tx({
+          destination: account("revenue", 1),
+          eventGroup: "evt-1",
+          reference: "sale",
+          source: account("attendee", 1),
+        }),
+      ]);
+    const storedSaleId = async (): Promise<number> =>
+      (await transfersByEventGroup("evt-1"))[0]!.id;
+    const voidLeg = (overrides: Partial<TransferInput>): TransferInput =>
+      tx({
+        destination: account("attendee", 1),
+        eventGroup: "evt-2",
+        reference: "void",
+        source: account("revenue", 1),
+        ...overrides,
+      });
+
+    test("a leg with no reverses_id passes trivially, even against a null original", () => {
+      // The absent-link short-circuit must return before the "refers to no
+      // transfer" guard, regardless of the original passed (a `||` instead of the
+      // `||`-less guard would fall through and wrongly throw here).
+      expect(reversalConflict(tx({ reference: "plain" }), null)).toBeNull();
+    });
+
+    test("accepts a leg that is the exact inverse of the original", async () => {
+      await postSale();
+      const result = await postTransfers([
+        voidLeg({ reversesId: await storedSaleId() }),
+      ]);
+      expect(result.inserted).toBe(1);
+    });
+
+    test("rejects a reverses_id that refers to no transfer", async () => {
+      assertStringIncludes(
+        (await rejection(postTransfers([voidLeg({ reversesId: 9999 })])))
+          .message,
+        "refers to no transfer",
+      );
+    });
+
+    test("rejects a reversal whose amount differs from the original", async () => {
+      await postSale();
+      const error = await rejection(
+        postTransfers([
+          voidLeg({ amount: 4000, reversesId: await storedSaleId() }),
+        ]),
+      );
+      assertStringIncludes(error.message, "not the exact inverse");
+    });
+
+    test("rejects a reversal that does not swap the accounts", async () => {
+      await postSale();
+      const error = await rejection(
+        postTransfers([
+          voidLeg({
+            destination: account("revenue", 1),
+            reversesId: await storedSaleId(),
+            source: account("attendee", 1),
+          }),
+        ]),
+      );
+      assertStringIncludes(error.message, "not the exact inverse");
+    });
+  });
+});

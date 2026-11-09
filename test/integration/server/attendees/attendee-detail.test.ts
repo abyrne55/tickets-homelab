@@ -1,0 +1,254 @@
+import { assert, assertStringIncludes } from "@std/assert";
+import { expect } from "@std/expect";
+import { describe, it as test } from "@std/testing/bdd";
+import { moveTickets } from "#db/attendees/update.ts";
+import { hashEmail, saveContactRecord } from "#db/contact-preferences.ts";
+import { invalidateListingsCache } from "#db/listings/records.ts";
+import { createSystemNote } from "#db/notes/queries.ts";
+import { attendeeNotes } from "#db/notes/target.ts";
+import { makeImage } from "#test-utils/admin-images.ts";
+import {
+  expectHtmlResponse,
+  expectIncludesAll,
+  testRequiresAuth,
+} from "#test-utils/assertions.ts";
+import { setupListingAndAttendee } from "#test-utils/attendees/helpers.ts";
+import { describeWithEnv } from "#test-utils/db.ts";
+import { bookAttendee } from "#test-utils/db-helpers/attendee-payments.ts";
+import { createTestAttendee } from "#test-utils/db-helpers/attendees.ts";
+import { createTestListing } from "#test-utils/db-helpers/listings.ts";
+import { withEnv } from "#test-utils/env.ts";
+import { adminGet } from "#test-utils/session.ts";
+
+describeWithEnv(
+  "server (admin attendees) > attendee detail",
+  { db: true },
+  () => {
+    describe("GET /admin/attendees/:attendeeId", () => {
+      testRequiresAuth("/admin/attendees/1", {
+        setup: async () => {
+          await setupListingAndAttendee();
+        },
+      });
+
+      test("returns 404 for non-existent attendee", async () => {
+        const response = await adminGet("/admin/attendees/999");
+        expect(response.status).toBe(404);
+      });
+
+      // Regression: looking at one attendee wrongly rendered the Attendees
+      // section's "Add" sub-nav (the page passed the section landing route as its
+      // nav-active value, which re-opened the create sub-nav). A single-attendee
+      // page must highlight the Attendees top-level link but show no "Add"
+      // sub-nav beside it.
+      test("the attendee page highlights Attendees but shows no Add sub-nav", async () => {
+        const { attendee } = await setupListingAndAttendee();
+        const response = await adminGet(`/admin/attendees/${attendee.id}`);
+        const html = await response.text();
+        expect(response.status).toBe(200);
+        assertStringIncludes(html, 'class="active" href="/admin/attendees"');
+        assert(!html.includes('href="/admin/attendees/new"'));
+        assert(!html.includes("admin-subnav"));
+      });
+
+      test("the attendee page hides the add-note link in read-only mode", async () => {
+        const { attendee } = await setupListingAndAttendee();
+        using _env = withEnv({
+          READ_ONLY_FROM: "2020-01-01T00:00:00.000Z",
+        });
+        const response = await adminGet(`/admin/attendees/${attendee.id}`);
+        expect(response.status).toBe(200);
+        const html = await response.text();
+        assertStringIncludes(html, "Attendee: John Doe");
+        assert(
+          !html.includes(`/admin/attendee/${attendee.id}/note?return_url=`),
+        );
+      });
+
+      test("resolves a note's img#N reference on the banner and notes section", async () => {
+        const { attendee } = await setupListingAndAttendee();
+        const image = await makeImage("BannerPoster");
+        await createSystemNote(
+          attendeeNotes(attendee.id),
+          `Refunded. ![BannerPoster](img#${image.id})`,
+        );
+
+        const html = await (
+          await adminGet(`/admin/attendees/${attendee.id}`)
+        ).text();
+        assertStringIncludes(
+          html,
+          `<img src="/image/${image.filename}" alt="BannerPoster">`,
+        );
+        assert(!html.includes("img#"));
+      });
+
+      test("resolves the contact record's note images in the stats / notes panel", async () => {
+        const { attendee } = await setupListingAndAttendee();
+        const image = await makeImage("RecordPoster");
+        // The booking's email is the panel's lookup key. The raw attendee row
+        // carries it only inside its encrypted PII blob.
+        await saveContactRecord(await hashEmail("john@example.com"), {
+          adminBookingCount: 0,
+          adminNotes: `Call first. ![RecordPoster](img#${image.id})`,
+          contactCount: 0,
+          lastContact: "",
+          lastSubject: "",
+          publicBookingCount: 0,
+          visits: 0,
+        });
+
+        const html = await (
+          await adminGet(`/admin/attendees/${attendee.id}`)
+        ).text();
+        assertStringIncludes(
+          html,
+          `<img src="/image/${image.filename}" alt="RecordPoster">`,
+        );
+        assert(!html.includes("img#"));
+      });
+
+      test("shows edit form with prefilled attendee data", async () => {
+        const listing = await createTestListing({ maxAttendees: 100 });
+        const result = await bookAttendee(listing, {
+          address: "123 Main St",
+          email: "john@example.com",
+          name: "John Doe",
+          phone: "555-1234",
+          quantity: 1,
+          special_instructions: "VIP guest",
+        });
+        if (!result.success) throw new Error("Failed to create attendee");
+        const attendee = result.attendees[0]!;
+
+        const response = await adminGet(`/admin/attendees/${attendee.id}/edit`);
+        await expectHtmlResponse(
+          response,
+          200,
+          "Save Attendee",
+          "John Doe",
+          "john@example.com",
+          "555-1234",
+          "123 Main St",
+          "VIP guest",
+        );
+      });
+
+      test("includes return_url as hidden field when provided", async () => {
+        const { attendee } = await setupListingAndAttendee();
+        const response = await adminGet(
+          `/admin/attendees/${attendee.id}/edit?return_url=${encodeURIComponent(
+            "/admin/calendar#attendees",
+          )}`,
+        );
+        await expectHtmlResponse(
+          response,
+          200,
+          'name="return_url"',
+          "/admin/calendar#attendees",
+        );
+      });
+
+      test("shows current listing in registrations table", async () => {
+        const { attendee } = await setupListingAndAttendee({
+          listing: { maxAttendees: 100, name: "Current Listing" },
+        });
+        const response = await adminGet(`/admin/attendees/${attendee.id}/edit`);
+        await expectHtmlResponse(
+          response,
+          200,
+          "Current Listing",
+          "Listing Registrations",
+        );
+      });
+
+      test("edit page shows listing registrations and add-to-listing sections", async () => {
+        const listing = await createTestListing({
+          maxAttendees: 100,
+          name: "Edit Page Listing",
+        });
+        const attendee = await createTestAttendee(
+          listing.id,
+          listing.slug,
+          "Edit User",
+          "edit@example.com",
+        );
+        const response = await adminGet(`/admin/attendees/${attendee.id}/edit`);
+        const html = await expectHtmlResponse(
+          response,
+          200,
+          "Listing Registrations",
+          "Save Attendee",
+        );
+        // Listing link table shows the listing
+        expectIncludesAll(html, [
+          "Edit Page Listing",
+          // The editor renders a quantity box per listing
+          "qty_",
+        ]);
+      });
+
+      test("edit page shows checked-in badge for checked-in attendee", async () => {
+        const listing = await createTestListing({
+          maxAttendees: 100,
+          name: "Checkin Badge Listing",
+        });
+        const attendee = await createTestAttendee(
+          listing.id,
+          listing.slug,
+          "Badge User",
+          "badge@example.com",
+        );
+        await moveTickets("admit", [
+          { attendeeId: attendee.id, count: 1, listingId: listing.id },
+        ]);
+        invalidateListingsCache();
+        const response = await adminGet(`/admin/attendees/${attendee.id}`);
+        await expectHtmlResponse(response, 200, "Checked in");
+      });
+
+      test("edit page seeds the shared start date from a daily booking", async () => {
+        const listing = await createTestListing({
+          listingType: "daily",
+          maxAttendees: 100,
+          name: "Daily Dates Listing",
+        });
+        const result = await bookAttendee(listing, {
+          date: "2026-04-07",
+          email: "daily@example.com",
+          name: "Daily User",
+        });
+        if (!result.success) throw new Error("Failed");
+        const attendeeId = result.attendees[0]!.id;
+        const response = await adminGet(`/admin/attendees/${attendeeId}/edit`);
+        const html = await expectHtmlResponse(
+          response,
+          200,
+          "Daily Dates Listing",
+        );
+        // The shared start date is seeded from the daily booking.
+        assertStringIncludes(html, 'value="2026-04-07"');
+      });
+
+      test("includes active listings in add-to-listing selector", async () => {
+        const listing1 = await createTestListing({
+          maxAttendees: 100,
+          name: "Listing 1",
+        });
+        await createTestListing({
+          active: true,
+          maxAttendees: 100,
+          name: "Listing 2",
+        });
+        const attendee = await createTestAttendee(
+          listing1.id,
+          listing1.slug,
+          "John Doe",
+          "john@example.com",
+        );
+        const response = await adminGet(`/admin/attendees/${attendee.id}/edit`);
+        await expectHtmlResponse(response, 200, "Listing 1", "Listing 2");
+      });
+    });
+  },
+);

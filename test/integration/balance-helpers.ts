@@ -1,0 +1,230 @@
+import { expect } from "@std/expect";
+import { type Stub, stub } from "@std/testing/mock";
+import { requirePaidDefaultStatus } from "#db/attendee-statuses.ts";
+import { getAttendeeBalanceState } from "#db/attendees/balance.ts";
+import { getDb } from "#db/client.ts";
+import { handleRequest } from "#routes";
+import { signBalanceToken } from "#shared/balance-link.ts";
+import type { StripeCheckoutSession } from "#shared/stripe/schemas.ts";
+import { stripeApi } from "#shared/stripe.ts";
+import { expectIncludesAll } from "#test-utils/assertions.ts";
+import {
+  createNonReservationAttendee,
+  createReservedAttendee,
+} from "#test-utils/balance.ts";
+import { signMeta, webhookMeta } from "#test-utils/factories.ts";
+import { postListingSale } from "#test-utils/ledger.ts";
+import { mockFormRequest, mockRequest } from "#test-utils/mocks.ts";
+import { testCsrfToken } from "#test-utils/session.ts";
+
+/** A settle identity (session id + business time) for settleAttendeeBalance. */
+export const settle = (id = "settle-session") => ({
+  id,
+  occurredAt: "2026-06-21T00:00:00.000Z",
+});
+
+/** POST a pay form for a token as the customer. */
+export const postPay = async (token: string): Promise<Response> =>
+  handleRequest(
+    mockFormRequest(`/pay/${token}`, { csrf_token: await testCsrfToken() }, ""),
+  );
+
+/** Insert a bare attendee row (no bookings) with a status and balance. */
+export const insertBareAttendee = async (
+  statusId: number | null,
+  remainingBalance: number,
+): Promise<number> => {
+  // A current `created` keeps this bare (booking-less) attendee out of the
+  // orphaned-record auto-purge, which reaps orphans older than the retention.
+  const inserted = await getDb().execute({
+    args: [new Date().toISOString(), statusId],
+    sql: "INSERT INTO attendees (created, pii_blob, status_id) VALUES (?, '', ?)",
+  });
+  const attendeeId = Number(inserted.lastInsertRowid);
+  // Outstanding balance projects from the ledger: owe `remainingBalance` via a
+  // sale leg to a listing with no booking row, nothing paid.
+  if (remainingBalance > 0) {
+    await postListingSale({
+      amountPaid: 0,
+      attendeeId,
+      gross: remainingBalance,
+      listingId: 98765,
+    });
+  }
+  return attendeeId;
+};
+
+/** Create a reserved attendee with an outstanding balance and a paid listing. */
+export const createReserved = async (
+  remainingBalance: number,
+): Promise<number> =>
+  (
+    await createReservedAttendee(remainingBalance, {
+      listingName: "Workshop Ticket",
+      quantity: 2,
+    })
+  ).attendeeId;
+
+/** Create a non-reservation attendee owing a balance on a real booking line. */
+export const createNonReservation = async (
+  remainingBalance: number,
+): Promise<number> =>
+  (
+    await createNonReservationAttendee(remainingBalance, {
+      listingName: "Workshop Ticket",
+    })
+  ).attendeeId;
+
+/** Assert the pay page rendered the recap: title, listing name and amount due. */
+export const expectRecap = (html: string): void => {
+  expectIncludesAll(html, [
+    "Pay your balance",
+    "Workshop Ticket",
+    "Balance due",
+  ]);
+};
+
+/** GET /pay for an attendee's signed token; assert 200 and return the html. */
+export const getPayPage = async (attendeeId: number): Promise<string> => {
+  const token = await signBalanceToken(attendeeId);
+  const response = await handleRequest(mockRequest(`/pay/${token}`));
+  expect(response.status).toBe(200);
+  return response.text();
+};
+
+/** An attendee whose order mixes a concealed package row with a plain row:
+ * one booking through `group` and one standalone, both recognised as ledger
+ * revenue with nothing paid, so the attendee owes exactly `fullPrice`. */
+export const createMixedConcealedAttendee = async (group: {
+  id: number;
+}): Promise<{
+  attendeeId: number;
+  concealedName: string;
+  plainName: string;
+}> => {
+  const { requirePublicDefaultStatus } = await import(
+    "#db/attendee-statuses.ts"
+  );
+  const { attendeesApi } = await import("#db/attendees/api.ts");
+  const { bookedAttendee } = await import(
+    "#test-utils/db-helpers/attendee-payments.ts"
+  );
+  const { createTestListing } = await import(
+    "#test-utils/db-helpers/listings.ts"
+  );
+  const { postListingSale } = await import("#test-utils/ledger.ts");
+  const concealed = await createTestListing({
+    groupId: group.id,
+    maxAttendees: 10,
+    maxQuantity: 10,
+    name: "Secret Contents",
+    unitPrice: 1000,
+  });
+  const plain = await createTestListing({
+    maxAttendees: 10,
+    name: "Workshop Ticket",
+    unitPrice: 1000,
+  });
+  await requirePublicDefaultStatus();
+  const attendee = bookedAttendee(
+    await attendeesApi.createAttendeeAtomic({
+      bookings: [
+        { listingId: concealed.id, packageGroupId: group.id, quantity: 1 },
+        { listingId: plain.id, quantity: 2 },
+      ],
+      email: "balance@example.com",
+      name: "Balance Buyer",
+      remainingBalance: 3000,
+    }),
+  );
+  for (const [listingId, gross] of [
+    [concealed.id, 1000],
+    [plain.id, 2000],
+  ] as const) {
+    await postListingSale({
+      amountPaid: 0,
+      attendeeId: attendee.id,
+      gross,
+      listingId,
+    });
+  }
+  return {
+    attendeeId: attendee.id,
+    concealedName: concealed.name,
+    plainName: plain.name,
+  };
+};
+
+/**
+ * A signed Stripe balance-payment checkout session for `attendeeId`.
+ * `signedAmount` is the proof/items total; `chargedAmount` (defaults to it) is
+ * what the provider reports in `amount_total`. `over` merges into the session and
+ * `meta` into its metadata (e.g. a tampered price_proof); payment_intent mirrors
+ * the id with cs_→pi_.
+ */
+export const balanceSession = (
+  attendeeId: number,
+  signedAmount: number,
+  id: string,
+  {
+    chargedAmount = signedAmount,
+    eventId = 1,
+    over = {},
+    meta = {},
+  }: {
+    chargedAmount?: number;
+    eventId?: number;
+    over?: Record<string, unknown>;
+    meta?: Record<string, string>;
+  } = {},
+): StripeCheckoutSession => ({
+  amount_total: chargedAmount,
+  created: 1_700_000_000,
+  currency: "gbp",
+  expires_at: 1_700_003_600,
+  id,
+  metadata: {
+    ...signMeta(
+      webhookMeta({
+        balance_attendee_id: String(attendeeId),
+        items: JSON.stringify([{ e: eventId, p: signedAmount, q: 1 }]),
+        name: "Balance payment",
+      }),
+      signedAmount,
+    ),
+    ...meta,
+  },
+  payment_intent: id.replace(/^cs_/, "pi_"),
+  payment_status: "paid",
+  status: "complete",
+  url: null,
+  ...over,
+});
+
+/** Stub retrieveCheckoutSession to return a {@link balanceSession}. */
+export const stubBalanceSession = (
+  ...args: Parameters<typeof balanceSession>
+): Stub<
+  typeof stripeApi,
+  Parameters<typeof stripeApi.retrieveCheckoutSession>,
+  Promise<Awaited<ReturnType<typeof stripeApi.retrieveCheckoutSession>>>
+> =>
+  stub(stripeApi, "retrieveCheckoutSession", () =>
+    Promise.resolve(balanceSession(...args)),
+  );
+
+/** Drive the success webhook for `sessionId` and assert it cleared the balance
+ * and flipped the attendee onto the paid default status. */
+export const expectSettled = async (
+  sessionId: string,
+  attendeeId: number,
+): Promise<void> => {
+  const paid = await requirePaidDefaultStatus();
+  const response = await handleRequest(
+    mockRequest(`/payment/success?session_id=${sessionId}`),
+  );
+  expect(response.status).toBe(200);
+  const state = await getAttendeeBalanceState(attendeeId);
+  expect(state?.remainingBalance).toBe(0);
+  expect(state?.statusId).toBe(paid!.id);
+};

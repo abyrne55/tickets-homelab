@@ -1,0 +1,39 @@
+import { assert } from "@std/assert";
+import { expect } from "@std/expect";
+import { it as test } from "@std/testing/bdd";
+import { paymentAnchorReference } from "#db/payment-anchor/reference.ts";
+import {
+  loadPaymentReference,
+  paymentReferenceIndex,
+} from "#db/payment-reference-store.ts";
+import type { PaymentReference } from "#payment/provider-reference.ts";
+import { getTestPrivateKey } from "#test-utils/crypto.ts";
+import { describeWithEnv } from "#test-utils/db.ts";
+import { taggedPaymentReference } from "#test-utils/processed-payments.ts";
+
+const untagged = (reference: string): PaymentReference => ({
+  kind: "untagged",
+  reference,
+});
+
+describeWithEnv("db > payment anchor > reference", { db: true }, () => {
+  test("stores a tagged reference and every spelling that can already own it", async () => {
+    const payment = taggedPaymentReference("pi_anchor_tagged", "square");
+    const prepared = await paymentAnchorReference(payment);
+    const taggedIndex = await paymentReferenceIndex(payment);
+    const untaggedIndex = await paymentReferenceIndex(
+      untagged(payment.reference),
+    );
+
+    expect(prepared.stored.index).toBe(taggedIndex);
+    expect(prepared.matchingIndexes).toEqual([taggedIndex, untaggedIndex]);
+    assert(!prepared.stored.encrypted.includes(payment.reference));
+    expect(
+      await loadPaymentReference(
+        prepared.stored.encrypted,
+        await getTestPrivateKey(),
+        "tagged payment anchor test",
+      ),
+    ).toEqual(payment);
+  });
+});

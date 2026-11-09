@@ -1,0 +1,302 @@
+import {
+  assert,
+  assertArrayIncludes,
+  assertExists,
+  assertStringIncludes,
+} from "@std/assert";
+import { expect } from "@std/expect";
+import { describe, it as test } from "@std/testing/bdd";
+import { getDb } from "#db/client.ts";
+import { getAllImages } from "#db/images.ts";
+import { handleRequest } from "#routes";
+import { BROKEN_IMAGE_FILENAME } from "#shared/images/broken.ts";
+import { getAllActivityLog } from "#test-utils/activity-log.ts";
+import {
+  adminGet,
+  imageUploadRequest,
+  insertBrokenImage,
+  makeImage,
+  postImageUpload,
+} from "#test-utils/admin-images.ts";
+import {
+  expectFlashRedirect,
+  expectHtmlResponse,
+} from "#test-utils/assertions.ts";
+import { describeWithEnv } from "#test-utils/db.ts";
+import {
+  mockMultipartRequest,
+  withBunnyStorageStub,
+  withCdnRejecting,
+  withExpectedError,
+  withStorageDisabled,
+  withStorageMock,
+} from "#test-utils/mocks.ts";
+import { testCookie, testCsrfToken } from "#test-utils/session.ts";
+
+describeWithEnv(
+  "admin image library routes",
+  { db: true, storage: "cdn" },
+  () => {
+    describe("GET /admin/images", () => {
+      test("renders the empty state and image table", async () => {
+        await expectHtmlResponse(
+          await adminGet("/admin/images"),
+          200,
+          "No images yet.",
+          // The create affordance now lives in the Images section sub-nav.
+          'href="/admin/images/new"',
+        );
+
+        await makeImage("Hero");
+        await expectHtmlResponse(
+          await adminGet("/admin/images"),
+          200,
+          "Hero",
+          'href="/admin/images/',
+          "/image/hero-thumb.webp",
+        );
+      });
+
+      test("orders the table and the editor dropdown by name, then by upload date", async () => {
+        const sunset = await makeImage("Sunset");
+        const firstAlpine = await makeImage("Alpine");
+        const secondAlpine = await makeImage("Alpine");
+        const meadow = await makeImage("Meadow");
+        // The library order: name A to Z, and the older upload first on a tie.
+        const libraryOrder = [firstAlpine, secondAlpine, meadow, sunset];
+
+        const html = await (await adminGet("/admin/images")).text();
+        // Each image name links to that image's edit page, in table order.
+        const shown = [
+          ...html.matchAll(/href="\/admin\/images\/(\d+)\/edit"/g),
+        ].map((match) => Number(match[1]));
+        expect(shown).toEqual(libraryOrder.map((image) => image.id));
+
+        // The editor's image dropdown offers the same order.
+        const options = await (await adminGet("/admin/images/options")).json();
+        expect(options).toEqual({
+          images: libraryOrder.map(({ id, name }) => ({ id, name })),
+        });
+      });
+
+      test("renders the red-pixel marker for an image whose filenames are broken", async () => {
+        await insertBrokenImage({ name: "Broken library image" });
+
+        await expectHtmlResponse(
+          await adminGet("/admin/images"),
+          200,
+          "Broken library image",
+          `/image/${BROKEN_IMAGE_FILENAME}`,
+        );
+      });
+
+      test("shows only the storage-disabled state when storage is off", async () => {
+        await makeImage("Hidden while disabled");
+
+        await withStorageDisabled(async () => {
+          await expectHtmlResponse(
+            await adminGet("/admin/images"),
+            200,
+            "File storage is not configured.",
+          );
+          const html = await (await adminGet("/admin/images")).text();
+          assert(!html.includes("Hidden while disabled"));
+          assert(!html.includes("Add Image"));
+        });
+      });
+    });
+
+    describe("GET /admin/images/new", () => {
+      test("renders the upload form", async () => {
+        await expectHtmlResponse(
+          await adminGet("/admin/images/new"),
+          200,
+          "Create image",
+          'name="name"',
+          'name="image"',
+          'enctype="multipart/form-data"',
+        );
+      });
+
+      test("redirects away from the upload form when storage is disabled", async () => {
+        await withStorageDisabled(async () => {
+          const response = await adminGet("/admin/images/new");
+          await expectFlashRedirect(
+            "/admin/images",
+            "File storage is not configured.",
+            false,
+          )(response);
+        });
+      });
+    });
+
+    describe("POST /admin/images", () => {
+      test("rejects direct uploads when storage is disabled", async () => {
+        await withStorageDisabled(async () => {
+          const response = await handleRequest(
+            await imageUploadRequest(
+              "/admin/images",
+              await testCookie(),
+              await testCsrfToken(),
+              "Disabled upload",
+            ),
+          );
+          await expectFlashRedirect(
+            "/admin/images",
+            "File storage is not configured.",
+            false,
+          )(response);
+        });
+        expect(await getAllImages()).toEqual([]);
+      });
+
+      test("rejects missing metadata before storage upload", async () => {
+        const response = await handleRequest(
+          mockMultipartRequest(
+            "/admin/images",
+            { alt_text: "", csrf_token: await testCsrfToken(), name: "" },
+            await testCookie(),
+          ),
+        );
+
+        await expectFlashRedirect(
+          "/admin/images/new",
+          "Image name is required",
+          false,
+        )(response);
+        expect(await getAllImages()).toEqual([]);
+      });
+
+      test("rejects missing file before storage upload", async () => {
+        const response = await handleRequest(
+          mockMultipartRequest(
+            "/admin/images",
+            {
+              alt_text: "Missing file alt",
+              csrf_token: await testCsrfToken(),
+              name: "Missing file",
+            },
+            await testCookie(),
+          ),
+        );
+
+        await expectFlashRedirect(
+          "/admin/images/new",
+          "Choose an image file to upload",
+          false,
+        )(response);
+        expect(await getAllImages()).toEqual([]);
+      });
+
+      test("rejects uploads when storage fails", async () => {
+        const cookie = await testCookie();
+        const csrfToken = await testCsrfToken();
+
+        await withExpectedError(async () => {
+          await withCdnRejecting(new Error("upload down"), async () => {
+            const response = await postImageUpload(
+              "/admin/images",
+              cookie,
+              csrfToken,
+              "Failed upload",
+            );
+            await expectFlashRedirect(
+              "/admin/images/new",
+              "Image upload failed: Error: upload down",
+              false,
+              cookie,
+            )(response);
+          });
+        });
+        expect(await getAllImages()).toEqual([]);
+      });
+
+      test("cleans up uploaded files when the image record cannot be created", async () => {
+        const cookie = await testCookie();
+        const csrfToken = await testCsrfToken();
+
+        await getDb().execute("DROP TABLE images");
+        await withBunnyStorageStub(
+          () => new Response(null, { status: 201 }),
+          async () => {
+            await withExpectedError(async () => {
+              const response = await postImageUpload(
+                "/admin/images",
+                cookie,
+                csrfToken,
+                "Unstored upload",
+              );
+              expect(response.status).toBe(503);
+            });
+          },
+        );
+      });
+
+      test("uploads a new image record and redirects to its edit page", async () => {
+        const cookie = await testCookie();
+        const csrfToken = await testCsrfToken();
+
+        await withStorageMock(async () => {
+          const response = await postImageUpload(
+            "/admin/images",
+            cookie,
+            csrfToken,
+            "New library image",
+          );
+          const location = response.headers.get("location") ?? "";
+          const path = new URL(location, "http://localhost").pathname;
+          expect(path).toMatch(/^\/admin\/images\/\d+\/edit$/);
+          await expectFlashRedirect(
+            path,
+            "Image created",
+            true,
+            cookie,
+          )(response);
+        });
+
+        const [image] = await getAllImages();
+        expect(image?.name).toBe("New library image");
+        expect(image?.alt_text).toBe("Alt New library image");
+        expect(image?.filename).toMatch(/\.webp$/);
+        expect(image?.filename_thumb).toMatch(/\.webp$/);
+        const messages = (await getAllActivityLog()).map(
+          (entry) => entry.message,
+        );
+        assertArrayIncludes(messages, ["Image 'New library image' uploaded"]);
+      });
+    });
+
+    describe("GET /admin/images/options (editor dropdown list)", () => {
+      test("lists every image as id and name in name order", async () => {
+        await makeImage("Zebra");
+        await makeImage("Alpha");
+        const response = await adminGet("/admin/images/options");
+        expect(response.status).toBe(200);
+        const contentType = response.headers.get("content-type");
+        assertExists(contentType);
+        assertStringIncludes(contentType, "application/json");
+        const body = await response.json();
+        expect(body).toEqual({
+          images: [
+            { id: await idOf("Alpha"), name: "Alpha" },
+            { id: await idOf("Zebra"), name: "Zebra" },
+          ],
+        });
+      });
+
+      const idOf = async (name: string): Promise<number> => {
+        const all = await getAllImages();
+        return all.find((image) => image.name === name)!.id;
+      };
+
+      test("serves an empty list when storage is disabled", async () => {
+        await makeImage("Hero");
+        const response = await withStorageDisabled(async () =>
+          adminGet("/admin/images/options"),
+        );
+        expect(response.status).toBe(200);
+        expect(await response.json()).toEqual({ images: [] });
+      });
+    });
+  },
+);

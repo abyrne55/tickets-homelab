@@ -1,0 +1,53 @@
+import { assert } from "@std/assert";
+import { describe, it as test } from "@std/testing/bdd";
+import type { BlindIndex } from "#crypto/sealed.ts";
+import { buildForest, buildNavModel } from "#shared/site-pages/core.ts";
+import { sitePagePage } from "#templates/public/site-page.tsx";
+import { expectIncludesAll } from "#test-utils/assertions.ts";
+import {
+  navKey,
+  navPage as page,
+} from "#test-utils/site-pages/nav-fixtures.ts";
+import type { SitePage } from "#types";
+
+describe("sitePagePage (nav-model race)", () => {
+  test("renders without items when the model no longer contains the page", () => {
+    // A concurrent delete between the slug lookup and the nav reads leaves a
+    // model with no chain for the page: the body renders with no item list.
+    const gone: SitePage = {
+      content: "Still **here**",
+      hidden: false,
+      id: 99,
+      meta_description: "",
+      meta_title: "",
+      name: "Racy Page",
+      slug: "racy",
+      // Hand-crafted fixture stand-in for the blind index — test cast.
+      slug_index: "idx" as BlindIndex,
+      sort_order: 0,
+    };
+    const model = buildNavModel(
+      buildForest([page(1)], []),
+      new Map(),
+      navKey("page", gone.id),
+    );
+    const html = sitePagePage(
+      gone,
+      [],
+      {
+        hasContact: false,
+        hasNews: false,
+        hasOrder: false,
+        hasTerms: false,
+        pages: model,
+      },
+      "",
+    );
+    expectIncludesAll(html, [
+      "<h1>Racy Page</h1>",
+      '</nav></div><div class="page-regions public-page"><h1>Racy Page</h1>',
+      "<strong>here</strong>",
+    ]);
+    assert(!html.includes('class="page-items"'));
+  });
+});

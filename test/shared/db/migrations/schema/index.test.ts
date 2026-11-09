@@ -1,0 +1,49 @@
+import { assertArrayIncludes } from "@std/assert";
+import { expect } from "@std/expect";
+import { describe, it as test } from "@std/testing/bdd";
+import {
+  APP_SCHEMA,
+  SCHEMA,
+  SCHEMA_TABLE_NAMES,
+} from "#db/migrations/schema/index.ts";
+import { paymentTables } from "#db/migrations/schema/payments/index.ts";
+import { attendeeTables } from "#db/migrations/schema/tables-attendees.ts";
+import { catalogTables } from "#db/migrations/schema/tables-catalog.ts";
+import { contentTables } from "#db/migrations/schema/tables-content.ts";
+import { coreTables } from "#db/migrations/schema/tables-core.ts";
+import { invoiceTables } from "#db/migrations/schema/tables-invoices.ts";
+import { questionTables } from "#db/migrations/schema/tables-questions.ts";
+import { taxTables } from "#db/migrations/schema/tables-tax.ts";
+import { SCHEMA_MIGRATIONS_TABLE } from "#db/migrations/schema/version.ts";
+
+describe("db > migrations > schema assembly", () => {
+  test("puts every group in the order the foreign keys need", () => {
+    // A table has to be created after the tables it points at, so this order
+    // is the schema, not a tidy way of listing it.
+    expect(SCHEMA).toEqual([
+      ...coreTables,
+      ...attendeeTables,
+      ...catalogTables,
+      ...questionTables,
+      ...contentTables,
+      ...paymentTables,
+      ...invoiceTables,
+      ...taxTables,
+    ]);
+  });
+
+  test("names the tables in that same order", () => {
+    expect(SCHEMA_TABLE_NAMES).toEqual(SCHEMA.map(([name]) => name));
+  });
+
+  test("leaves the migrations bookkeeping table out of the app schema", () => {
+    // The bookkeeping table is the app's own record of what it has run, so a
+    // site's schema is compared without it.
+    assertArrayIncludes(SCHEMA_TABLE_NAMES, [SCHEMA_MIGRATIONS_TABLE]);
+    // Compared whole rather than by name and count, so a table swapped for
+    // another, or listed twice, cannot slip through.
+    expect(APP_SCHEMA).toEqual(
+      SCHEMA.filter(([name]) => name !== SCHEMA_MIGRATIONS_TABLE),
+    );
+  });
+});

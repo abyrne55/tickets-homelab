@@ -1,0 +1,377 @@
+import { expect } from "@std/expect";
+import { describe, it as test } from "@std/testing/bdd";
+import {
+  SETTINGS_FORM_DEFINITIONS,
+  SETTINGS_FORMS,
+  settingsFormFieldAttributes,
+} from "#shared/settings/forms.ts";
+import { CONFIG_KEYS } from "#shared/settings/keys.ts";
+import { configurableTableLayouts } from "#shared/tables/configurable.ts";
+import { allEnglishMessages } from "#test-utils/i18n.ts";
+
+const en = await allEnglishMessages(["settings", "address-lookup", "sms"]);
+
+type FormName = keyof typeof SETTINGS_FORMS;
+type Page = "main" | "advanced";
+type SettingsFormDefinition = (typeof SETTINGS_FORM_DEFINITIONS)[number];
+
+/** Expected identity of a form that edits one setting via one field. */
+const single = (
+  name: FormName,
+  page: Page,
+  keyName: keyof typeof CONFIG_KEYS,
+  kind: "boolean" | "text" | "textarea",
+  action: string,
+  formId: string,
+  fieldName: string,
+  routeLabel: string,
+  stateField: string,
+) => ({
+  action,
+  fieldName,
+  formId,
+  key: CONFIG_KEYS[keyName],
+  kind,
+  name,
+  page,
+  routeLabel,
+  stateField,
+});
+
+/** Expected identity of a multi-field form saved by a hand-written route. */
+const multi = (
+  name: FormName,
+  page: Page,
+  action: string,
+  formId: string,
+  fieldNames: readonly string[],
+  routeLabel: string,
+) => ({
+  action,
+  fieldNames,
+  formId,
+  kind: "fields" as const,
+  name,
+  page,
+  routeLabel,
+});
+
+const EXPECTED_FORM_ROWS = [
+  multi(
+    "tax",
+    "main",
+    "/admin/settings/tax",
+    "settings-tax",
+    ["tax_mode", "tax_rate", "expected_tax"],
+    "Tax",
+  ),
+  single(
+    "businessEmail",
+    "main",
+    "BUSINESS_EMAIL",
+    "text",
+    "/admin/settings/business-email",
+    "settings-business-email",
+    "business_email",
+    "Business email",
+    "businessEmail",
+  ),
+  multi(
+    "theme",
+    "main",
+    "/admin/settings/theme",
+    "settings-theme",
+    ["theme", "underline_links"],
+    "Site theme",
+  ),
+  multi(
+    "calendarFeeds",
+    "main",
+    "/admin/settings/calendar-feeds",
+    "settings-calendar-feeds",
+    ["calendar_feeds_enabled", "calendar_feeds_group_by"],
+    "Calendar feeds",
+  ),
+  single(
+    "terms",
+    "main",
+    "TERMS_AND_CONDITIONS",
+    "textarea",
+    "/admin/settings/terms",
+    "settings-terms",
+    "terms_and_conditions",
+    "Terms and conditions",
+    "termsAndConditions",
+  ),
+  single(
+    "siteFooter",
+    "main",
+    "SITE_FOOTER",
+    "textarea",
+    "/admin/settings/site-footer",
+    "settings-site-footer",
+    "site_footer",
+    "Site footer",
+    "siteFooter",
+  ),
+  single(
+    "embedHosts",
+    "main",
+    "EMBED_HOSTS",
+    "text",
+    "/admin/settings/embed-hosts",
+    "settings-embed-hosts",
+    "embed_hosts",
+    "Embed host restrictions",
+    "embedHosts",
+  ),
+  single(
+    "bookingFee",
+    "main",
+    "BOOKING_FEE",
+    "text",
+    "/admin/settings/booking-fee",
+    "settings-booking-fee",
+    "booking_fee",
+    "Booking fee",
+    "bookingFee",
+  ),
+  single(
+    "listingColumnOrder",
+    "advanced",
+    "LISTING_COLUMN_ORDER",
+    "text",
+    "/admin/settings/listing-column-order",
+    "settings-listing-column-order",
+    "column_order",
+    "Listing column order",
+    "listingColumnOrder",
+  ),
+  single(
+    "attendeeColumnOrder",
+    "advanced",
+    "ATTENDEE_COLUMN_ORDER",
+    "text",
+    "/admin/settings/attendee-column-order",
+    "settings-attendee-column-order",
+    "column_order",
+    "Attendee column order",
+    "attendeeColumnOrder",
+  ),
+  single(
+    "customCss",
+    "advanced",
+    "CUSTOM_CSS",
+    "textarea",
+    "/admin/settings/custom-css",
+    "settings-custom-css",
+    "custom_css",
+    "Custom CSS",
+    "customCss",
+  ),
+  single(
+    "showPublicApi",
+    "advanced",
+    "SHOW_PUBLIC_API",
+    "boolean",
+    "/admin/settings/show-public-api",
+    "settings-show-public-api",
+    "show_public_api",
+    "Public API",
+    "showPublicApi",
+  ),
+  multi(
+    "addressLookup",
+    "advanced",
+    "/admin/settings/address-lookup",
+    "settings-address-lookup",
+    ["address_lookup_provider", "address_lookup_api_key"],
+    "Address lookup",
+  ),
+  single(
+    "externalOrder",
+    "advanced",
+    "EXTERNAL_ORDER_ENABLED",
+    "boolean",
+    "/admin/settings/external-order",
+    "settings-external-order",
+    "external_order_enabled",
+    "External order buttons",
+    "externalOrderEnabled",
+  ),
+];
+
+/** The definition reduced to the same identity shape the tables above use. */
+const definitionRow = (definition: SettingsFormDefinition) =>
+  definition.kind === "fields"
+    ? {
+        action: definition.action,
+        fieldNames: definition.fields.map((field) => field.fieldName),
+        formId: definition.formId,
+        kind: definition.kind,
+        name: definition.name,
+        page: definition.page,
+        routeLabel: definition.routeLabel,
+      }
+    : {
+        action: definition.action,
+        fieldName: definition.fieldName,
+        formId: definition.formId,
+        key: definition.key,
+        kind: definition.kind,
+        name: definition.name,
+        page: definition.page,
+        routeLabel: definition.routeLabel,
+        stateField: definition.stateField,
+      };
+
+const values = (field: "name" | "action" | "formId"): string[] =>
+  SETTINGS_FORM_DEFINITIONS.map((definition) => String(definition[field]));
+
+/** The catalog keys named by one field spec's own copy properties. */
+const specOwnCopyKeys = (spec: object): string[] =>
+  ["labelKey", "hintKey", "placeholderKey"].flatMap((property) => {
+    const value = (spec as Record<string, unknown>)[property];
+    return typeof value === "string" ? [value] : [];
+  });
+
+/** The catalog keys of a spec's fixed options. Built-at-render options carry
+ * final labels, not catalog keys, so they contribute nothing. */
+const specOptionCopyKeys = (spec: object): string[] =>
+  "options" in spec && Array.isArray((spec as { options: unknown }).options)
+    ? (spec as { options: { labelKey: string }[] }).options.map(
+        (option) => option.labelKey,
+      )
+    : [];
+
+/** Every catalog key a field spec reads. */
+const specCopyKeys = (definition: SettingsFormDefinition): string[] =>
+  definition.kind === "fields"
+    ? definition.fields.flatMap((spec) => [
+        ...specOwnCopyKeys(spec),
+        ...specOptionCopyKeys(spec),
+      ])
+    : [];
+
+const copyKeysFor = (definition: SettingsFormDefinition): (string | null)[] => [
+  definition.copy.descriptionKey,
+  "footerKey" in definition.copy ? definition.copy.footerKey : null,
+  "labelKey" in definition.copy ? definition.copy.labelKey : null,
+  "placeholderKey" in definition.copy ? definition.copy.placeholderKey : null,
+  "submitLabelKey" in definition.copy ? definition.copy.submitLabelKey : null,
+  definition.copy.titleKey,
+  ...specCopyKeys(definition),
+];
+
+const copyKeys = (): string[] =>
+  SETTINGS_FORM_DEFINITIONS.flatMap((definition) =>
+    copyKeysFor(definition).filter((key): key is string => key !== null),
+  );
+
+describe("settings form schema", () => {
+  test("declares the generated settings forms", () => {
+    expect(SETTINGS_FORM_DEFINITIONS.map(definitionRow)).toEqual(
+      EXPECTED_FORM_ROWS,
+    );
+  });
+
+  test("gives every field of a multi-field form its state field", () => {
+    expect(
+      SETTINGS_FORMS.theme.fields.map((field) => field.stateField),
+    ).toEqual(["theme", "underlineLinks"]);
+    expect(
+      SETTINGS_FORMS.calendarFeeds.fields.map((field) => field.stateField),
+    ).toEqual(["calendarFeedsEnabled", "calendarFeedsGroupBy"]);
+    expect(
+      SETTINGS_FORMS.addressLookup.fields.map((field) =>
+        "stateField" in field ? field.stateField : field.configuredStateField,
+      ),
+    ).toEqual(["addressLookupProvider", "addressLookupApiKeyConfigured"]);
+  });
+
+  test("offers the theme as light or dark, on checkboxes", () => {
+    const [theme, links] = SETTINGS_FORMS.theme.fields;
+
+    expect(theme.options.map((option) => option.value)).toEqual([
+      "light",
+      "dark",
+    ]);
+    expect(links.kind).toBe("checkbox");
+    expect(links.labelClass).toBe("checkbox");
+  });
+
+  test("groups the calendar feeds by attendees or listings", () => {
+    const groupBy = SETTINGS_FORMS.calendarFeeds.fields[1];
+
+    expect(groupBy.options.map((option) => option.value)).toEqual([
+      "attendees",
+      "listings",
+    ]);
+  });
+
+  test("puts no provider ahead of the address lookup providers", () => {
+    const provider = SETTINGS_FORMS.addressLookup.fields[0];
+    const options = provider.options();
+
+    expect(options[0]).toEqual({
+      label: en["address_lookup.settings.provider_none"],
+      value: "none",
+    });
+    expect(options.slice(1).length).toBeGreaterThan(0);
+  });
+
+  test("bounds the booking fee between 0 and 10 in steps of 0.1", () => {
+    // The bounds are numbers: the POST guard reads them off the field schema.
+    expect(SETTINGS_FORMS.bookingFee.max).toBe(10);
+    expect(SETTINGS_FORMS.bookingFee.min).toBe(0);
+    expect(SETTINGS_FORMS.bookingFee.step).toBe("0.1");
+  });
+
+  test("answers a field's browser limits from its declaration", () => {
+    expect(
+      settingsFormFieldAttributes("settings-business-email", "business_email"),
+    ).toEqual({ maxlength: 250, name: "business_email" });
+    expect(() =>
+      settingsFormFieldAttributes("settings-business-email", "not_a_field"),
+    ).toThrow("Settings field does not exist: not_a_field");
+  });
+
+  test("spells out the tags a column order can use", () => {
+    const note = SETTINGS_FORMS.listingColumnOrder.copy.footerText();
+
+    expect(note).toBe(
+      `${en["settings.column_order.available"]} ${configurableTableLayouts.listing.keys
+        .map((key) => `{{${key}}}`)
+        .join(", ")}`,
+    );
+  });
+
+  test("indexes forms by name", () => {
+    expect(Object.keys(SETTINGS_FORMS)).toEqual(
+      EXPECTED_FORM_ROWS.map((row) => row.name),
+    );
+  });
+
+  // Field names are deliberately not unique across forms: two forms may post
+  // the same field name to different actions (e.g. both column-order forms
+  // post "column_order").
+  test("uses unique names, actions, and form ids", () => {
+    for (const field of ["name", "action", "formId"] as const) {
+      const all = values(field);
+      expect(new Set(all).size).toBe(all.length);
+    }
+  });
+
+  test("uses unique field names within each multi-field form", () => {
+    for (const definition of SETTINGS_FORM_DEFINITIONS) {
+      if (definition.kind !== "fields") continue;
+      const names = definition.fields.map((field) => field.fieldName);
+      expect(new Set(names).size).toBe(names.length);
+    }
+  });
+
+  test("points every copy key at an existing locale string", () => {
+    const messages = en as Record<string, string>;
+    expect(copyKeys().filter((key) => !(key in messages))).toEqual([]);
+  });
+});

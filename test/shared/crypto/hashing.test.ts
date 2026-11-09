@@ -1,0 +1,263 @@
+import { expect } from "@std/expect";
+import { afterAll, beforeAll, describe, it } from "@std/testing/bdd";
+import {
+  getEncryptionKeyBytes,
+  setEncryptionKeyForTest,
+} from "#crypto/encryption.ts";
+import {
+  constantTimeEqualBytes,
+  getPbkdf2Iterations,
+  hashPassword,
+  hashSessionToken,
+  hmacHash,
+  setFastPbkdf2ForTest,
+  verifyPassword,
+} from "#crypto/hashing.ts";
+import { toBase64 } from "#crypto/utils.ts";
+import { describeWithEnv } from "#test-utils/db.ts";
+import { setupTestEncryptionKey } from "#test-utils/env.ts";
+
+describe("password hashing", () => {
+  // Pin the fast test iteration count explicitly: when this file lands first
+  // on a worker nothing has called setupTestEncryptionKey() yet, and every
+  // hashPassword call below would grind through the production 600k
+  // iterations for real.
+  beforeAll(() => {
+    setFastPbkdf2ForTest(true);
+  });
+  afterAll(() => {
+    setFastPbkdf2ForTest(null);
+  });
+
+  describe("hashPassword", () => {
+    it("generates different hashes for same password (random salt)", async () => {
+      const hash1 = await hashPassword("samepassword");
+      const hash2 = await hashPassword("samepassword");
+      expect(hash1).not.toBe(hash2);
+    });
+
+    it("stamps the hash with the iteration count it derived with", async () => {
+      const hash = await hashPassword("password");
+      const iterations = Number(hash.split(":")[1]);
+      expect(iterations).toBe(getPbkdf2Iterations());
+    });
+
+    it("names the scheme it used, so a reader knows how to check it", async () => {
+      const hash = await hashPassword("password");
+      expect(hash.startsWith("pbkdf2:")).toBe(true);
+    });
+
+    it("reads the iteration count as decimal, so a hex count never passes", async () => {
+      const [prefix, iterations, salt, digest] = (
+        await hashPassword("password")
+      ).split(":");
+      // The same count written as hex. Read as decimal it is 0, which PBKDF2
+      // refuses outright; read as hex it would be the real count and this
+      // stored digest would match, letting a hand-edited hash through.
+      const asHex = `0x${Number(iterations).toString(16)}`;
+      expect(
+        await verifyPassword(
+          "password",
+          `${prefix}:${asHex}:${salt}:${digest}`,
+        ),
+      ).toBe(false);
+    });
+
+    it("refuses a stored hash whose round count is zero", async () => {
+      const [prefix, , salt, digest] = (await hashPassword("password")).split(
+        ":",
+      );
+      expect(
+        await verifyPassword("password", `${prefix}:0:${salt}:${digest}`),
+      ).toBe(false);
+    });
+
+    it("uses the OWASP production iteration count when the test override is off", () => {
+      setFastPbkdf2ForTest(null);
+      try {
+        expect(getPbkdf2Iterations()).toBe(600000);
+      } finally {
+        setFastPbkdf2ForTest(true);
+      }
+    });
+  });
+
+  describe("verifyPassword", () => {
+    it("returns true for correct password", async () => {
+      const hash = await hashPassword("correctpassword");
+      const result = await verifyPassword("correctpassword", hash);
+      expect(result).toBe(true);
+    });
+
+    it("returns false for wrong password", async () => {
+      const hash = await hashPassword("correctpassword");
+      const result = await verifyPassword("wrongpassword", hash);
+      expect(result).toBe(false);
+    });
+
+    it("returns false for invalid hash format (wrong prefix)", async () => {
+      const result = await verifyPassword("password", "argon2:invalid:format");
+      expect(result).toBe(false);
+    });
+
+    it("returns false for malformed hash (wrong number of parts)", async () => {
+      const result = await verifyPassword("password", "pbkdf2:100000:salt");
+      expect(result).toBe(false);
+    });
+
+    it("returns false for hash with empty parts", async () => {
+      const result = await verifyPassword("password", "pbkdf2:::");
+      expect(result).toBe(false);
+    });
+
+    it("returns false for hash with mismatched length", async () => {
+      // Create a valid-looking hash but with truncated hash data
+      const shortHash = btoa("short");
+      const salt = btoa("0123456789012345");
+      const result = await verifyPassword(
+        "password",
+        `pbkdf2:100000:${salt}:${shortHash}`,
+      );
+      expect(result).toBe(false);
+    });
+  });
+});
+
+describe("constantTimeEqualBytes", () => {
+  it("accepts identical bytes and rejects a differing byte", () => {
+    expect(
+      constantTimeEqualBytes(
+        new Uint8Array([1, 2, 3]),
+        new Uint8Array([1, 2, 3]),
+      ),
+    ).toBe(true);
+    expect(
+      constantTimeEqualBytes(
+        new Uint8Array([1, 2, 3]),
+        new Uint8Array([1, 9, 3]),
+      ),
+    ).toBe(false);
+  });
+
+  it("rejects arrays of different lengths", () => {
+    expect(
+      constantTimeEqualBytes(new Uint8Array([1]), new Uint8Array([1, 2])),
+    ).toBe(false);
+  });
+
+  it("rejects a shorter array even when the extra bytes are zero", () => {
+    // b[i] past its end reads as undefined and XORs to zero, so without the
+    // length seed a zero-padded prefix would wrongly compare equal.
+    expect(
+      constantTimeEqualBytes(new Uint8Array([1, 0, 0]), new Uint8Array([1])),
+    ).toBe(false);
+  });
+
+  it("treats two empty arrays as equal", () => {
+    expect(constantTimeEqualBytes(new Uint8Array(), new Uint8Array())).toBe(
+      true,
+    );
+  });
+});
+
+describe("session token hashing", () => {
+  it("produces consistent hash for same token", async () => {
+    const token = "test-session-token-123";
+    const hash1 = await hashSessionToken(token);
+    const hash2 = await hashSessionToken(token);
+    expect(hash1).toBe(hash2);
+  });
+
+  it("produces different hashes for different tokens", async () => {
+    const hash1 = await hashSessionToken("token1");
+    const hash2 = await hashSessionToken("token2");
+    expect(hash1).not.toBe(hash2);
+  });
+
+  it("returns base64 encoded string", async () => {
+    const hash = await hashSessionToken("test-token");
+    // SHA-256 produces 32 bytes, base64 encodes to 44 characters (with padding)
+    expect(hash.length).toBe(44);
+    expect(hash).toMatch(/^[A-Za-z0-9+/]+=*$/);
+  });
+
+  // Migrated from Web Crypto subtle.digest to node:crypto; output must be
+  // identical so session-token lookups stored before the migration still match.
+  it("matches the Web Crypto SHA-256 digest", async () => {
+    const token = "session-token-stability-check";
+    const expected = toBase64(
+      new Uint8Array(
+        await crypto.subtle.digest("SHA-256", new TextEncoder().encode(token)),
+      ),
+    );
+    expect(await hashSessionToken(token)).toBe(expected);
+  });
+});
+
+describeWithEnv("hmacHash", { encryptionKey: true }, () => {
+  it("produces consistent hash for same IP", async () => {
+    const ip = "192.168.1.1";
+    const hash1 = await hmacHash(ip);
+    const hash2 = await hmacHash(ip);
+    expect(hash1).toBe(hash2);
+  });
+
+  it("produces different hashes for different IPs", async () => {
+    const hash1 = await hmacHash("192.168.1.1");
+    const hash2 = await hmacHash("192.168.1.2");
+    expect(hash1).not.toBe(hash2);
+  });
+
+  it("returns base64 encoded string", async () => {
+    const hash = await hmacHash("10.0.0.1");
+    // HMAC-SHA-256 produces 32 bytes, base64 encodes to 44 characters (with padding)
+    expect(hash.length).toBe(44);
+    expect(hash).toMatch(/^[A-Za-z0-9+/]+=*$/);
+  });
+
+  it("produces different hashes with different encryption keys", async () => {
+    const ip = "192.168.1.1";
+    const hash1 = await hmacHash(ip);
+
+    // Change the encryption key via module override (avoids env var races)
+    const altKey = "YWJjZGVmZ2hpamtsbW5vcHFyc3R1dnd4eXoxMjM0NTY=";
+    setEncryptionKeyForTest(altKey);
+
+    const hash2 = await hmacHash(ip);
+    expect(hash1).not.toBe(hash2);
+
+    // Restore original key
+    setupTestEncryptionKey();
+  });
+
+  it("handles IPv6 addresses", async () => {
+    const hash = await hmacHash("2001:db8::1");
+    expect(hash.length).toBe(44);
+    expect(hash).toMatch(/^[A-Za-z0-9+/]+=*$/);
+  });
+
+  it("handles special fallback value", async () => {
+    const hash = await hmacHash("direct");
+    expect(hash.length).toBe(44);
+    expect(hash).toMatch(/^[A-Za-z0-9+/]+=*$/);
+  });
+
+  // Migrated from Web Crypto HMAC to node:crypto; output must be identical so
+  // blind indexes stored before the migration still resolve.
+  it("matches the Web Crypto HMAC-SHA256 of the same key", async () => {
+    const value = "blind-index-stability-check";
+    const key = await crypto.subtle.importKey(
+      "raw",
+      getEncryptionKeyBytes() as BufferSource,
+      { hash: "SHA-256", name: "HMAC" },
+      false,
+      ["sign"],
+    );
+    const expected = toBase64(
+      new Uint8Array(
+        await crypto.subtle.sign("HMAC", key, new TextEncoder().encode(value)),
+      ),
+    );
+    expect(await hmacHash(value)).toBe(expected);
+  });
+});

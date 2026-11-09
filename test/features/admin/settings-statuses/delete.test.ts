@@ -1,0 +1,302 @@
+/**
+ * Deleting an attendee status, and the reasons it is refused.
+ *
+ * A status the site depends on cannot go: the last one, and either default.
+ * A status an attendee currently holds is retired, not deleted: the delete
+ * page moves every held attendee to the status the operator picks first.
+ */
+
+import { assert, assertArrayIncludes, assertStringIncludes } from "@std/assert";
+import { expect } from "@std/expect";
+import { it as test } from "@std/testing/bdd";
+import {
+  attendeeStatuses,
+  attendeeStatusWrites,
+} from "#db/attendee-statuses.ts";
+import { execute } from "#db/client.ts";
+import { activityMessages } from "#test-utils/activity-log.ts";
+import {
+  expectFlashRedirect,
+  expectIncludesAll,
+} from "#test-utils/assertions.ts";
+import { setupListingAndAttendee } from "#test-utils/attendees/helpers.ts";
+import { describeWithEnv } from "#test-utils/db.ts";
+import { withDbFault } from "#test-utils/db-fault.ts";
+import { adminFormPost, adminGet } from "#test-utils/session.ts";
+
+const PATH = "/admin/settings/statuses";
+
+const create = async (
+  name: string,
+  extra: Record<string, string> = {},
+): Promise<number> => {
+  await adminFormPost(PATH, { name, ...extra });
+  return (await attendeeStatuses.getAll()).find((one) => one.name === name)!.id;
+};
+
+const remove = (id: number, name: string, extra: Record<string, string> = {}) =>
+  adminFormPost(`${PATH}/${id}/delete`, { confirm_identifier: name, ...extra });
+
+const names = async (): Promise<string[]> =>
+  (await attendeeStatuses.getAll()).map((one) => one.name);
+
+const attendeeStatusCount = async (statusId: number): Promise<number> => {
+  const rows = await execute(
+    "SELECT COUNT(*) AS held FROM attendees WHERE status_id = ?",
+    [statusId],
+  );
+  return Number(rows.rows[0]!.held);
+};
+
+describeWithEnv("deleting a status", { db: true }, () => {
+  test("removes one nothing depends on", async () => {
+    const id = await create("Spare");
+
+    const { response } = await remove(id, "Spare");
+
+    await expectFlashRedirect(PATH, "Status deleted")(response);
+    assert(!(await names()).includes("Spare"));
+  });
+
+  test("writes the removal to the activity log by its full name", async () => {
+    // The log says "Attendee status", not the shorter word the page uses, so
+    // an entry read months later is not mistaken for a listing's status.
+    const id = await create("Logged Removal");
+
+    await remove(id, "Logged Removal");
+
+    assertArrayIncludes(await activityMessages(), [
+      "Attendee status 'Logged Removal' deleted",
+    ]);
+  });
+
+  test("refuses the last one left", async () => {
+    const only = (await attendeeStatuses.getAll())[0]!;
+
+    const { response } = await remove(only.id, only.name);
+
+    await expectFlashRedirect(
+      `${PATH}/${only.id}/delete`,
+      "You must keep at least one status",
+      false,
+    )(response);
+    assertArrayIncludes(await names(), [only.name]);
+  });
+
+  test("refuses the one new public bookings get", async () => {
+    const only = (await attendeeStatuses.getAll())[0]!;
+    await create("Somewhere Else To Go");
+
+    const { response } = await remove(only.id, only.name);
+
+    await expectFlashRedirect(
+      `${PATH}/${only.id}/delete`,
+      "Choose another public default before deleting this status",
+      false,
+    )(response);
+  });
+
+  test("refuses the one a paid booking gets", async () => {
+    const only = (await attendeeStatuses.getAll())[0]!;
+    const spare = await create("Public Instead", { is_public_default: "1" });
+    expect(spare).toBeGreaterThan(0);
+
+    const { response } = await remove(only.id, only.name);
+
+    await expectFlashRedirect(
+      `${PATH}/${only.id}/delete`,
+      "Choose another paid default before deleting this status",
+      false,
+    )(response);
+  });
+
+  test("a held status refuses a delete with no target, and everything stays", async () => {
+    const { attendee } = await setupListingAndAttendee({ name: "On It" });
+    const id = await create("In Use");
+    await execute("UPDATE attendees SET status_id = ? WHERE id = ?", [
+      id,
+      attendee.id,
+    ]);
+
+    const { response } = await remove(id, "In Use");
+
+    await expectFlashRedirect(
+      `${PATH}/${id}/delete`,
+      "Choose another status for its attendees before deleting",
+      false,
+    )(response);
+    assertArrayIncludes(await names(), ["In Use"]);
+    expect(await attendeeStatusCount(id)).toBe(1);
+  });
+});
+
+describeWithEnv("the delete confirmation", { db: true }, () => {
+  test("asks the operator to type the status name", async () => {
+    const id = await create("Type Me");
+
+    const html = await (await adminGet(`${PATH}/${id}/delete`)).text();
+
+    expectIncludesAll(html, ["Name", "Type Me"]);
+  });
+
+  test("refuses a name that does not match", async () => {
+    const id = await create("Exact");
+
+    const { response } = await remove(id, "Not Exact");
+
+    await expectFlashRedirect(
+      `${PATH}/${id}/delete`,
+      "Name does not match. Please type the exact name to confirm deletion.",
+      false,
+    )(response);
+    assertArrayIncludes(await names(), ["Exact"]);
+  });
+});
+
+describeWithEnv("retiring a status attendees hold", { db: true }, () => {
+  /** One attendee sitting on a fresh `Busy` status, with one other status
+   *  to move to. */
+  const arrangeBusy = async (): Promise<{
+    busyId: number;
+    attendeeId: number;
+    otherId: number;
+  }> => {
+    const otherId = await create("Landing Status");
+    const busyId = await create("Busy");
+    const { attendee } = await setupListingAndAttendee({ name: "Holder" });
+    await execute("UPDATE attendees SET status_id = ? WHERE id = ?", [
+      busyId,
+      attendee.id,
+    ]);
+    return { attendeeId: attendee.id, busyId, otherId };
+  };
+
+  test("the delete page shows the count and a required picker of other statuses", async () => {
+    const { busyId } = await arrangeBusy();
+
+    const html = await (await adminGet(`${PATH}/${busyId}/delete`)).text();
+
+    expectIncludesAll(html, [
+      "Busy",
+      "1 attendee holds this status.",
+      'name="reassign_status_id"',
+      "Landing Status",
+    ]);
+  });
+
+  test("the picker is absent from a free status's delete page", async () => {
+    const id = await create("Free To Go");
+
+    const html = await (await adminGet(`${PATH}/${id}/delete`)).text();
+
+    assert(!html.includes('name="reassign_status_id"'));
+  });
+
+  test("a lone status attendees hold shows the prerequisite instead of an empty picker", async () => {
+    const { attendee } = await setupListingAndAttendee({ name: "Lonely" });
+    const only = (await attendeeStatuses.getAll())[0]!;
+    await execute("UPDATE attendees SET status_id = ? WHERE id = ?", [
+      only.id,
+      attendee.id,
+    ]);
+
+    const html = await (await adminGet(`${PATH}/${only.id}/delete`)).text();
+
+    // No target exists to move them to, so the page says what the save will
+    // refuse on instead of rendering a picker with nothing to pick.
+    assertStringIncludes(html, "You must keep at least one status");
+    assert(!html.includes('name="reassign_status_id"'));
+  });
+
+  test("a default status's delete page names the prerequisite instead of a picker", async () => {
+    // A second status, so the default is not also the last one left.
+    await create("Elsewhere");
+    const defaulted = (await attendeeStatuses.getAll()).find(
+      (one) => one.is_public_default,
+    )!;
+
+    const html = await (
+      await adminGet(`${PATH}/${defaulted.id}/delete`)
+    ).text();
+
+    assertStringIncludes(
+      html,
+      "Choose another public default before deleting this status",
+    );
+    assert(!html.includes('name="reassign_status_id"'));
+    assertStringIncludes(html, "Delete status");
+  });
+
+  test("a paid default's delete page names the paid prerequisite", async () => {
+    await create("Own Public Default", { is_public_default: "1" });
+    const paid = (await attendeeStatuses.getAll()).find(
+      (one) => one.is_paid_default && !one.is_public_default,
+    )!;
+
+    const html = await (await adminGet(`${PATH}/${paid.id}/delete`)).text();
+
+    assertStringIncludes(
+      html,
+      "Choose another paid default before deleting this status",
+    );
+    assert(!html.includes('name="reassign_status_id"'));
+    assertStringIncludes(html, "Delete status");
+  });
+
+  test("moves its attendees to the chosen status, then deletes the status", async () => {
+    const { attendeeId, busyId, otherId } = await arrangeBusy();
+
+    const { response } = await remove(busyId, "Busy", {
+      reassign_status_id: String(otherId),
+    });
+
+    await expectFlashRedirect(PATH, "Status deleted")(response);
+    const rows = await execute("SELECT status_id FROM attendees WHERE id = ?", [
+      attendeeId,
+    ]);
+    expect(Number(rows.rows[0]!.status_id)).toBe(otherId);
+    assertArrayIncludes(await names(), ["Landing Status"]);
+    assert(!(await names()).includes("Busy"));
+    assertArrayIncludes(await activityMessages(), [
+      "1 attendee(s) moved from status 'Busy' to 'Landing Status'",
+    ]);
+  });
+
+  test("a missing target status refuses the delete and keeps everything", async () => {
+    const { busyId } = await arrangeBusy();
+
+    const { response } = await remove(busyId, "Busy", {
+      reassign_status_id: "999999",
+    });
+
+    await expectFlashRedirect(
+      `${PATH}/${busyId}/delete`,
+      "Choose another status for its attendees before deleting",
+      false,
+    )(response);
+    assertArrayIncludes(await names(), ["Busy"]);
+    expect(await attendeeStatusCount(busyId)).toBe(1);
+  });
+
+  test("a failed reassign rolls the whole delete back", async () => {
+    const { attendeeId, busyId, otherId } = await arrangeBusy();
+    const faultName = "test_status_reassign_fault";
+
+    const fault = withDbFault(
+      `CREATE TRIGGER ${faultName}
+         BEFORE UPDATE ON attendees
+         WHEN NEW.status_id = ${otherId}
+       BEGIN SELECT RAISE(ABORT, 'reassign unavailable'); END`,
+      faultName,
+      () => attendeeStatusWrites.delete(busyId, otherId),
+    );
+    await expect(fault).rejects.toThrow("reassign unavailable");
+
+    assertArrayIncludes(await names(), ["Busy"]);
+    expect(await attendeeStatusCount(busyId)).toBe(1);
+    const rows = await execute("SELECT status_id FROM attendees WHERE id = ?", [
+      attendeeId,
+    ]);
+    expect(Number(rows.rows[0]!.status_id)).toBe(busyId);
+  });
+});

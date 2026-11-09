@@ -1,0 +1,81 @@
+import { assertStringIncludes } from "@std/assert";
+import { expect } from "@std/expect";
+import { describe, it as test } from "@std/testing/bdd";
+import {
+  assertAdminHtml,
+  cachedAdminPage,
+  testRequiresAuth,
+} from "#test-utils/assertions.ts";
+import { describeWithEnv } from "#test-utils/db.ts";
+import { plantSumupRecoveryRow } from "#test-utils/sumup.ts";
+
+describeWithEnv("server (admin schema map)", { db: true }, () => {
+  const page = cachedAdminPage("/admin/schema");
+
+  describe("GET /admin/schema", () => {
+    testRequiresAuth("/admin/schema");
+
+    test("renders every machine section with its diagram data", async () => {
+      await page(
+        "<h1>System map</h1>",
+        'data-schema-atlas-machine="refund"',
+        'data-schema-atlas-machine="review"',
+        'data-schema-atlas-machine="row"',
+        'id="schema-atlas-data"',
+      );
+    });
+
+    test("answers the map question in the static list", async () => {
+      const html = await page("Your decision needed: some money is back");
+      // The one-exit owner decision shows exactly its own way forward.
+      assertStringIncludes(
+        html,
+        "You confirm the money came back → Money back",
+      );
+      // The page names no real payment anywhere.
+      expect(html).not.toMatch(/\/admin\/privacy\/refunds\/\d+/);
+    });
+
+    test("renders the live check with a clean answer", async () => {
+      await page(
+        'id="schema-check"',
+        "Live check",
+        "All stored records fit the system rules.",
+      );
+    });
+
+    test("lists an unknown SumUp state with its record id", async () => {
+      await plantSumupRecoveryRow("co_atlas_unknown", "abandoned", null);
+
+      await assertAdminHtml(
+        "/admin/schema",
+        "A SumUp recovery record has a state this site does not know.",
+        "<code>idx_co_atlas_unknown</code>",
+        "<code>abandoned</code>",
+      );
+    });
+
+    test("answers clean when no SumUp money is unanswered", async () => {
+      await page(
+        'id="schema-unanswered"',
+        "Money nobody has answered for",
+        "No SumUp checkout needs your attention.",
+      );
+    });
+
+    test("counts and lists a SumUp row that still owes money", async () => {
+      await plantSumupRecoveryRow(
+        "co_atlas_owed",
+        "owed",
+        "2999-01-01T00:00:00.000Z",
+      );
+
+      await assertAdminHtml(
+        "/admin/schema",
+        "1 checkout needs an answer.",
+        "Money not accounted for",
+        "<code>idx_co_atlas_owed</code>",
+      );
+    });
+  });
+});

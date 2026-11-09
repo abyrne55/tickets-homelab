@@ -1,0 +1,437 @@
+import { assert, assertStringIncludes } from "@std/assert";
+import { expect } from "@std/expect";
+import { describe, it as test } from "@std/testing/bdd";
+import type { TicketListing } from "#booking/model.ts";
+import type { PagePackage } from "#booking/page-packages.ts";
+import { t } from "#i18n";
+import { buildPageTree } from "#templates/public/reservations/availability.ts";
+import {
+  buildPageListingRows,
+  renderListingDescription,
+  soldOutLabel,
+} from "#templates/public/reservations/listing-rows.ts";
+import { quantityOptions } from "#templates/public/reservations/quantities.ts";
+import type {
+  BookingPrefill,
+  ChildRenderCtx,
+  TicketPrefill,
+} from "#templates/public/reservations/types.ts";
+import { expectIncludesAll } from "#test-utils/assertions.ts";
+import { resolved } from "#test-utils/booking-model-fixtures.ts";
+import { pagePackage, tl } from "#test-utils/package-cap-fixtures.ts";
+
+describe("soldOutLabel", () => {
+  test("shows the Sold Out badge by default", () => {
+    expect(soldOutLabel()).toBe('<span class="sold-out-label">Sold Out</span>');
+  });
+
+  test("shows the caller's copy when given", () => {
+    expect(soldOutLabel("Registration Closed")).toBe(
+      '<span class="sold-out-label">Registration Closed</span>',
+    );
+  });
+});
+
+describe("renderListingDescription", () => {
+  test("wraps a description in the compact prose block", () => {
+    expect(renderListingDescription("Hello there")).toBe(
+      '<div class="description-compact"><p>Hello there</p>\n</div>',
+    );
+  });
+
+  test("renders nothing for an empty description", () => {
+    expect(renderListingDescription("")).toBe("");
+  });
+});
+
+/** A package add-on select context under parent 7: one sole bookable add-on. */
+const childCtx = (): ChildRenderCtx => ({
+  attributesByListing: new Map(),
+  childDatesById: new Map(),
+  children: new Map([[7, [tl(10, 5, { name: "Add-on", slug: "add010" })]]]),
+  foldReserveByChildId: new Map(),
+  groupIdsByListingId: new Map(),
+  groupRemainingByGroupId: new Map(),
+  questionListingMap: undefined,
+  questions: [],
+  rendered: new Set(),
+});
+
+type RowOptions = {
+  listings: TicketListing[];
+  childCtx?: ChildRenderCtx;
+  hideQuantity?: boolean;
+  isSingleListing?: boolean;
+  packages?: PagePackage[];
+  /** Each package's remaining bundle count; defaults to 5 for every package. */
+  limitsByGroupId?: ReadonlyMap<number, number>;
+  prefill?: BookingPrefill;
+  /** A renewal page prices its counts by months per unit. */
+  renewal?: boolean;
+  singlePackagePage?: boolean;
+  /** Members of a package that the cart also added by their own slug. */
+  standaloneListingIds?: ReadonlySet<number>;
+};
+
+/** Render the listing area through the same tree trio the ticket page builds. */
+const renderRows = ({
+  hideQuantity = false,
+  isSingleListing = false,
+  limitsByGroupId,
+  packages = [],
+  prefill,
+  renewal,
+  singlePackagePage = false,
+  ...rest
+}: RowOptions): string => {
+  const { rows, standaloneRowIds } = buildPageTree(
+    {
+      listings: rest.listings,
+      packages,
+      slugs: rest.listings.map((info) => info.listing.slug),
+      ...(rest.standaloneListingIds
+        ? { standaloneListingIds: rest.standaloneListingIds }
+        : {}),
+    },
+    singlePackagePage ? 1 : packages.length,
+  );
+  return buildPageListingRows({
+    attributesByListing: new Map(),
+    childCtx: rest.childCtx,
+    hideQuantity,
+    isSingleListing,
+    packageLimits: packages.map((pkg) => ({
+      limit: limitsByGroupId?.get(pkg.groupId) ?? 5,
+      pkg,
+    })),
+    prefill,
+    renewal,
+    rows,
+    singlePackagePage,
+    standaloneRowIds,
+  });
+};
+
+const rowListing = (id: number, name: string, slug: string): TicketListing =>
+  tl(id, 10, { name, slug });
+
+/** Render the one minimum-3 bundled parent row over a child context. */
+const bundledRow = (over: Partial<ChildRenderCtx> = {}): string =>
+  renderRows({
+    childCtx: { ...childCtx(), ...over },
+    listings: [tl(7, 10, { min_quantity: 3, name: "Bundled", slug: "bun010" })],
+  });
+
+const occurrences = (html: string, needle: string): number =>
+  html.split(needle).length - 1;
+
+describe("buildPageListingRows", () => {
+  test("renders one named quantity row per standalone listing", () => {
+    const html = renderRows({
+      listings: [
+        rowListing(1, "Listing A", "ab12c"),
+        rowListing(2, "Listing B", "cd34e"),
+      ],
+    });
+    expectIncludesAll(html, [
+      '<label>Listing A<select name="quantity_1">',
+      '<label>Listing B<select name="quantity_2">',
+    ]);
+    expect(occurrences(html, 'class="ticket-row"')).toBe(2);
+    // The rows are joined edge to edge, and nothing renders in a row's
+    // accessory slots (image, description, price, add-on selector).
+    assertStringIncludes(html, '</div>\n  \n    <div class="ticket-row">');
+    assert(!html.includes("mutated"));
+  });
+
+  test("a closed listing row names the registration as closed", () => {
+    const closed = {
+      ...resolved({ id: 1, name: "Listing A", slug: "ab12c" }, true),
+      maxPurchasable: 0,
+    };
+    const html = renderRows({ listings: [closed] });
+    assertStringIncludes(html, "Registration Closed");
+    assert(!html.includes('name="quantity_1"'));
+  });
+
+  test("a parent whose child-limited ceiling sits below its minimum is sold out", () => {
+    // The parent's own capacity is 10, but its required add-on can only serve
+    // 2 — below the parent's minimum of 3, so no valid purchase exists.
+    const html = bundledRow({
+      children: new Map([[7, [tl(10, 2, { name: "Add-on", slug: "add010" })]]]),
+    });
+    assertStringIncludes(html, "Sold Out");
+    assert(!html.includes('name="quantity_7"'));
+  });
+
+  test("a parent at or above its minimum under the same ceiling stays bookable", () => {
+    const html = bundledRow();
+    assertStringIncludes(html, 'name="quantity_7"');
+    assert(!html.includes("ticket-row sold-out"));
+  });
+
+  test("a parent whose split-pool children combine to its minimum stays bookable", () => {
+    // The parent sits in two pools with 6 and 4 places left. One add-on
+    // draws only the 6-place pool, the other draws both. A quantity-3
+    // purchase splits 2+1 across the add-ons, so the row stays bookable; a
+    // per-pool bound answers 2 and sells the row out.
+    const html = bundledRow({
+      children: new Map([
+        [
+          7,
+          [
+            tl(10, 2, { name: "Pool add-on", slug: "add010" }),
+            tl(11, 2, { name: "Both add-on", slug: "add011" }),
+          ],
+        ],
+      ]),
+      groupIdsByListingId: new Map([
+        [7, [1, 2]],
+        [10, [1]],
+        [11, [1, 2]],
+      ]),
+      groupRemainingByGroupId: new Map([
+        [1, 6],
+        [2, 4],
+      ]),
+    });
+    assertStringIncludes(html, 'name="quantity_7"');
+    assert(!html.includes("ticket-row sold-out"));
+  });
+
+  test("a row with pay-what-you-want renders its price input, a priced row does not", () => {
+    const payMore = tl(2, 10, {
+      can_pay_more: true,
+      max_price: 5000,
+      name: "Listing B",
+      slug: "cd34e",
+    });
+    const html = renderRows({
+      listings: [rowListing(1, "Listing A", "ab12c"), payMore],
+    });
+    assert(!html.includes('name="custom_price_1"'));
+    assertStringIncludes(html, 'name="custom_price_2"');
+  });
+
+  test("a parent row renders its add-on selector once, in the parent's own row", () => {
+    const html = renderRows({
+      childCtx: childCtx(),
+      listings: [rowListing(7, "Parent", "pnt007")],
+    });
+    expect(occurrences(html, 'data-sole-parent="7"')).toBe(1);
+    assertStringIncludes(html, "Add-on");
+  });
+
+  test("the bare single-listing controls label the quantity and keep the prefill", () => {
+    const prefill: BookingPrefill = {
+      listings: new Map([[1, { quantity: 3 } satisfies TicketPrefill]]),
+    };
+    const html = renderRows({
+      isSingleListing: true,
+      listings: [rowListing(1, "Listing A", "ab12c")],
+      prefill,
+    });
+    expectIncludesAll(html, [
+      '<label>Number of Tickets<select name="quantity_1">',
+      '<option value="3" selected>',
+    ]);
+    assert(!html.includes("Listing A"));
+  });
+
+  test("a page that hides quantity submits a fixed quantity instead of a chooser", () => {
+    const html = renderRows({
+      hideQuantity: true,
+      isSingleListing: true,
+      listings: [rowListing(1, "Listing A", "ab12c")],
+    });
+    assertStringIncludes(
+      html,
+      '<input type="hidden" name="quantity_1" value="1" />',
+    );
+    assert(!html.includes("Number of"));
+    assert(!html.includes('<select name="quantity_1">'));
+  });
+
+  test("a hidden quantity still states the term a plan grants", () => {
+    const plan = tl(1, 1, {
+      assign_built_site: true,
+      initial_site_months: 3,
+      name: "Listing A",
+      slug: "ab12c",
+    });
+    const html = renderRows({
+      hideQuantity: true,
+      isSingleListing: true,
+      listings: [plan],
+    });
+    expectIncludesAll(html, [
+      '<input type="hidden" name="quantity_1" value="1" />',
+      t("public.ticket.fixed_term_granted", { count: 3 }),
+    ]);
+  });
+
+  test("a built-site plan is sold in months, an ordinary listing in tickets", () => {
+    const plan = tl(1, 5, {
+      assign_built_site: true,
+      initial_site_months: 3,
+      name: "Listing A",
+      slug: "ab12c",
+    });
+    const planHtml = renderRows({
+      isSingleListing: true,
+      listings: [plan],
+    });
+    // Each option states the months it buys: three units of a three-month
+    // plan are nine months.
+    expectIncludesAll(planHtml, [
+      '<option value="1">3 months</option>',
+      '<option value="2">6 months</option>',
+      '<label>Number of months<select name="quantity_1">',
+    ]);
+    assert(!planHtml.includes("Number of Tickets"));
+    assert(!planHtml.includes('">2</option>'));
+
+    const ordinaryHtml = renderRows({
+      isSingleListing: true,
+      listings: [rowListing(1, "Listing A", "ab12c")],
+    });
+    expectIncludesAll(ordinaryHtml, [
+      '<label>Number of Tickets<select name="quantity_1">',
+      '<option value="2">2</option>',
+    ]);
+    assert(!ordinaryHtml.includes("Number of months"));
+  });
+
+  test("a renewal page prices every tier by its months per unit", () => {
+    const tier = tl(1, 5, {
+      assign_built_site: false,
+      initial_site_months: 0,
+      months_per_unit: 1,
+      name: "Monthly",
+      slug: "ab12c",
+    });
+    const html = renderRows({
+      isSingleListing: true,
+      listings: [tier],
+      renewal: true,
+    });
+    expectIncludesAll(html, [
+      '<label>Number of months<select name="quantity_1">',
+      // Fulfillment extends the site by months per unit: two units of a
+      // one-month-per-unit tier are two months.
+      '<option value="2">2 months</option>',
+    ]);
+    assert(!html.includes("6 months"));
+  });
+
+  test("a single-package page counts bundles and renders each member at its fixed quantity", () => {
+    const html = renderRows({
+      listings: [rowListing(7, "Listing A", "ab12c")],
+      packages: [pagePackage(3, [7], { quantities: new Map([[7, 2]]) })],
+      singlePackagePage: true,
+    });
+    expectIncludesAll(html, [
+      'data-package-members="7:2"',
+      "Number of packages",
+      "&times;2",
+      '<option value="1" selected>',
+    ]);
+    assert(!html.includes('name="quantity_7"'));
+    assert(!html.includes("mutated"));
+  });
+
+  test("a member missing from the quantity map counts one per package", () => {
+    const html = renderRows({
+      listings: [rowListing(7, "Listing A", "ab12c")],
+      packages: [pagePackage(3, [7], { quantities: new Map() })],
+      singlePackagePage: true,
+    });
+    expectIncludesAll(html, ['data-package-members="7:1"', "&times;1"]);
+  });
+
+  test("a member's stored zero quantity is kept, not swapped for the default one", () => {
+    const html = renderRows({
+      listings: [
+        rowListing(7, "Listing A", "ab12c"),
+        rowListing(8, "Listing B", "cd34e"),
+      ],
+      packages: [pagePackage(3, [7, 8], { quantities: new Map([[8, 0]]) })],
+      singlePackagePage: true,
+    });
+    expectIncludesAll(html, ['data-package-members="7:1 8:0"', "&times;0"]);
+  });
+
+  test("each package on a mixed page sells under its own count", () => {
+    const html = renderRows({
+      listings: [
+        rowListing(7, "Listing A", "ab12c"),
+        rowListing(8, "Listing B", "cd34e"),
+      ],
+      packages: [pagePackage(3, [7]), pagePackage(4, [8])],
+    });
+    expectIncludesAll(html, [
+      "package_quantity_3",
+      "package_quantity_4",
+      "<legend>Package 3</legend>",
+      "<legend>Package 4</legend>",
+      // The sections render edge to edge, with no filler between them.
+      '</fieldset><fieldset class="ticket-package" data-package-section="4">',
+    ]);
+  });
+
+  test("a titled bundle section renders its description above its controls", () => {
+    const html = renderRows({
+      listings: [
+        rowListing(7, "Listing A", "ab12c"),
+        rowListing(8, "Listing B", "cd34e"),
+      ],
+      packages: [
+        pagePackage(3, [7], { description: "Two together" }),
+        pagePackage(4, [8]),
+      ],
+    });
+    expectIncludesAll(html, [
+      "<p>Two together</p>",
+      "<legend>Package 3</legend>",
+      // A living bundle carries no sold-out marker on its fieldset.
+      '<fieldset class="ticket-package" data-package-section="3">',
+    ]);
+  });
+
+  test("a package that hides its listings shows only its bundle count", () => {
+    const html = renderRows({
+      listings: [rowListing(7, "Listing A", "ab12c")],
+      packages: [
+        pagePackage(3, [7], { hideListings: true, quantities: new Map() }),
+      ],
+      singlePackagePage: true,
+    });
+    expect(html).toBe(
+      `<label>Number of packages<select name="package_quantity_3" data-package-members="7:1">${quantityOptions(5, 1)}</select></label>`,
+    );
+    assert(!html.includes("Listing A"));
+  });
+
+  test("a bundle with no room left renders a sold-out card without controls", () => {
+    const html = renderRows({
+      limitsByGroupId: new Map([[3, 0]]),
+      listings: [rowListing(7, "Listing A", "ab12c")],
+      packages: [pagePackage(3, [7], { description: "Two together" })],
+    });
+    assertStringIncludes(html, 'class="ticket-package sold-out"');
+    assert(!html.includes("package_quantity_3"));
+    assert(!html.includes("Two together"));
+    assertStringIncludes(html, "Sold Out");
+  });
+
+  test("a shared parent keeps its add-on selector on one row when the cart also added it", () => {
+    const html = renderRows({
+      childCtx: childCtx(),
+      listings: [rowListing(7, "Parent", "pnt007")],
+      packages: [pagePackage(3, [7], { quantities: new Map([[7, 2]]) })],
+      standaloneListingIds: new Set([7]),
+    });
+    expect(occurrences(html, 'data-sole-parent="7"')).toBe(1);
+    expectIncludesAll(html, ["&times;2", 'name="quantity_7"']);
+  });
+});

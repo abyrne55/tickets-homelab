@@ -1,0 +1,500 @@
+import type { BlindIndex } from "#crypto/sealed.ts";
+import type { ListingAttendeeRow } from "#db/attendee-types.ts";
+import type { BuiltSite } from "#db/built-sites/types.ts";
+import type {
+  Answer,
+  QuestionDisplayType,
+  QuestionWithAnswers,
+} from "#db/question-types.ts";
+import type { AttendeeQuestionData } from "#db/questions/attendee-answers/reads.ts";
+import type { TokenEntry } from "#routes/tickets/token-utils.ts";
+import type { ListingInput } from "#shared/catalog-fields/fields.ts";
+import type { EmailEntry, EmailListing } from "#shared/email.ts";
+import { signPrice } from "#shared/payment-signature.ts";
+import type { SessionMetadata } from "#shared/payments.ts";
+import type { WebhookAttendee } from "#shared/webhook.ts";
+import { generateTestListingName } from "#test-utils/internal.ts";
+import type {
+  Attendee,
+  Group,
+  Listing,
+  ListingWithCount,
+  Modifier,
+} from "#types";
+
+export const testListing = (overrides: Partial<Listing> = {}): Listing => ({
+  active: true,
+  assign_built_site: false,
+  attachment_name: "",
+  attachment_url: "",
+  bookable_alone: false,
+  bookable_days: [
+    "Monday",
+    "Tuesday",
+    "Wednesday",
+    "Thursday",
+    "Friday",
+    "Saturday",
+    "Sunday",
+  ],
+  can_pay_more: false,
+  closes_at: null,
+  created: "2024-01-01T00:00:00Z",
+  customisable_days: false,
+  date: "",
+  day_prices: {},
+  description: "",
+  duration_days: 1,
+  fields: "email",
+  hidden: false,
+  id: 1,
+  image_alt_text: "",
+  image_thumb_url: "",
+  image_url: "",
+  initial_site_months: 0,
+  listing_type: "standard",
+  location: "",
+  max_attendees: 100,
+  max_price: 0,
+  max_quantity: 1,
+  maximum_days_after: 0,
+  min_quantity: 1,
+  minimum_days_before: 0,
+  months_per_unit: 0,
+  name: "Test Listing",
+  non_transferable: false,
+  purchase_only: false,
+  slug: "ab12c",
+  // Hand-crafted fixture stand-in for the stored blind index — test cast.
+  slug_index: "test-listing-index" as BlindIndex,
+  thank_you_url: "https://example.com/thanks",
+  unit_price: 0,
+  use_defaults: false,
+  uses_logistics: false,
+  webhook_url: "",
+  ...overrides,
+});
+
+export const testListingWithCount = (
+  overrides: Partial<ListingWithCount> = {},
+): ListingWithCount => ({
+  ...testListing(overrides),
+  attendee_count: 0,
+  cost: 0,
+  income: 0,
+  profit: 0,
+  tickets_count: 0,
+  ...overrides,
+});
+
+/** A listing-attendee booking row on listing 1, overridable per test. */
+export const bookingRow = (
+  overrides: Partial<ListingAttendeeRow> = {},
+): ListingAttendeeRow => ({
+  attachment_downloads: 0,
+  checked_in: 0,
+  end_at: null,
+  ledger_event_group: "",
+  listing_id: 1,
+  order_token: "",
+  package_group_id: 0,
+  parent_listing_id: 0,
+  price_paid: 0,
+  quantity: 1,
+  refunded: 0,
+  start_at: null,
+  ...overrides,
+});
+
+export const testAttendee = (overrides: Partial<Attendee> = {}): Attendee => ({
+  address: "",
+  attachment_downloads: 0,
+  checked_in: 0,
+  created: "2024-01-01T12:00:00Z",
+  date: null,
+  email: "john@example.com",
+  email_owed: 0,
+  email_pending: 0,
+  end_date: null,
+  id: 1,
+  kind: "attendee",
+  lat: "",
+  listing_id: 1,
+  lng: "",
+  name: "John Doe",
+  package_group_id: 0,
+  payment_id: "",
+  phone: "",
+  pii_blob: "",
+  price_paid: "0",
+  quantity: 1,
+  refunded: false,
+  remaining_balance: 0,
+  special_instructions: "",
+  split_logistics_agents: false,
+  status_id: null,
+  ticket_token: "test-token-1",
+  // Hand-crafted fixture stand-in for the stored blind index — test cast.
+  ticket_token_index: "test-token-index-1" as BlindIndex,
+  webhooks_pending: 0,
+  ...overrides,
+});
+
+/** A {@link TokenEntry} fixture: pairs {@link testAttendee} with
+ * {@link testListingWithCount} on a standalone row that holds no ledger order. */
+export const testTokenEntry = (
+  overrides: {
+    attendee?: Partial<Attendee>;
+    listing?: Partial<ListingWithCount>;
+    parentListingId?: number;
+  } = {},
+): TokenEntry => ({
+  attendee: testAttendee(overrides.attendee),
+  ledgerEventGroup: "",
+  listing: testListingWithCount(overrides.listing),
+  parentListingId: overrides.parentListingId ?? 0,
+});
+
+/** In-memory price-modifier fixture: a 10%-off automatic discount applied to
+ * the whole order, with zeroed usage aggregates. Override any field. */
+export const testModifier = (overrides: Partial<Modifier> = {}): Modifier => ({
+  active: true,
+  calc_kind: "percent",
+  calc_value: 10,
+  code: "",
+  code_index: null,
+  direction: "discount",
+  id: 1,
+  max_per_order: null,
+  min_subtotal: 0,
+  min_visits: 0,
+  name: "Early bird",
+  scope: "all",
+  stock: null,
+  total_revenue: 0,
+  total_uses: 0,
+  trigger: "automatic",
+  usage_count: 0,
+  ...overrides,
+});
+
+/** Build a radio question fixture with answer options. Each `[id, text]` pair
+ * becomes an active answer whose sort_order follows the array order. */
+export const testRadioQuestion = (
+  id: number,
+  text: string,
+  answers: [number, string][],
+): QuestionWithAnswers => ({
+  answers: answers.map(([answerId, answerText], sort_order) => ({
+    active: true,
+    id: answerId,
+    question_id: id,
+    sort_order,
+    text: answerText,
+  })),
+  assign_all: false,
+  display_type: "radio",
+  id,
+  text,
+});
+
+export const testGroup = (overrides: Partial<Group> = {}): Group => ({
+  description: "",
+  hidden: false,
+  hide_package_listings: false,
+  id: 1,
+  is_package: false,
+  max_attendees: 0,
+  name: "Test Group",
+  scan_checks_in_all_listings: false,
+  show_hidden_listings: true,
+  slug: "test-group",
+  // Hand-crafted fixture stand-in for the stored blind index — test cast.
+  slug_index: "test-group-index" as BlindIndex,
+  terms_and_conditions: "",
+  ...overrides,
+});
+
+/** Factory for an {@link Answer}: `active` defaults to `true`; the ids
+ *  mirror one question (id 1) with answers 10, 11, … in sort order. */
+export const testAnswer = (overrides: Partial<Answer> = {}): Answer => ({
+  active: true,
+  id: 10,
+  question_id: 1,
+  sort_order: 0,
+  text: "A",
+  ...overrides,
+});
+
+/** Factory for a {@link QuestionWithAnswers}: `display_type` defaults to
+ *  `"radio"` (the overwhelmingly common case in tests) with no answers, so a
+ *  radio/dropdown/free-text question is built by overriding `display_type` and
+ *  passing `answers`. The returned type keeps `display_type` as the literal
+ *  {@link QuestionDisplayType}, so callers no longer need `… as const` on the
+ *  field. */
+export const testQuestion = (
+  overrides: Partial<QuestionWithAnswers> = {},
+): QuestionWithAnswers => ({
+  answers: [],
+  assign_all: false,
+  display_type: "radio",
+  id: 1,
+  text: "Question?",
+  ...overrides,
+});
+
+export const testBuiltSite = (
+  overrides: Partial<BuiltSite> = {},
+): BuiltSite => ({
+  assignable: false,
+  assignedAttendeeId: null,
+  assignedListingId: null,
+  created: "2026-01-01T00:00:00Z",
+  dbProvider: "bunny",
+  dbToken: "",
+  dbUrl: "",
+  hostingId: "",
+  hostingProvider: "bunny",
+  id: 1,
+  name: "Test Site",
+  readOnlyFrom: "",
+  renewalToken: null,
+  renewalTokenIndex: null,
+  scheduledTaskKey: null,
+  siteDataRevision: 0,
+  siteUrl: "https://test.b-cdn.net",
+  updates: "release",
+  ...overrides,
+});
+
+/** Test-listing overrides accept the legacy single `groupId` (mapped to a
+ * one-group membership) as well as the new `groupIds` array, so existing call
+ * sites passing `{ groupId }` keep working while multi-group tests can pass
+ * `{ groupIds }`. Membership is written via setListingGroups by the factory. */
+export type TestListingOverrides = Partial<
+  Omit<ListingInput, "slug" | "slugIndex" | "groupIds">
+> & { groupId?: number; groupIds?: number[] };
+
+/** Resolve the group-id list a test override describes: explicit `groupIds`
+ * wins; otherwise a positive `groupId` becomes a single-group list; `groupId: 0`
+ * (legacy "ungrouped") and an absent value yield none. */
+export const resolveTestGroupIds = (
+  overrides: TestListingOverrides,
+): number[] =>
+  overrides.groupIds ??
+  (overrides.groupId !== undefined && overrides.groupId > 0
+    ? [overrides.groupId]
+    : []);
+
+export const testListingInput = (
+  overrides: TestListingOverrides = {},
+): Omit<ListingInput, "slugIndex" | "slug"> => {
+  const { groupId: _groupId, groupIds: _groupIds, ...rest } = overrides;
+  return {
+    maxAttendees: 100,
+    maxPrice: 10000,
+    name: generateTestListingName(),
+    thankYouUrl: "https://example.com/thanks",
+    ...rest,
+  };
+};
+
+export const baseListingForm: Record<string, string> = {
+  max_attendees: "100",
+  max_quantity: "1",
+  name: "My Listing",
+  thank_you_url: "https://example.com",
+};
+
+export const webhookMeta = (
+  metadata: Partial<SessionMetadata> & { name: string },
+): SessionMetadata => ({
+  _origin: "localhost",
+  address: "",
+  allocations: "",
+  answer_ids: "",
+  balance_attendee_id: "",
+  date: "",
+  day_count: "",
+  email: "",
+  items: "",
+  modifiers: "",
+  phone: "",
+  price_proof: "",
+  reservation_amount: "",
+  site_token_index: "",
+  special_instructions: "",
+  tax_policy: "",
+  text_answer_ids: "",
+  thank_you_url: "",
+  ...metadata,
+});
+
+/**
+ * Add a valid price signature to a metadata record, the way production's
+ * buildItemsMetadata does, so a webhook test can exercise the signed-oracle
+ * path. agreedTotal is the total the buyer was charged (the session
+ * amount_total). Unsigned metadata (plain webhookMeta) takes the webhook's
+ * legacy re-derived fallback instead.
+ */
+export const signMeta = (
+  metadata: Record<string, string>,
+  agreedTotal: number,
+): Record<string, string> => ({
+  ...metadata,
+  price_proof: `${agreedTotal}.${signPrice(metadata, agreedTotal)}`,
+});
+
+/**
+ * webhookMeta plus a valid price signature in one step — the common shape for a
+ * webhook/redirect test whose session should be PROCESSED (a "trusted"
+ * session). `agreedTotal` must equal the session's amount_total so the session
+ * classifies as trusted; an unsigned (plain webhookMeta) session now classifies
+ * as "ignore" and is acknowledged without processing or refunding.
+ */
+export const signedMeta = (
+  metadata: Partial<SessionMetadata> & { name: string },
+  agreedTotal: number,
+): SessionMetadata =>
+  signMeta(webhookMeta(metadata), agreedTotal) as SessionMetadata;
+
+export const singleItem = (
+  listingId: number,
+  quantity: number,
+  price: number,
+): string => JSON.stringify([{ e: listingId, p: price, q: quantity }]);
+
+/**
+ * signedMeta for the recurring "one ticket + one modifier" checkout shape —
+ * a single-item session whose price proof also covers a single applied
+ * modifier. Shared by the `server-webhooks > modifiers` and
+ * `server-webhooks > modifier price-mismatch refunds` suites, which build
+ * this exact metadata shape (differing only in the listing/modifier/amount
+ * values) for their "modifier total is/isn't honoured" scenarios.
+ */
+export const singleModifierMeta = (opts: {
+  listingId: number;
+  unitPrice: number;
+  modifierId: number;
+  amountTotal: number;
+  modifierQuantity?: number;
+  email?: string;
+  name?: string;
+}): SessionMetadata =>
+  signedMeta(
+    {
+      email: opts.email ?? "mod@example.com",
+      items: singleItem(opts.listingId, 1, opts.unitPrice),
+      modifiers: JSON.stringify([
+        { i: opts.modifierId, q: opts.modifierQuantity ?? 1 },
+      ]),
+      name: opts.name ?? "Mod Buyer",
+    },
+    opts.amountTotal,
+  );
+
+export const JPEG_HEADER = new Uint8Array([0xff, 0xd8, 0xff, 0xe0, 0x00, 0x10]);
+
+export const PDF_BYTES = new Uint8Array([0x25, 0x50, 0x44, 0x46]);
+
+export const makeTestListing = (
+  overrides: Partial<EmailListing> = {},
+): EmailListing => ({
+  active: true,
+  assign_built_site: false,
+  attendee_count: 10,
+  can_pay_more: false,
+  customisable_days: false,
+  date: "",
+  day_prices: {},
+  duration_days: 1,
+  hidden: false,
+  id: 1,
+  initial_site_months: 0,
+  listing_type: "standard",
+  location: "",
+  max_attendees: 100,
+  months_per_unit: 0,
+  name: "Test Listing",
+  purchase_only: false,
+  slug: "test-listing",
+  unit_price: 0,
+  webhook_url: "",
+  ...overrides,
+});
+
+export const makeTestAttendee = (
+  overrides: Partial<WebhookAttendee> = {},
+): WebhookAttendee => ({
+  address: "",
+  date: null,
+  email: "jane@example.com",
+  end_date: null,
+  id: 42,
+  name: "Jane Doe",
+  package_group_id: 0,
+  payment_id: "",
+  phone: "555-1234",
+  price_paid: "0",
+  quantity: 1,
+  refunded: false,
+  remaining_balance: 0,
+  special_instructions: "",
+  ticket_token: "AABB001122",
+  ...overrides,
+});
+
+export const makeTestEntry = (
+  listingOverrides?: Partial<EmailListing>,
+  attendeeOverrides?: Partial<WebhookAttendee>,
+): EmailEntry => ({
+  attendee: makeTestAttendee(attendeeOverrides),
+  listing: makeTestListing(listingOverrides),
+});
+
+/** The canonical Small/Large answer pair (ids 10 and 11) reused by both the
+ *  factories and the questions template tests so the answer array lives in
+ *  one place. */
+export const smallLargeAnswers = [
+  testAnswer({ id: 10, sort_order: 0, text: "Small" }),
+  testAnswer({ id: 11, sort_order: 1, text: "Large" }),
+];
+
+/** The canonical "Size?" question answer-data fixture used by both the
+ *  detail-rows unit tests and the admin questions template tests: three
+ *  attendees (ids 1, 2, 3) answering a single "Size?" question (id 1) with
+ *  answers Small (id 10, picked by attendees 1 and 2) and Large (id 11,
+ *  picked by attendee 3). Returns the {@link AttendeeQuestionData} shape
+ *  `buildAnswerSummaryRows`/`AttendeeTable` consume. */
+export const sizeQuestionAnswerData = (): AttendeeQuestionData => ({
+  attendeeAnswerMap: new Map([
+    [1, [10]],
+    [2, [10]],
+    [3, [11]],
+  ]),
+  questions: [
+    testQuestion({
+      answers: smallLargeAnswers,
+      id: 1,
+      text: "Size?",
+    }),
+  ],
+});
+
+/** One question with one answer that nobody picked, so the question renders
+ *  with zero selections: `buildSharedDetailRows` still includes its summary
+ *  row, and `ListingOverviewPanel` still renders the answer header. */
+const oneUnselectedQuestion =
+  (text: string, answer: string) => (): AttendeeQuestionData => ({
+    attendeeAnswerMap: new Map(),
+    questions: [
+      testQuestion({
+        answers: [testAnswer({ id: 10, text: answer })],
+        id: 1,
+        text,
+      }),
+    ],
+  });
+
+export const singleAnswerSizeQuestionData = oneUnselectedQuestion("Size?", "S");
+export const unselectedAnswerQuestionData = oneUnselectedQuestion("Q?", "A");

@@ -1,0 +1,123 @@
+/** Wire a child process's three stdio streams straight to the parent's — for
+ *  interactive or inherited runs where the child shares the same terminal. */
+export const INHERIT_STDIO = {
+  stderr: "inherit",
+  stdin: "inherit",
+  stdout: "inherit",
+} as const;
+
+/** Run the current Deno executable with inherited output. */
+export const denoCommand = (
+  args: string[],
+  options: Omit<Deno.CommandOptions, "args"> = {},
+): Deno.Command =>
+  new Deno.Command(Deno.execPath(), {
+    ...options,
+    args,
+  });
+
+export const runDeno = (
+  args: string[],
+  cwd: string,
+): Promise<Deno.CommandOutput> =>
+  denoCommand(args, {
+    cwd,
+    stderr: "inherit",
+    stdout: "inherit",
+  }).output();
+
+/** What a captured command run tells us: its result plus its decoded output. */
+export interface CapturedOutput {
+  code: number;
+  stderr: string;
+  stdout: string;
+  success: boolean;
+}
+
+/** Run a command that has its output piped, and decode both streams as text. */
+export const captureOutput = async (
+  command: Deno.Command,
+): Promise<CapturedOutput> => {
+  const output = await command.output();
+  const decoder = new TextDecoder();
+  return {
+    code: output.code,
+    stderr: decoder.decode(output.stderr),
+    stdout: decoder.decode(output.stdout),
+    success: output.success,
+  };
+};
+
+/** Run a command whose output is piped, and hand back its stdout text. A
+ * failed child throws with the label and its stderr, so the caller's error
+ * names the cause. */
+export const captureStdoutOrThrow = async (
+  command: Deno.Command,
+  label: string,
+): Promise<string> => {
+  const output = await captureOutput(command);
+  if (!output.success) {
+    throw new Error(`${label} failed: ${output.code}: ${output.stderr.trim()}`);
+  }
+  return output.stdout;
+};
+
+export const removeTree = (path: string): Promise<void> =>
+  Deno.remove(path, { recursive: true });
+
+const beforeTimeout = async (
+  status: Promise<unknown>,
+  timeoutMs: number,
+): Promise<boolean> => {
+  let timeout: ReturnType<typeof setTimeout> | undefined;
+  const delayed = new Promise<boolean>((resolve) => {
+    timeout = setTimeout(() => resolve(false), timeoutMs);
+  });
+  try {
+    return await Promise.race([
+      status.then(
+        () => true,
+        () => true,
+      ),
+      delayed,
+    ]);
+  } finally {
+    clearTimeout(timeout);
+  }
+};
+
+export const stopProcessNow = (process: Deno.ChildProcess): void => {
+  try {
+    process.kill("SIGKILL");
+  } catch {
+    // It may already have exited.
+  }
+};
+
+export const stopProcess = async (
+  process: Deno.ChildProcess,
+  timeoutMs: number,
+  afterStop: () => Promise<void> = () => Promise.resolve(),
+): Promise<void> => {
+  process.ref();
+  const status = process.status;
+  try {
+    try {
+      process.kill();
+    } catch {
+      // It may already have exited.
+    }
+    if (!(await beforeTimeout(status, timeoutMs))) {
+      stopProcessNow(process);
+      // A child that survives SIGKILL wedges the machine. Fail loudly rather
+      // than wait on its exit forever (issue #2225).
+      if (!(await beforeTimeout(status, timeoutMs))) {
+        throw new Error(
+          `child process did not exit after SIGKILL within ${timeoutMs}ms`,
+        );
+      }
+    }
+  } finally {
+    await afterStop();
+  }
+};

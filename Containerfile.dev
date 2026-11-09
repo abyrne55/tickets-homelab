@@ -1,0 +1,38 @@
+# Dev image: typecheck, lint, and tests. Build with: podman build -t tickets-dev -f Containerfile.dev .
+FROM quay.io/hummingbird/curl:8-builder
+USER 0
+ARG TARGETARCH
+ARG DENO_VERSION=2.9.8
+ARG DENO_SHA256_AMD64=e890975bc2549807bbcc0b584ffafda72cc7c93349dd99c80483dd784f6c4609
+ARG DENO_SHA256_ARM64=d49596c20b9788cf8f5d8ddf644103d4bde56ed239753f0bdb92ba9361d51905
+ARG BIOME_VERSION=2.4.16
+ARG BIOME_SHA256_AMD64=f6904c208ce8884cf859460178f32f885250b375da1810c551912a029f4abf79
+ARG BIOME_SHA256_ARM64=e81067782ddd9a9d45e13b8fe18bbef54c490cf26126f05d67bb370caf47502a
+ARG STRIPE_MOCK_VERSION=0.188.0
+ARG STRIPE_MOCK_SHA256_AMD64=4cb432d484b12c939f6517325bfb4d53189b8333b79e9926a7dc249f6726f43a
+ARG STRIPE_MOCK_SHA256_ARM64=8df28b6a92c02717eaaa19f2498693a88ab06a00c63d7106380a0b1ed0016bad
+RUN dnf install -y curl tar gzip git unzip openssl && dnf clean all
+RUN set -eu; \
+    case "${TARGETARCH}" in \
+      amd64) arch=x86_64; ba=x64; sm=amd64; deno_sha="${DENO_SHA256_AMD64}"; biome_sha="${BIOME_SHA256_AMD64}"; sm_sha="${STRIPE_MOCK_SHA256_AMD64}" ;; \
+      arm64) arch=aarch64; ba=arm64; sm=arm64; deno_sha="${DENO_SHA256_ARM64}"; biome_sha="${BIOME_SHA256_ARM64}"; sm_sha="${STRIPE_MOCK_SHA256_ARM64}" ;; \
+      *) echo "Unsupported architecture: ${TARGETARCH}" >&2; exit 1 ;; \
+    esac; \
+    curl -fsSL -o /tmp/deno.zip "https://github.com/denoland/deno/releases/download/v${DENO_VERSION}/deno-${arch}-unknown-linux-gnu.zip"; \
+    echo "${deno_sha}  /tmp/deno.zip" | sha256sum -c -; \
+    unzip -o /tmp/deno.zip -d /usr/local/bin; \
+    curl -fsSL -o /usr/local/bin/biome "https://github.com/biomejs/biome/releases/download/%40biomejs%2Fbiome%40${BIOME_VERSION}/biome-linux-${ba}"; \
+    echo "${biome_sha}  /usr/local/bin/biome" | sha256sum -c -; \
+    chmod +x /usr/local/bin/biome; \
+    curl -fsSL -o /tmp/stripe-mock.tgz "https://github.com/stripe/stripe-mock/releases/download/v${STRIPE_MOCK_VERSION}/stripe-mock_${STRIPE_MOCK_VERSION}_linux_${sm}.tar.gz"; \
+    echo "${sm_sha}  /tmp/stripe-mock.tgz" | sha256sum -c -; \
+    tar -xzf /tmp/stripe-mock.tgz -C /usr/local/bin stripe-mock; \
+    rm /tmp/deno.zip /tmp/stripe-mock.tgz
+
+RUN useradd --create-home --uid 1000 dev && mkdir -p /deno-dir && chown dev /deno-dir
+ENV DENO_DIR=/deno-dir \
+    STRIPE_MOCK_BIN=/usr/local/bin/stripe-mock
+VOLUME /deno-dir
+ENTRYPOINT []
+USER dev
+WORKDIR /work

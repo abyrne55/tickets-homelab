@@ -1,0 +1,378 @@
+import { assert, assertStringIncludes } from "@std/assert";
+import { expect } from "@std/expect";
+import { afterEach, describe, it as test } from "@std/testing/bdd";
+import { stub } from "@std/testing/mock";
+import { settings } from "#db/settings.ts";
+import { handleRequest } from "#routes";
+import { setDemoModeForTest } from "#shared/demo/mode.ts";
+import { squareApi } from "#shared/square/api.ts";
+import type { SquareConnectionTestResult } from "#shared/square/connection.ts";
+import { getAllActivityLog } from "#test-utils/activity-log.ts";
+import {
+  assertJson,
+  expectFlash,
+  expectHtmlResponse,
+  expectIncludesAll,
+  redirectFormId,
+  testRequiresAuth,
+} from "#test-utils/assertions.ts";
+import { mockFormRequest, withMocks } from "#test-utils/mocks.ts";
+import { adminFormPost, adminGet, testCookie } from "#test-utils/session.ts";
+import { describeAdminSettings } from "#test-utils/settings.ts";
+
+describeAdminSettings(() => {
+  describe("POST /admin/settings/square", () => {
+    afterEach(() => {
+      setDemoModeForTest(false);
+    });
+
+    testRequiresAuth("/admin/settings/square", {
+      body: {
+        square_access_token: "EAAAl_test_123",
+        square_location_id: "L_test_123",
+      },
+      method: "POST",
+    });
+
+    test("refuses configuration in demo mode", async () => {
+      setDemoModeForTest(true);
+      const { response } = await adminFormPost("/admin/settings/square", {
+        square_access_token: "EAAAl_test_123",
+        square_location_id: "L_test_123",
+      });
+      expect(response.status).toBe(302);
+      expectFlash(response, expect.stringContaining("demo mode"), false);
+      // The refused save must store nothing.
+      expect(settings.square.hasToken).toBe(false);
+      expect(settings.square.locationId).toBe("");
+    });
+
+    test("rejects invalid CSRF token", async () => {
+      const response = await handleRequest(
+        mockFormRequest(
+          "/admin/settings/square",
+          {
+            csrf_token: "invalid-csrf-token",
+            square_access_token: "EAAAl_test_123",
+            square_location_id: "L_test_123",
+          },
+          await testCookie(),
+        ),
+      );
+      await expectHtmlResponse(response, 403, "Invalid CSRF token");
+    });
+
+    test("rejects missing square access token", async () => {
+      const { response } = await adminFormPost("/admin/settings/square", {
+        square_access_token: "",
+        square_location_id: "L_test_123",
+      });
+      expect(response.status).toBe(302);
+      expectFlash(response, expect.stringContaining("required"), false);
+    });
+
+    test("rejects missing location ID", async () => {
+      const { response } = await adminFormPost("/admin/settings/square", {
+        square_access_token: "EAAAl_test_123",
+        square_location_id: "",
+      });
+      expect(response.status).toBe(302);
+      expectFlash(response, expect.stringContaining("required"), false);
+    });
+
+    test("updates Square credentials successfully", async () => {
+      const { response } = await adminFormPost("/admin/settings/square", {
+        square_access_token: "EAAAl_test_new",
+        square_location_id: "L_test_456",
+      });
+
+      expect(response.status).toBe(302);
+      expectFlash(
+        response,
+        expect.stringContaining("Square credentials updated"),
+      );
+      // Flash anchors back to the Square credentials form — the exact form id,
+      // not a prefix of settings-square-webhook.
+      expect(redirectFormId(response)).toBe("settings-square");
+    });
+
+    test("persists production mode when the sandbox checkbox is omitted", async () => {
+      await adminFormPost("/admin/settings/square", {
+        square_access_token: "EAAAl_test_new",
+        square_location_id: "L_test_456",
+      });
+
+      // An unchecked checkbox sends nothing, and nothing must mean production.
+      expect(settings.square.sandbox).toBe(false);
+    });
+
+    test("persists sandbox mode when the sandbox checkbox is checked", async () => {
+      const { response } = await adminFormPost("/admin/settings/square", {
+        square_access_token: "EAAAl_test_new",
+        square_location_id: "L_test_456",
+        square_sandbox: "on",
+      });
+
+      expect(response.status).toBe(302);
+      // The checkbox ("on") must be stored as sandbox=true, not just accepted.
+      expect(settings.square.sandbox).toBe(true);
+    });
+
+    test("rejects an access token that looks like an application ID", async () => {
+      const { response } = await adminFormPost("/admin/settings/square", {
+        square_access_token: "sq0idp-EXAMPLE",
+        square_location_id: "L_test_456",
+      });
+      expect(response.status).toBe(302);
+      expectFlash(
+        response,
+        expect.stringContaining("application ID or secret"),
+        false,
+      );
+    });
+
+    test("rejects a location ID that looks like an application ID", async () => {
+      const { response } = await adminFormPost("/admin/settings/square", {
+        square_access_token: "EAAAl_test_new",
+        square_location_id: "sq0idp-EXAMPLE",
+      });
+      expect(response.status).toBe(302);
+      expectFlash(
+        response,
+        expect.stringContaining("not a Location ID"),
+        false,
+      );
+    });
+
+    test("settings page shows Square is not configured initially", async () => {
+      await settings.update.paymentProvider("square");
+      const response = await adminGet("/admin/settings");
+      const html = await response.text();
+      expect(response.status).toBe(200);
+      assertStringIncludes(html, "No Square credentials are saved");
+      assert(!html.includes("square-test-btn"));
+    });
+
+    test("settings page shows Square is configured after setting token", async () => {
+      // Set the Square credentials
+      await adminFormPost("/admin/settings/square", {
+        square_access_token: "EAAAl_test_configured",
+        square_location_id: "L_test_configured",
+      });
+
+      // Check the settings page shows it's configured
+      const response = await adminGet("/admin/settings");
+      const html = await response.text();
+      expectIncludesAll(html, [
+        "Your Square credentials are saved",
+        "square-test-btn",
+        "Test connection",
+      ]);
+    });
+  });
+
+  describe("POST /admin/settings/square-webhook", () => {
+    testRequiresAuth("/admin/settings/square-webhook", {
+      body: {
+        square_webhook_signature_key: "sig_key_test",
+      },
+      method: "POST",
+    });
+
+    test("rejects missing webhook signature key", async () => {
+      const { response } = await adminFormPost(
+        "/admin/settings/square-webhook",
+        { square_webhook_signature_key: "" },
+      );
+      expect(response.status).toBe(302);
+      expectFlash(response, expect.stringContaining("required"), false);
+    });
+
+    test("updates Square webhook key successfully", async () => {
+      const { response } = await adminFormPost(
+        "/admin/settings/square-webhook",
+        { square_webhook_signature_key: "sig_key_new" },
+      );
+
+      expect(response.status).toBe(302);
+      expectFlash(
+        response,
+        expect.stringContaining("Square webhook signature key updated"),
+      );
+      // Flash anchors back to the webhook form — the exact form id.
+      expect(redirectFormId(response)).toBe("settings-square-webhook");
+      expect(settings.square.webhookSignatureKey).toBe("sig_key_new");
+    });
+
+    test("rejects a signature key that looks like an application ID", async () => {
+      const { response } = await adminFormPost(
+        "/admin/settings/square-webhook",
+        { square_webhook_signature_key: "sq0idp-EXAMPLE" },
+      );
+      expect(response.status).toBe(302);
+      expectFlash(
+        response,
+        expect.stringContaining("not a webhook signature key"),
+        false,
+      );
+    });
+  });
+
+  describe("POST /admin/settings/square/test", () => {
+    testRequiresAuth("/admin/settings/square/test", {
+      body: {},
+      method: "POST",
+    });
+
+    test("rejects invalid CSRF token", async () => {
+      const response = await handleRequest(
+        mockFormRequest(
+          "/admin/settings/square/test",
+          { csrf_token: "invalid-csrf-token" },
+          await testCookie(),
+        ),
+      );
+      await expectHtmlResponse(response, 403, "Invalid CSRF token");
+    });
+
+    const connectionTestCases: ReadonlyArray<{
+      expected: string[];
+      mockResult: SquareConnectionTestResult;
+      name: string;
+    }> = [
+      {
+        expected: [
+          "Access Token: Invalid - No Square access token configured",
+          "Location: Not configured",
+          "Webhook: Not configured",
+        ],
+        mockResult: {
+          accessToken: {
+            error: "No Square access token configured",
+            valid: false,
+          },
+          location: { configured: false },
+          ok: false,
+          webhook: { configured: false },
+        },
+        name: "returns the lines when access token is not configured",
+      },
+      {
+        expected: [
+          "Access Token: Valid (sandbox mode)",
+          "Location: Test Location (ACTIVE)",
+          "Webhook: Signature key configured",
+        ],
+        mockResult: {
+          accessToken: { mode: "sandbox", valid: true },
+          location: {
+            configured: true,
+            locationId: "L_test_123",
+            name: "Test Location",
+            status: "ACTIVE",
+          },
+          ok: true,
+          webhook: { configured: true },
+        },
+        name: "returns success when all checks pass",
+      },
+      {
+        expected: [
+          "Access Token: Valid (sandbox mode)",
+          "Location: Not configured - No location ID configured",
+          "Webhook: Signature key configured",
+        ],
+        mockResult: {
+          accessToken: { mode: "sandbox", valid: true },
+          location: {
+            configured: false,
+            error: "No location ID configured",
+          },
+          ok: false,
+          webhook: { configured: true },
+        },
+        name: "returns partial failure when token valid but location missing",
+      },
+    ];
+
+    for (const tc of connectionTestCases) {
+      test(tc.name, async () => {
+        await withMocks(
+          () =>
+            stub(squareApi, "testSquareConnection", () =>
+              Promise.resolve(tc.mockResult),
+            ),
+          async () => {
+            const { response } = await adminFormPost(
+              "/admin/settings/square/test",
+            );
+            expect(response.headers.get("content-type")).toBe(
+              "application/json; charset=utf-8",
+            );
+            await assertJson(Promise.resolve(response), 200, (json) =>
+              expect(json.lines).toEqual(tc.expected),
+            );
+          },
+        );
+      });
+    }
+  });
+
+  describe("templates/admin/settings.tsx (Square webhook coverage)", () => {
+    test("settings page shows Square webhook config when square provider set", async () => {
+      await settings.update.paymentProvider("square");
+      await settings.update.square.accessToken("EAAAl_test_123");
+
+      const response = await handleRequest(
+        new Request("http://localhost/admin/settings", {
+          headers: {
+            cookie: await testCookie(),
+            host: "localhost",
+          },
+        }),
+      );
+      await expectHtmlResponse(response, 200, "webhook", "full setup guide");
+    });
+
+    test("settings page shows Square webhook configured message", async () => {
+      await settings.update.paymentProvider("square");
+      await settings.update.square.accessToken("EAAAl_test_123");
+      await settings.update.square.webhookSignatureKey("sig_key_test");
+
+      const response = await handleRequest(
+        new Request("http://localhost/admin/settings", {
+          headers: {
+            cookie: await testCookie(),
+            host: "localhost",
+          },
+        }),
+      );
+      await expectHtmlResponse(response, 200, "currently configured");
+    });
+  });
+
+  test("logs activity when Square credentials are configured", async () => {
+    await adminFormPost("/admin/settings/square", {
+      square_access_token: "EAAAl_test_log",
+      square_location_id: "L_test_log",
+    });
+
+    const logs = await getAllActivityLog();
+    expect(
+      logs.some((l) => l.message.includes("Square credentials updated")),
+    ).toBe(true);
+  });
+
+  test("logs activity when Square webhook key is configured", async () => {
+    await adminFormPost("/admin/settings/square-webhook", {
+      square_webhook_signature_key: "sig_key_log",
+    });
+
+    const logs = await getAllActivityLog();
+    expect(
+      logs.some((l) =>
+        l.message.includes("Square webhook signature key configured"),
+      ),
+    ).toBe(true);
+  });
+});

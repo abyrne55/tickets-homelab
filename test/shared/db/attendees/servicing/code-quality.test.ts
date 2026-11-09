@@ -1,0 +1,103 @@
+/**
+ * Servicing §20 — code quality & reuse (DRY / shared helpers).
+ *
+ * The mechanical guard is `deno task cpd` (jscpd at 0%), which runs as its own
+ * dedicated step in both `deno task precommit` and CI — never inside the test
+ * suite, where a second full jscpd subprocess would add a minute of CPU to
+ * every run for a check already enforced elsewhere. These tests pin the
+ * *specific* shared helpers so the feature can't land as near-duplicate logic
+ * sprinkled across files.
+ */
+
+import { join } from "node:path";
+import { assert, assertStringIncludes } from "@std/assert";
+import { expect } from "@std/expect";
+import { describe, it as test } from "@std/testing/bdd";
+import { ATTENDEE_KIND, SERVICING_KIND } from "#db/attendees/kind.ts";
+import { ATTENDEE_FIELDS, attendeeColumns } from "#db/attendees/select.ts";
+import { attendeeAdminPath } from "#shared/attendee-links.ts";
+import { expectIncludesAll } from "#test-utils/assertions.ts";
+
+// Anchored to the repo root (the test runner's cwd) rather than this file's own
+// location, so the source scan keeps working wherever the test file lives.
+const SRC_DIR = join(Deno.cwd(), "src");
+
+/** Recursively collect file paths under `dir` matching `ext`. */
+const collectFiles = async (dir: string, exts: string[]): Promise<string[]> => {
+  const out: string[] = [];
+  for (const entry of Deno.readDirSync(dir)) {
+    const path = join(dir, entry.name);
+    if (entry.isDirectory) out.push(...(await collectFiles(path, exts)));
+    else if (exts.some((e) => entry.name.endsWith(e))) out.push(path);
+  }
+  return out;
+};
+
+const readFile = async (path: string): Promise<string> =>
+  await Deno.readTextFile(path);
+
+describe("servicing §20 — one shared kind-aware link builder (no second copy)", () => {
+  test("attendeeAdminPath is the only site that chooses /admin/servicing vs /admin/attendees", async () => {
+    // Scan the source tree for any hand-rolled dispatch that builds
+    // `/admin/servicing/` or `/admin/attendees/` from a kind, outside the
+    // single helper module. A second copy would fail this.
+    const files = await collectFiles(SRC_DIR, [".ts", ".tsx"]);
+    const offenders: string[] = [];
+    for (const file of files) {
+      if (file.includes("attendee-links")) continue;
+      const src = await readFile(file);
+      // A bespoke dispatch: a ternary/condition on `kind` producing either
+      // servicing or attendees admin path.
+      if (
+        /kind\s*===?\s*['"]servicing['"].*\/admin\/(servicing|attendees)/s.test(
+          src,
+        )
+      ) {
+        offenders.push(file);
+      }
+    }
+    expect(offenders).toEqual([]);
+  });
+
+  test("attendeeAdminPath is callable for both kinds (the shared builder is real)", () => {
+    expect(attendeeAdminPath({ id: 1, kind: SERVICING_KIND })).toBe(
+      "/admin/servicing/1",
+    );
+    expect(attendeeAdminPath({ id: 1, kind: ATTENDEE_KIND })).toBe(
+      "/admin/attendees/1",
+    );
+  });
+});
+
+describe("servicing §20 — servicing query readers reuse the shared attendee SELECT builder", () => {
+  test("the servicing readers module builds on getAttendees with a kind filter", async () => {
+    const servicingReaderPath = join(
+      SRC_DIR,
+      "shared/db/attendees/servicing.ts",
+    );
+    const src = await readFile(servicingReaderPath);
+    // The servicing reads go through the shared getAttendees façade with a
+    // declared `kind: "servicing"` filter — not a hand-written SELECT with a
+    // copy-pasted column list.
+    expectIncludesAll(src, ["getAttendees", 'kind: "servicing"']);
+    // And it does NOT hand-write the attendee SELECT (a copy-paste giveaway).
+    expect(src).not.toMatch(/SELECT\s+attendee\.id/);
+  });
+
+  test("attendeeColumns always emits the core columns and adds only the fields asked for", () => {
+    const full = attendeeColumns("inner", ATTENDEE_FIELDS, "attendee");
+    const none = attendeeColumns("inner", [], "attendee");
+    // Both carry the always-present core (identity + cheap per-listing columns),
+    // so every reader projects the same base regardless of its field set.
+    expectIncludesAll(none, [
+      "attendee.pii_blob",
+      "listingAttendee.listing_id",
+    ]);
+    // The money subqueries are opt-in: `price_paid` is projected only when its
+    // field is requested, so a money-free read runs none of its subqueries and
+    // its column list is strictly shorter.
+    assertStringIncludes(full, "AS price_paid");
+    assert(!none.includes("AS price_paid"));
+    expect(none.length).toBeLessThan(full.length);
+  });
+});

@@ -1,0 +1,388 @@
+import { assert, assertStringIncludes } from "@std/assert";
+import { expect } from "@std/expect";
+import { it as test } from "@std/testing/bdd";
+import { t } from "#i18n";
+import { ADMIN_SURFACE, adminDestination } from "#shared/admin-surface.ts";
+import { AdminNav } from "#templates/admin/nav.tsx";
+import { expectIncludesAll } from "#test-utils/assertions.ts";
+import { describeWithEnv } from "#test-utils/db.ts";
+import { withEnv } from "#test-utils/env.ts";
+import { featureSetting, useSetting } from "#test-utils/settings.ts";
+import type { AdminLevel } from "#types";
+
+describeWithEnv("AdminNav", {}, () => {
+  useSetting(
+    featureSetting(
+      "apiKeys",
+      "attributes",
+      "logistics",
+      "modifiers",
+      "money",
+      "questions",
+      "servicing",
+      "site",
+    ),
+  );
+  /** Assert every role in `adminLevels` sees a nav link to `href` labelled
+   *  `text` (rendered from the "/admin/" landing nav). */
+  const expectLinkForRoles = (
+    href: string,
+    text: string,
+    adminLevels: readonly AdminLevel[],
+  ): void => {
+    for (const adminLevel of adminLevels) {
+      const html = String(
+        AdminNav({ active: "/admin/", session: { adminLevel } }),
+      );
+      assertStringIncludes(html, `href="${href}"`, adminLevel);
+      assertStringIncludes(html, text, adminLevel);
+    }
+  };
+
+  /** Assert that both owners and managers see a nav link to `href` labelled
+   *  `text` (rendered from the "/admin/" landing nav). */
+  const expectOwnerAndManagerLink = (href: string, text: string): void =>
+    expectLinkForRoles(href, text, ["owner", "manager"]);
+
+  test("AdminNav passes session.settingsNagItems to SettingsNagBanner for owner sessions", () => {
+    const superuserNag = {
+      href: "/admin/settings#settings-superuser",
+      id: "superuser" as const,
+      label: "Choose whether to enable a superuser recovery account.",
+    };
+    const html = String(
+      AdminNav({
+        active: "/admin/",
+        session: { adminLevel: "owner", settingsNagItems: [superuserNag] },
+      }),
+    );
+    expectIncludesAll(html, [
+      "Choose whether to enable a superuser recovery account.",
+      'href="/admin/settings#settings-superuser"',
+    ]);
+  });
+
+  test("AdminNav links to the attendees browser for owners and managers", () => {
+    expectOwnerAndManagerLink("/admin/attendees", "Attendees");
+  });
+
+  test("AdminNav links to servicing for owners and managers", () => {
+    expectOwnerAndManagerLink("/admin/servicing", "Servicing");
+  });
+
+  /** Every section that carries an "Add X" create link in its sub-nav, derived
+   *  from the admin-page schema — the section's landing route, the create link,
+   *  and the roles that reach it. Feature-flag-gated sections (Images) are
+   *  excluded here — they have dedicated tests that enable the flag. Each pair
+   *  lives only in its own section's sub-nav — never on the top-level bar. */
+  const addLinkSections = ADMIN_SURFACE.sections
+    .filter((section) => section.visible === undefined)
+    .flatMap((section) =>
+      section.nav
+        .filter((entry) => entry.kind === "create")
+        .map((entry) => ({
+          addHref: adminDestination(entry.id).pattern,
+          addText: t(entry.labelKey),
+          createActive: adminDestination(entry.id).pattern,
+          roles: adminDestination(entry.id).audience,
+          sectionActive: adminDestination(section.landing).pattern,
+        })),
+    );
+
+  // Regression: the create links used to sit on the top-level nav bar, visible
+  // on every page. They must not appear at the top level any more — only inside
+  // their own section's sub-nav.
+  test("no 'Add X' create link shows on the top-level nav (away from its section)", () => {
+    const html = String(
+      AdminNav({ active: "/admin/", session: { adminLevel: "owner" } }),
+    );
+    for (const { addHref } of addLinkSections) {
+      assert(!html.includes(`href="${addHref}"`), addHref);
+    }
+  });
+
+  test("each 'Add X' link shows inside its own section for the roles that reach it", () => {
+    for (const { sectionActive, addHref, addText, roles } of addLinkSections) {
+      for (const adminLevel of roles) {
+        const html = String(
+          AdminNav({ active: sectionActive, session: { adminLevel } }),
+        );
+        assertStringIncludes(
+          html,
+          `href="${addHref}"`,
+          `${addHref} ${adminLevel}`,
+        );
+        assertStringIncludes(html, addText, `${addHref} ${adminLevel}`);
+      }
+    }
+  });
+
+  // Regression: a section's create link must stay inside that section, not leak
+  // into a sibling section's sub-nav.
+  test("a section's 'Add X' link does not show in a different section", () => {
+    const listingsHtml = String(
+      AdminNav({ active: "/admin/listings", session: { adminLevel: "owner" } }),
+    );
+    for (const { addHref } of addLinkSections.filter(
+      (s) => s.addHref !== "/admin/listing/new",
+    )) {
+      assert(!listingsHtml.includes(`href="${addHref}"`), addHref);
+    }
+  });
+
+  // Regression: clicking an "Add X" link landed on its create page but left the
+  // link un-highlighted. Each create page now marks its own link active.
+  test("each 'Add X' link highlights as active on its create page", () => {
+    for (const { createActive, addHref, roles } of addLinkSections) {
+      const topRole = roles[0];
+      if (!topRole) throw new Error(`section ${addHref} declares no roles`);
+      const html = String(
+        AdminNav({ active: createActive, session: { adminLevel: topRole } }),
+      );
+      assertStringIncludes(html, `class="active" href="${addHref}"`, addHref);
+    }
+  });
+
+  // The sub-nav lists only the pages *within* a section — it must not repeat the
+  // section's own landing link (that already sits on the top-level bar).
+  test("a section's sub-nav does not repeat its landing link", () => {
+    for (const { sectionActive } of addLinkSections) {
+      const html = String(
+        AdminNav({ active: sectionActive, session: { adminLevel: "owner" } }),
+      );
+      const start = html.indexOf('class="admin-subnav"');
+      expect(start, sectionActive).toBeGreaterThan(-1);
+      const sub = html.slice(start, html.indexOf("</ul>", start));
+      assert(!sub.includes(`href="${sectionActive}"`), sectionActive);
+    }
+  });
+
+  // The catalog import lives as a plain "Import" link in the Listings sub-nav.
+  test("the Listings sub-nav offers an Import link", () => {
+    const html = String(
+      AdminNav({ active: "/admin/listings", session: { adminLevel: "owner" } }),
+    );
+    assertStringIncludes(html, 'href="/admin/catalog/import"');
+    const start = html.indexOf('class="admin-subnav"');
+    const sub = html.slice(start, html.indexOf("</ul>", start));
+    assertStringIncludes(sub, "Import");
+  });
+
+  test("the Listings Import link hides in read-only mode (it leads to a blocked upload flow)", () => {
+    using _env = withEnv({
+      READ_ONLY_FROM: "2020-01-01T00:00:00.000Z",
+    });
+    const html = String(
+      AdminNav({
+        active: "/admin/listings",
+        session: { adminLevel: "owner" },
+      }),
+    );
+    assert(!html.includes('href="/admin/catalog/import"'));
+    // The section landing link stays.
+    assertStringIncludes(html, 'href="/admin/listings"');
+  });
+
+  test("AdminNav shows the update banner while an update runs, with no renew link", () => {
+    using _env = withEnv({
+      RENEWAL_URL: "https://example.com/renew/?t=abc",
+      UPDATE_IN_PROGRESS: "1",
+    });
+    const html = String(
+      AdminNav({
+        active: "/admin/listings",
+        session: { adminLevel: "owner" },
+      }),
+    );
+    assertStringIncludes(html, "The site is being updated.");
+    // A renewal is a blocked write during the update window, so the banner
+    // carries no dead renew link.
+    assert(!html.includes("renew/?t=abc"));
+  });
+
+  test("Invite User stays owner-only", () => {
+    const managerHtml = String(
+      AdminNav({ active: "/admin/users", session: { adminLevel: "manager" } }),
+    );
+    assert(!managerHtml.includes('href="/admin/user/new"'));
+  });
+
+  test("AdminNav hides every 'Add X' create link in read-only mode, keeping the section links", () => {
+    using _env = withEnv({
+      READ_ONLY_FROM: "2020-01-01T00:00:00.000Z",
+    });
+    // Rendered from inside each section (where the links live), the create
+    // links drop out under read-only while the section landing links stay.
+    for (const { sectionActive, addHref } of addLinkSections) {
+      const html = String(
+        AdminNav({ active: sectionActive, session: { adminLevel: "owner" } }),
+      );
+      assert(!html.includes(`href="${addHref}"`), addHref);
+      assertStringIncludes(html, `href="${sectionActive}"`, sectionActive);
+    }
+  });
+
+  test("AdminNav marks the section's top-level link active on its landing page", () => {
+    const html = String(
+      AdminNav({
+        active: "/admin/listings",
+        session: { adminLevel: "owner" },
+      }),
+    );
+    assertStringIncludes(html, 'class="active" href="/admin/listings"');
+  });
+
+  // Regression (PR #1600 review): a section's *landing* page renders with the
+  // section route as `active` (e.g. /admin/users, /admin/settings). That route
+  // equals the landing sub-item's href, so highlighting it in the sub-nav would
+  // just duplicate the top-level highlight — and any deeper page that fell back
+  // to the section route would wrongly light the landing item. So the sub-nav
+  // stays clean on the landing route; the section shows as active on the top bar.
+  test("a section sub-nav does not highlight its landing item from the section route", () => {
+    for (const active of ["/admin/users", "/admin/settings"]) {
+      const html = String(
+        AdminNav({ active, session: { adminLevel: "owner" } }),
+      );
+      // Isolate the desktop sub-nav (the nested <ul class="admin-subnav">) and
+      // confirm nothing inside it is marked active.
+      const start = html.indexOf('class="admin-subnav"');
+      expect(start, active).toBeGreaterThan(-1);
+      const sub = html.slice(start, html.indexOf("</ul>", start));
+      assert(!sub.includes('class="active"'), active);
+    }
+  });
+
+  // The current-page highlight applies to EVERY sub-page, not just the "Add X"
+  // create pages: each deeper page passes its own route, so its sub-nav link
+  // lights up (while the section stays highlighted on the top-level bar).
+  test("every section sub-page highlights its own sub-nav link", () => {
+    const deepPages = [
+      { active: "/admin/sessions", href: "/admin/sessions" },
+      { active: "/admin/api-keys", href: "/admin/api-keys" },
+      { active: "/admin/deliveries", href: "/admin/deliveries" },
+      { active: "/admin/privacy", href: "/admin/privacy" },
+      { active: "/admin/questions", href: "/admin/questions" },
+      { active: "/admin/emails", href: "/admin/emails" },
+      { active: "/admin/settings/statuses", href: "/admin/settings/statuses" },
+      { active: "/admin/backup", href: "/admin/backup" },
+      { active: "/admin/site/contact", href: "/admin/site/contact" },
+      { active: "/admin/site/pages", href: "/admin/site/pages" },
+    ];
+    for (const { active, href } of deepPages) {
+      const html = String(
+        AdminNav({ active, session: { adminLevel: "owner" } }),
+      );
+      assertStringIncludes(html, `class="active" href="${href}"`, active);
+    }
+  });
+
+  test("AdminNav marks Money active on its page", () => {
+    const html = String(
+      AdminNav({
+        active: "/admin/ledger",
+        session: { adminLevel: "owner" },
+      }),
+    );
+    assertStringIncludes(html, 'class="active" href="/admin/ledger"');
+  });
+
+  test("the desktop sub-nav nests only under the one active section link", () => {
+    const html = String(
+      AdminNav({
+        active: "/admin/settings",
+        session: { adminLevel: "owner" },
+      }),
+    );
+    // Exactly ONE nested sub-nav, and it sits directly after the active
+    // Settings anchor — never under the other top-level items.
+    expect((html.match(/admin-subnav/g) ?? []).length).toBe(1);
+    assertStringIncludes(
+      html,
+      '<a class="active" href="/admin/settings">Settings</a><ul class="admin-subnav">',
+    );
+  });
+
+  test("AdminNav marks the attendees link active on the attendees page", () => {
+    const html = String(
+      AdminNav({
+        active: "/admin/attendees",
+        session: { adminLevel: "owner" },
+      }),
+    );
+    assertStringIncludes(html, 'class="active" href="/admin/attendees"');
+  });
+
+  // Regression: an individual attendee page (and every other single-item page)
+  // used to pass the *section landing route* as its `active` value just to get
+  // the top-level link highlighted — which also re-opened the section's "Add"
+  // sub-nav beside a page that is not the section's landing page. A page that
+  // merely lives *within* a section now says so with `{ section }`: the section
+  // still highlights, but its sub-nav (here, the "Add" create link) must not
+  // appear. Verified for every section that carries an "Add X"-style sub-nav —
+  // derived from the schema so new sections are covered automatically.
+  const withinSectionCases = addLinkSections
+    .filter((s) => s.sectionActive !== "/admin/users")
+    .map((s) => ({ addHref: s.addHref, section: s.sectionActive }));
+
+  test("a page within a section highlights the section but shows no sub-nav", () => {
+    for (const { section, addHref } of withinSectionCases) {
+      const html = String(
+        AdminNav({ active: { section }, session: { adminLevel: "owner" } }),
+      );
+      // The section's top-level link is highlighted…
+      assertStringIncludes(html, `class="active" href="${section}"`, section);
+      // …but its sub-nav (the "Add" create link, and the whole desktop
+      // sub-nav level) is absent — a detail page is not the landing page.
+      assert(!html.includes(`href="${addHref}"`), section);
+      assert(!html.includes("admin-subnav"), section);
+    }
+  });
+
+  // The contrast that proves the distinction is real: the SAME section, passed
+  // as a bare route string (the landing list page), DOES open the sub-nav.
+  test("the same section as a bare route string still opens its sub-nav", () => {
+    for (const { section, addHref } of withinSectionCases) {
+      const html = String(
+        AdminNav({ active: section, session: { adminLevel: "owner" } }),
+      );
+      assertStringIncludes(html, `href="${addHref}"`, section);
+      assertStringIncludes(html, "admin-subnav", section);
+    }
+  });
+
+  test("AdminNav marks the servicing link active on servicing pages", () => {
+    const html = String(
+      AdminNav({
+        active: "/admin/servicing",
+        session: { adminLevel: "owner" },
+      }),
+    );
+    assertStringIncludes(html, 'class="active" href="/admin/servicing"');
+  });
+
+  test("AdminNav does NOT render SettingsNagBanner for non-owner sessions", () => {
+    const html = String(
+      AdminNav({
+        active: "/admin/",
+        session: { adminLevel: "manager" },
+      }),
+    );
+    assert(!html.includes("Finish setting up your site"));
+  });
+
+  test("Guide is a top-level link for owners and managers", () => {
+    expectOwnerAndManagerLink("/admin/guide", "Guide");
+  });
+
+  test("AdminNav uses SettingsNagBanner default (no items prop) when settingsNagItems is omitted", () => {
+    const html = String(
+      AdminNav({
+        active: "/admin/",
+        session: { adminLevel: "owner" },
+      }),
+    );
+    // SettingsNagBanner receives items=undefined and falls back to base nags.
+    // Since base nags may be empty in this env, we just verify it renders.
+    assertStringIncludes(html, "nav");
+  });
+});
