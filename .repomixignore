@@ -2,4 +2,18 @@
 deno.lock
 LICENSE
 **/*.snapshot.html
+**/*.pem
+**/*.svg
 src/**/migrations/
+
+# Style sheets (the SCSS source is ~19k tokens on its own)
+**/*.scss
+**/*.css
+
+# Copy that is read from the files directly when needed
+src/locales/
+src/ui/templates/
+
+# Tests and CI config (about 860k tokens of tests)
+test/
+.github/

@@ -1,10 +1,12 @@
-# AGENTS.md
-
-This file provides guidance to AI coding agents working with code in this repository.
-
 ## What this is
 
 A slimmed, security-focused fork of [Chobble Tickets](https://github.com/chobbledotcom/tickets): a Deno + libsql (SQLite/Turso) booking and ticketing server. This fork ships only as a hardened container image (Hummingbird base, `deno compile` single binary) for rootless Podman Quadlets. Upstream's Nix/devenv, Bunny edge build and deploy tooling, `cli/`, `docs/`, Cucumber, TLA models, and mutation testing were removed on purpose. Do not reintroduce them. Comments and some code (`src/edge.ts`, `src/deploy.ts`, `bunny-*.ts`) still refer to upstream platforms.
+
+## Getting oriented
+
+Before exploring the source, run `repomix` and read `repomix-output.xml`. It is a repo map of about 7k tokens that costs far less than browsing directories one by one. Then, when you need to understand a whole area, pack just that area with `repomix -c repomix.code.config.json --include "<glob>"` and read `repomix-code.xml` instead of opening its files one at a time. Sizes and details are under Commands. For a specific symbol or a file you already know, `grep` and a direct read are cheaper than a pack.
+
+Repomix runs on the host, not through `./dev`. If `repomix` is not installed, use `npx repomix` in its place. Rerun it rather than trusting an old output file, since nothing regenerates the packs.
 
 ## Commands
 
@@ -41,7 +43,22 @@ CI (`.github/workflows/pr.yml`) runs typecheck, Biome, the test suite, and the i
 
 If your shell commands run in a sandbox, `git` and `gh` commands typically need to run outside it. `git commit` triggers the prek hooks, which write a log under `~/.cache/prek`, and `gh` fails TLS verification through a filtering proxy. `git push` can also fail to set upstream tracking. Read-only commands such as `git status` and `git log` work inside the sandbox. Don't work around a hook failure with `--no-verify`.
 
-`prek.toml` defines the pre-commit hooks (built-in checks only). Running `repomix` produces `repomix-output.xml` (gitignored): a compressed, single-file pack of the repo for agent use, configured by `repomix.config.json` and `.repomixignore`. It is about 9 MB and 2.1 million tokens, so search it or read sections rather than loading it whole. Nothing regenerates it automatically; rerun `repomix` if it looks stale.
+`prek.toml` defines the pre-commit hooks (built-in checks only). Running `repomix` produces `repomix-output.xml` (gitignored): a repo map, meaning the directory tree and no file contents, at about 7k tokens. It is small enough to read at session start. `.repomixignore` leaves out tests, locales, templates, styles, migrations, and lockfiles, so read those directly.
+
+For code, pack only the area you are working on with the second config, which writes `repomix-code.xml` (gitignored) with comments stripped and bodies compressed: `repomix -c repomix.code.config.json --include "<glob>"`. Any glob or comma-separated list of globs works, so pick the narrowest directory that covers the task. Approximate sizes:
+
+| `--include` glob | Tokens |
+| --- | --- |
+| `src/features/admin/**` | 100k |
+| `src/features/public/**` | 18k |
+| `src/features/api/**` | 17k |
+| `src/shared/db/**` | 92k |
+| `src/shared/payment/**` | 13k |
+| `src/shared/booking/**` | 9k |
+| `src/ui/client/**` | 9k |
+| `scripts/**` | 8k |
+
+Without `--include` it packs everything, about 456k tokens, which is too large to load whole. For sizes of other directories, run it with `--token-count-tree 5000`. Nothing regenerates either file automatically; rerun the command if it looks stale.
 
 ## Things the code won't tell you quickly
 
