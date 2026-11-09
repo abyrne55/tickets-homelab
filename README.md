@@ -4,7 +4,7 @@
 > in favour of Podman, and keeps only the app source, the static asset build,
 > the container images, and the core test suite. The ratchet and quality
 > scripts, TLA models, Cucumber specs, mutation testing, real-browser tests,
-> the Bunny edge entry, deploy workflows, `cli/`, and `docs/` stay in the
+> the Bunny edge build and deploy scripts, deploy workflows, `cli/`, and `docs/` stay in the
 > upstream project.
 
 ### Run with Podman
@@ -34,7 +34,6 @@ Then:
 ```bash
 ./dev deno task typecheck                          # needs ~4 GiB for the VM
 ./dev deno task lint:ci                            # Biome
-./dev deno task dev                                # server with --watch
 ./dev scripts/test.sh test/shared/dates.test.ts    # one file
 ./dev scripts/test.sh                              # the whole suite
 ./dev                                              # a shell in the image
@@ -625,7 +624,6 @@ providers are configured at `/admin/settings`.
 
 ```
 deno task start          # Run server
-deno task dev            # Run server, restarting on source changes (static assets build once, so editing style.scss or bundle inputs needs the task restarted)
 deno task test           # Run tests
 deno task test:coverage  # Tests with coverage report
 deno task lint           # Format and lint code with Biome
