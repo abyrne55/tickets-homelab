@@ -2,8 +2,23 @@
 # Run one command in the dev image with this repo mounted. Replaces `devenv shell`.
 # Build the image first: podman build -t tickets-dev -f Containerfile.dev .
 # Example: ./dev deno task typecheck
+# CONTAINER_ENGINE: podman (default) or docker. DEV_DENO_DIR: host directory to
+# mount as the Deno cache instead of the tickets-deno-dir named volume (CI).
 set -euo pipefail
 cd "$(dirname "$0")"
-exec podman run --rm $([ -t 0 ] && echo -it) --userns=keep-id:uid=1000,gid=1000 \
-  -v "$PWD:/work" -v tickets-deno-dir:/deno-dir \
+engine="${CONTAINER_ENGINE:-podman}"
+args=(run --rm)
+[ -t 0 ] && args+=(-it)
+if [ "$engine" = podman ]; then
+  args+=(--userns=keep-id:uid=1000,gid=1000)
+else
+  args+=(--user "$(id -u):$(id -g)" -e HOME=/tmp)
+fi
+if [ -n "${DEV_DENO_DIR:-}" ]; then
+  mkdir -p "$DEV_DENO_DIR"
+  args+=(-v "$DEV_DENO_DIR:/deno-dir")
+else
+  args+=(-v tickets-deno-dir:/deno-dir)
+fi
+exec "$engine" "${args[@]}" -v "$PWD:/work" \
   -e DENO_V8_FLAGS="${DENO_V8_FLAGS:---max-old-space-size=3300}" -w /work tickets-dev "${@:-bash}"

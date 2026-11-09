@@ -443,12 +443,16 @@ compiles the server with `deno compile` into one binary. The runtime stage is
 `quay.io/hummingbird/curl:8`. The image has no shell and no init process. It
 runs as the unprivileged user 65532 on x86-64 and arm64 hosts.
 
-The `Publish Docker image` workflow (`.github/workflows/publish-image.yml`)
-builds both architectures on native runners. A push to `main` publishes
-`ghcr.io/abyrne55/tickets-homelab:latest` and
-`ghcr.io/abyrne55/tickets-homelab:sha-<commit>`. A pull request from this
-repository publishes `ghcr.io/abyrne55/tickets-homelab:pr-<number>`. Each tag
-is one multi-architecture image.
+CI is in `.github/workflows`. A pull request against `main` runs typecheck,
+Biome and the test suite in the dev image, and builds the prod image and runs
+`scripts/container-check.sh` on it. A push to `main` runs the
+`Publish Docker image` workflow, which builds both architectures on native
+runners and publishes one multi-architecture image,
+`ghcr.io/abyrne55/tickets-homelab:main`:
+
+```bash
+podman pull ghcr.io/abyrne55/tickets-homelab:main
+```
 
 GitHub creates the registry package as private on the first publish. A
 repository admin must make it public once. Open the `tickets-homelab` package on
@@ -475,7 +479,7 @@ exit code 0, and restarts on the same volume with a read-only root.
 docker run -p 3000:3000 \
   -v tickets-data:/data \
   -e DB_ENCRYPTION_KEY="your-base64-key" \
-  ghcr.io/abyrne55/tickets-homelab:latest
+  ghcr.io/abyrne55/tickets-homelab:main
 ```
 
 - `DB_ENCRYPTION_KEY` is required. The container exits if it is missing.
@@ -497,13 +501,13 @@ Deploy to:
 |
 [Render](https://render.com/deploy?repo=https://github.com/chobbledotcom/tickets)
 |
-[Koyeb](https://app.koyeb.com/deploy?type=docker&image=ghcr.io/abyrne55/tickets-homelab:latest&name=chobble-tickets&ports=3000;http;/)
+[Koyeb](https://app.koyeb.com/deploy?type=docker&image=ghcr.io/abyrne55/tickets-homelab:main&name=chobble-tickets&ports=3000;http;/)
 
 Each platform's config in this repository (`fly.toml`, `render.yaml`,
 `.do/deploy.template.yaml`) points at the published image. You can also deploy
 with [Fly.io](https://fly.io) (`fly launch`) or any Docker host.
 
-DigitalOcean App Platform does not watch GHCR images. It redeploys a `latest`
+DigitalOcean App Platform does not watch GHCR images. It redeploys a `main`
 image only when you ask it to: open the app, choose Actions, then Rebuild &
 Deploy — or run `doctl apps create-deployment <your-app-id>`.
 
