@@ -3182,3 +3182,9 @@ a.cal-day-selected:active {
 .schema-widget-hint {
   color: var(--color-text-secondary);
 }
+
+.tickets-remaining {
+  display: block;
+  font-size: 0.85rem;
+  opacity: 0.75;
+}

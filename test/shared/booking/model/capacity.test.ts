@@ -298,4 +298,33 @@ describe("booking model — capacity", () => {
       expect(quantityBelowMin(0, 1)).toBe(false);
     });
   });
+
+  describe("spotsRemaining", () => {
+    test("is the listing's capacity left for a standard listing", () => {
+      const built = buildTicketListing(
+        listing({ attendee_count: 3, max_attendees: 10 }),
+        false,
+        undefined,
+      );
+      expect(built.spotsRemaining).toBe(7);
+    });
+
+    test("is capped by the tightest group pool", () => {
+      const built = buildTicketListing(
+        listing({ attendee_count: 0, max_attendees: 10 }),
+        false,
+        4,
+      );
+      expect(built.spotsRemaining).toBe(4);
+    });
+
+    test("is undefined for a daily listing", () => {
+      const built = buildTicketListing(
+        listing(dailyOverrides({ attendee_count: 3, max_attendees: 10 })),
+        false,
+        undefined,
+      );
+      expect(built.spotsRemaining).toBeUndefined();
+    });
+  });
 });

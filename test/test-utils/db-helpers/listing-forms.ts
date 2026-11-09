@@ -58,6 +58,7 @@ export const buildCreateListingForm = (
   return {
     ...checked("assign_built_site", input.assignBuiltSite),
     ...checked("bookable_alone", input.bookableAlone),
+    ...checked("show_remaining", input.showRemaining),
     bookable_days: input.bookableDays ?? [],
     ...checked("can_pay_more", input.canPayMore),
     closes_at_date: closesAtParts.date,
@@ -102,6 +103,10 @@ const buildUpdateBoolFields = (
   ...checked(
     "bookable_alone",
     pickField(updates.bookableAlone, existing.bookable_alone),
+  ),
+  ...checked(
+    "show_remaining",
+    pickField(updates.showRemaining, existing.show_remaining),
   ),
   ...checked(
     "can_pay_more",

@@ -319,6 +319,14 @@ const listingFields = (view: ListingFormView = {}) =>
       section: "options",
     },
     {
+      ...checkboxField("show_remaining", {
+        hint: t("fields.listing.show_remaining_hint"),
+        label: t("fields.listing.show_remaining"),
+        optionLabel: t("fields.listing.show_remaining_label"),
+      }),
+      section: "options",
+    },
+    {
       hint: "Handled by an agent at the customer's location. Attendees gain start and end agent selectors (e.g. delivery/collection, set-up/teardown, or pickup/drop-off).",
       label: "Needs logistics",
       name: "uses_logistics",

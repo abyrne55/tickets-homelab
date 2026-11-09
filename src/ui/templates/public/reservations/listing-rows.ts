@@ -47,6 +47,13 @@ export const renderListingDescription = (description: string): string =>
 export const soldOutLabel = (text: string = t("public.sold_out")): string =>
   `<span class="sold-out-label">${text}</span>`;
 
+/** The opt-in "N tickets left" note; empty unless the listing asks for it and
+ * has a date-less count (daily listings never do). */
+export const remainingLabel = (info: TicketListing): string =>
+  info.listing.show_remaining && info.spotsRemaining !== undefined
+    ? `<span class="tickets-remaining">${t("public.tickets_remaining", { count: info.spotsRemaining })}</span>`
+    : "";
+
 /** Render each ticket entry to its HTML row and join the rows into one string. */
 const joinRenderedRows = <T>(
   entries: readonly T[],
@@ -167,6 +174,7 @@ const renderListingRow: RenderListingControls = (
     <div class="ticket-row">
       ${imageHtml}
       <label>${escapeHtml(listing.name)}${quantityHtml}</label>
+      ${remainingLabel(info)}
       ${renderListingDescription(listing.description)}
       ${attributesHtml}
       ${priceHtml}
@@ -295,7 +303,7 @@ const renderSingleListingControls: RenderListingControls = (
   const labelledQuantity = hideQuantity
     ? controls.quantityHtml
     : `<label>${monthsQuantity(info.listing, renewal)}${controls.quantityHtml}</label>`;
-  return `${labelledQuantity}${controls.priceHtml}${controls.termNote}${controls.childBlock}`;
+  return `${labelledQuantity}${remainingLabel(info)}${controls.priceHtml}${controls.termNote}${controls.childBlock}`;
 };
 
 /** Render the per-listing rows (with their child blocks). A single-listing page

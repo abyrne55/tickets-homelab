@@ -26,6 +26,7 @@ export const ListingDefaultsSchema = v.strictObject({
   hidden: v.optional(v.boolean()),
   maximumDaysAfter: v.optional(integerAtLeast(0)),
   minimumDaysBefore: v.optional(integerAtLeast(0)),
+  showRemaining: v.optional(v.boolean()),
   thankYouUrl: v.optional(v.string()),
   usesLogistics: v.optional(v.boolean()),
   webhookUrl: v.optional(v.string()),
@@ -90,6 +91,7 @@ export const LISTING_DEFAULT_FIELDS: readonly ListingDefaultField[] = [
   { field: "maximum_days_after", key: "maximumDaysAfter", kind: "number" },
   { field: "webhook_url", key: "webhookUrl", kind: "url" },
   { field: "thank_you_url", key: "thankYouUrl", kind: "url" },
+  { field: "show_remaining", key: "showRemaining", kind: "bool" },
   {
     appliesTo: (listing) => listing.months_per_unit === 0,
     field: "hidden",

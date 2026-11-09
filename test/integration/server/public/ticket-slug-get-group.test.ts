@@ -7,6 +7,7 @@ import { handleRequest } from "#routes";
 import { nonEmptyString } from "#shared/validation/string.ts";
 import { assertPublicHtml } from "#test-utils/assertions.ts";
 import { describeWithEnv } from "#test-utils/db.ts";
+import { bookTestAttendee } from "#test-utils/db-helpers/attendees.ts";
 import { createTestGroup } from "#test-utils/db-helpers/groups.ts";
 import {
   createTestListing,
@@ -19,6 +20,29 @@ describeWithEnv(
   { db: true, triggers: true },
   () => {
     describe("GET /ticket/:slug", () => {
+      test("shows tickets left only for a listing that opts in", async () => {
+        const group = await createTestGroup({ slug: "remaining-group" });
+        const flagged = await createTestListing({
+          groupId: group.id,
+          maxAttendees: 10,
+          name: "Flagged Listing",
+          showRemaining: true,
+        });
+        await createTestListing({
+          groupId: group.id,
+          maxAttendees: 10,
+          name: "Plain Listing",
+        });
+        await bookTestAttendee([flagged.id], "Alice");
+        await bookTestAttendee([flagged.id], "Bob");
+
+        const html = await (
+          await handleRequest(mockRequest(`/ticket/${group.slug}`))
+        ).text();
+        assertStringIncludes(html, "8 tickets left");
+        expect(html.split("tickets-remaining").length - 1).toBe(1);
+      });
+
       test("renders ticket page for group slug", async () => {
         const group = await createTestGroup({
           name: "Public Group",

@@ -7,6 +7,7 @@ import { t } from "#i18n";
 import { buildPageTree } from "#templates/public/reservations/availability.ts";
 import {
   buildPageListingRows,
+  remainingLabel,
   renderListingDescription,
   soldOutLabel,
 } from "#templates/public/reservations/listing-rows.ts";
@@ -28,6 +29,52 @@ describe("soldOutLabel", () => {
   test("shows the caller's copy when given", () => {
     expect(soldOutLabel("Registration Closed")).toBe(
       '<span class="sold-out-label">Registration Closed</span>',
+    );
+  });
+});
+
+describe("remainingLabel and tickets-left rows", () => {
+  const flagged = (over = {}, spots = 12) => ({
+    ...tl(1, 10, {
+      name: "Flagged",
+      show_remaining: true,
+      slug: "fl12c",
+      ...over,
+    }),
+    spotsRemaining: spots,
+  });
+
+  test("shows plural and singular wording when the flag is on", () => {
+    expect(remainingLabel(flagged())).toBe(
+      '<span class="tickets-remaining">12 tickets left</span>',
+    );
+    expect(remainingLabel(flagged({}, 1))).toBe(
+      '<span class="tickets-remaining">1 ticket left</span>',
+    );
+  });
+
+  test("is empty when the flag is off or the count is unknown (daily)", () => {
+    expect(remainingLabel(flagged({ show_remaining: false }))).toBe("");
+    expect(remainingLabel({ ...flagged(), spotsRemaining: undefined })).toBe(
+      "",
+    );
+  });
+
+  test("renders on an available row but not on sold-out or closed rows", () => {
+    assertStringIncludes(
+      renderRows({ listings: [flagged()] }),
+      "12 tickets left",
+    );
+    const soldOut = { ...flagged({}, 0), isSoldOut: true, maxPurchasable: 0 };
+    assert(!renderRows({ listings: [soldOut] }).includes("tickets-remaining"));
+    const closed = { ...flagged(), isClosed: true, maxPurchasable: 0 };
+    assert(!renderRows({ listings: [closed] }).includes("tickets-remaining"));
+  });
+
+  test("renders beside the quantity on a single-listing page", () => {
+    assertStringIncludes(
+      renderRows({ isSingleListing: true, listings: [flagged()] }),
+      "12 tickets left",
     );
   });
 });

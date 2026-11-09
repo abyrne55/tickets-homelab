@@ -29,6 +29,7 @@ describe("catalog fields", () => {
       attachment_name: "",
       attachment_url: "",
       bookable_alone: false,
+      show_remaining: false,
       bookable_days: VALID_DAY_NAMES,
       can_pay_more: false,
       customisable_days: false,
@@ -98,6 +99,7 @@ describe("catalog fields", () => {
     const values = {
       active: false,
       bookable_alone: false,
+      show_remaining: false,
       bookable_days: [],
       can_pay_more: false,
       closes_at: "",
@@ -151,6 +153,7 @@ describe("catalog fields", () => {
       "minQuantity",
       "minimumDaysBefore",
       "nonTransferable",
+      "showRemaining",
       "thankYouUrl",
       "unitPrice",
       "useDefaults",
@@ -179,6 +182,7 @@ describe("catalog fields", () => {
       "name",
       "nonTransferable",
       "purchaseOnly",
+      "showRemaining",
       "thankYouUrl",
     ]);
   });
@@ -246,6 +250,7 @@ describe("catalog fields", () => {
         name: names.name,
         nonTransferable: names.boolean,
         purchaseOnly: names.boolean,
+        showRemaining: names.boolean,
         thankYouUrl: names.string,
         unitPrice: names.price,
         useDefaults: names.boolean,

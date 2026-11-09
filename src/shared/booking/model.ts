@@ -21,6 +21,9 @@ export type TicketListing = {
   isSoldOut: boolean;
   isClosed: boolean;
   maxPurchasable: number;
+  /** Tickets left, for the opt-in public count. Undefined for a daily
+   * listing, whose capacity is per date. */
+  spotsRemaining: number | undefined;
 };
 
 /** Each parent listing's children, keyed by the parent's listing id. */
@@ -229,7 +232,13 @@ export const buildTicketListing = (
   // choice, and the row shows no quantity selector at all.
   const maxPurchasable =
     isSoldOut || closed ? 0 : Math.min(listing.max_quantity, spotsRemaining);
-  return { isClosed: closed, isSoldOut, listing, maxPurchasable };
+  return {
+    isClosed: closed,
+    isSoldOut,
+    listing,
+    maxPurchasable,
+    spotsRemaining: hasDateLessCap(listing) ? spotsRemaining : undefined,
+  };
 };
 
 /** Whether a submitted quantity is a purchase the listing's minimum refuses:

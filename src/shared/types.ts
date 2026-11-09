@@ -309,6 +309,9 @@ export interface Listing extends ItemImageColumns {
   name: string;
   non_transferable: boolean;
   purchase_only: boolean;
+  /** Opt-in: public booking pages show how many tickets are left. Never
+   * shown for daily listings, whose capacity is per date. */
+  show_remaining: boolean;
   slug: string;
   slug_index: BlindIndex;
   thank_you_url: string;
