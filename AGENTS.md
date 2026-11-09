@@ -19,12 +19,13 @@ podman build -t tickets-dev -f Containerfile.dev .
 ./dev biome check --error-on-warnings src test scripts   # lint as CI runs it
 ./dev deno task lint                                     # biome with --write --unsafe (autofix)
 ./dev scripts/test.sh test/shared/dates.test.ts          # one test file
-./dev scripts/test.sh --filter "name" test/some.test.ts  # args pass through to `deno test`
+./dev env TICKETS_TEST_FILTER="name" scripts/test.sh test/some.test.ts   # one `it` or `describe` by name
 ./dev scripts/test.sh                                    # whole suite, about 10 minutes
 ./dev                                                    # shell in the image
 ```
 
 - Run tests through `scripts/test.sh`, not bare `deno test`. It builds static assets, starts stripe-mock on a free port, exports a test `DB_ENCRYPTION_KEY`, and preloads `test/test-utils/preload.ts`.
+- Deno's `--filter` cannot see a nested `it`, and reports success with zero tests run. Filter by name with the `TICKETS_TEST_FILTER` environment variable instead (a substring, or `/regex/`). Other arguments to `scripts/test.sh` pass through to `deno test`.
 - Tests run with `--no-check`, so a passing test run says nothing about types. Run typecheck separately.
 - In CI, call `biome` directly rather than `deno task lint:ci`: with a fresh Deno cache the task resolves to a broken npm copy of Biome.
 - `CONTAINER_ENGINE=docker` switches `./dev` and `scripts/container-check.sh` to Docker.
@@ -38,44 +39,26 @@ CONTAINER_IMAGE=localhost/tickets scripts/container-check.sh   # serves, exits 0
 
 CI (`.github/workflows/pr.yml`) runs typecheck, Biome, the test suite, and the image build plus `container-check.sh`. A push to `main` publishes `ghcr.io/abyrne55/tickets-homelab:main` for amd64 and arm64. Actions are pinned by commit SHA; keep it that way.
 
-`prek.toml` defines the pre-commit hooks (built-in checks only). `repomix.config.json` produces `repomix-output.xml`, which is gitignored and about 24 MB. Never read it into context.
+If your shell commands run in a sandbox, `git` and `gh` commands typically need to run outside it. `git commit` triggers the prek hooks, which write a log under `~/.cache/prek`, and `gh` fails TLS verification through a filtering proxy. `git push` can also fail to set upstream tracking. Read-only commands such as `git status` and `git log` work inside the sandbox. Don't work around a hook failure with `--no-verify`.
 
-## Architecture
+`prek.toml` defines the pre-commit hooks (built-in checks only). Running `repomix` produces `repomix-output.xml` (gitignored): a compressed, single-file pack of the repo for agent use, configured by `repomix.config.json` and `.repomixignore`. It is about 9 MB and 2.1 million tokens, so search it or read sections rather than loading it whole. Nothing regenerates it automatically; rerun `repomix` if it looks stale.
 
-### Request path
+## Things the code won't tell you quickly
 
-`src/index.ts` (the only entry the image uses) runs boot checks and hands `Deno.serve` to `denoServeHandler` in `src/serve-app.ts`, which boots once and turns unhandled errors into a generic 503. `src/shutdown.ts` handles SIGTERM/SIGINT because the image has no init process.
-
-`handleRequest` in `src/features/app/request.ts` (import alias `#routes`) is the pipeline: content-type and CSRF checks, security headers, settings prefetch, the migration and setup gates, then dispatch. `src/features/app/routes.ts` dispatches on the first path segment using the prefix table in `prefixes.ts` (split across `prefixes-a-l.ts` and `prefixes-m-z.ts`), and applies the read-only guard. Feature routers are lazy-loaded so the cold import graph stays small.
-
-`src/features/router.ts` is the declarative router. Routes are keyed `"METHOD /path/:param"`, and param types are inferred from the name: `id` and `*Id` are parsed as numbers, everything else is a string.
-
-### Layout
-
-- `src/features/` – HTTP handlers by area: `admin/`, `public/`, `api/`, `tickets/`, `wallet/`, plus cross-cutting files (auth, csrf, middleware, response helpers).
-- `src/shared/` – domain logic with no HTTP: `db/`, `crypto/`, `payment/`, `booking/`, `accounting/`, config, env, logger.
-- `src/ui/templates/` – server-rendered pages in TSX using the project's own JSX runtime (`src/shared/jsx/`, set by `jsxImportSource: "#jsx"`). This is not React.
-- `src/ui/client/` – browser code. `scripts/build-static-assets.ts` bundles it with esbuild and Sass into `src/ui/static/*.js` and `style.css`, which are gitignored build output and are embedded in the compiled binary. Don't edit files there by hand.
-- `src/locales/en/*.json` – ICU message catalogs split into groups. A route declares the groups it needs (`src/locales/groups.ts`, `withMessageGroups`), and `t()` from `#i18n` reads them.
-- `src/fp.ts` (`#fp`) – curried, pipe-friendly helpers (`pipe`, `map`, `filter`, `once`, `lazyRef`, ...). The code is written in this style; Biome bans `forEach`, accumulating spreads, and `console`.
-- `test/` mirrors `src/`, with `test/integration/` for cross-module tests and `test/test-utils/` for a large library of factories, fixtures, and stubs. Look there before writing a new helper.
-
-Use the `#` import aliases from `deno.json` (`#db/`, `#shared/`, `#routes/`, `#templates/`, `#test-utils/`, ...) rather than relative paths across directories.
-
-### Database
-
-`src/shared/db/migrations.ts` is the boot path. The schema is declarative, and migrations are dated files in `src/shared/db/migrations/` (`YYYY-MM-DD_name.ts`). To change the schema, follow the header comment in `migrations.ts`, including bumping `LATEST_UPDATE`.
-
-An N+1 query guard (`#db/query-log.ts`) throws in dev and test and only reports in production, so a test can fail because a handler issues repeated queries. Settings reads must be declared per path (`settings-bundles.ts`, `settings-audit.ts`).
-
-Attendee PII is encrypted at rest with hybrid RSA-OAEP and AES-256-GCM keyed from `DB_ENCRYPTION_KEY` plus an admin password or API key. Server code cannot decrypt PII without a session-derived key, and many function signatures reflect that.
-
-### Tests
-
-- `@std/testing/bdd` is remapped in `deno.json` to `test/test-utils/bdd.ts`, a wrapper that adds name filtering. Import `describe`/`it` from `@std/testing/bdd` as usual.
-- A file containing the comment `test-groups: run-alone` is run serially in a second pass by `scripts/test.sh`. Use it for happy-dom tests whose timers outlive the test.
-- The suite includes code-quality guards that scan the source: unused exports, duplicate type shapes, and similar. Exemptions are data in `test/integration/code-quality/allowlists.ts`. A new export with no production caller fails the suite unless it is listed there.
-- Biome rejects focused and skipped tests, files over 1000 lines, and cognitive complexity above 12 in `src/` (reported as a warning, which CI treats as an error).
+- `src/index.ts` is the only entry point the image uses. `handleRequest` in `src/features/app/request.ts` (alias `#routes`) is the request pipeline, and it dispatches on the first path segment through the prefix table in `src/features/app/prefixes.ts`.
+- Route params are typed by name (`src/features/router.ts`): `id` and `*Id` are parsed as numbers, everything else is a string.
+- Templates in `src/ui/templates/` are TSX on the project's own JSX runtime (`src/shared/jsx/`). This is not React.
+- `src/ui/static/*.js` and `style.css` are gitignored build output from `scripts/build-static-assets.ts`, embedded in the compiled binary. Edit `src/ui/client/` instead.
+- i18n copy lives in `src/locales/en/*.json`, split into groups. A route must declare the groups it needs (`src/locales/groups.ts`, `withMessageGroups`) before `t()` can read them.
+- Use the `#` import aliases from `deno.json` (`#db/`, `#shared/`, `#routes/`, `#fp`, `#test-utils/`, ...) rather than relative paths across directories.
+- The code is written in the curried, pipe-friendly style of `src/fp.ts`. Biome bans `forEach`, accumulating spreads, and `console`, rejects focused and skipped tests and files over 1000 lines, and warns on cognitive complexity above 12 in `src/`. CI treats warnings as errors.
+- `test/test-utils/` is a large library of factories, fixtures, and stubs. Look there before writing a new helper.
+- To change the schema, follow the header comment in `src/shared/db/migrations.ts`, including bumping `LATEST_UPDATE`.
+- An N+1 query guard (`#db/query-log.ts`) throws in dev and test, so a test can fail because a handler repeats a query.
+- Settings load on demand per path prefix (`src/features/settings-bundles.ts`). In dev and test, a route that reads a setting its prefix bundle does not declare fails an assertion at the end of the request.
+- Attendee PII is encrypted at rest and cannot be decrypted with `DB_ENCRYPTION_KEY` alone. It also needs a key derived from an admin password or API key, and many function signatures reflect that.
+- `@std/testing/bdd` is remapped in `deno.json` to `test/test-utils/bdd.ts`. Import `describe`/`it` from `@std/testing/bdd` as usual.
+- A test file containing the comment `test-groups: run-alone` runs serially in a second pass. Use it for happy-dom tests whose timers outlive the test.
 - `// effects: pure` on the first line marks a module as free of side effects. Keep the marker truthful when editing such a file.
 
 ## Container constraints
