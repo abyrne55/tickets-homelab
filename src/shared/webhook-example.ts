@@ -1,7 +1,7 @@
 /**
  * Example webhook payload for documentation.
  *
- * This constant is rendered in the admin guide and README.
+ * This constant is rendered in the admin guide.
  * A test in test/shared/webhook-example.test.ts calls the real
  * buildWebhookPayload() with matching inputs and asserts
  * the output has the same keys, types, and structure.
