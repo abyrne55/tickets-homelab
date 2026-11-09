@@ -35,7 +35,7 @@ Then:
 
 ```bash
 ./dev deno task typecheck                          # needs ~4 GiB for the VM
-./dev deno task lint:ci                            # Biome
+./dev biome check --error-on-warnings src test scripts   # Biome
 ./dev scripts/test.sh test/shared/dates.test.ts    # one file
 ./dev scripts/test.sh                              # the whole suite
 ./dev                                              # a shell in the image

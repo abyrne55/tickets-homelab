@@ -46,8 +46,10 @@ jobs:
           restore-keys: deno-
       - name: Typecheck
         run: DEV_DENO_DIR="$RUNNER_TEMP/deno-dir" ./dev deno task typecheck
+      # Call the image's pinned biome directly. With a fresh Deno cache,
+      # `deno task lint:ci` resolves to a broken npm copy (2.4.8).
       - name: Biome
-        run: DEV_DENO_DIR="$RUNNER_TEMP/deno-dir" ./dev deno task lint:ci
+        run: DEV_DENO_DIR="$RUNNER_TEMP/deno-dir" ./dev biome check --error-on-warnings src test scripts
 
   test:
     runs-on: ubuntu-24.04
