@@ -43,7 +43,20 @@ If your shell commands run in a sandbox, `git` and `gh` commands typically need 
 
 `prek.toml` defines the pre-commit hooks (built-in checks only). Running `repomix` produces `repomix-output.xml` (gitignored): a repo map, meaning the directory tree and no file contents, at about 7k tokens. It is small enough to read at session start. `.repomixignore` leaves out tests, locales, templates, styles, migrations, and lockfiles, so read those directly.
 
-For code, pack one area with the second config, which writes `repomix-code.xml` (gitignored) with comments stripped and bodies compressed: `repomix -c repomix.code.config.json --include "src/shared/db/**"` (about 97k tokens). Without `--include` it packs all of `src/`, about 456k tokens, which is too large to load whole. Use `--token-count-tree 10000` to see where tokens go. Nothing regenerates either file automatically; rerun the command if it looks stale.
+For code, pack only the area you are working on with the second config, which writes `repomix-code.xml` (gitignored) with comments stripped and bodies compressed: `repomix -c repomix.code.config.json --include "<glob>"`. Any glob or comma-separated list of globs works, so pick the narrowest directory that covers the task. Approximate sizes:
+
+| `--include` glob | Tokens |
+| --- | --- |
+| `src/features/admin/**` | 100k |
+| `src/features/public/**` | 18k |
+| `src/features/api/**` | 17k |
+| `src/shared/db/**` | 92k |
+| `src/shared/payment/**` | 13k |
+| `src/shared/booking/**` | 9k |
+| `src/ui/client/**` | 9k |
+| `scripts/**` | 8k |
+
+Without `--include` it packs everything, about 456k tokens, which is too large to load whole. For sizes of other directories, run it with `--token-count-tree 5000`. Nothing regenerates either file automatically; rerun the command if it looks stale.
 
 ## Things the code won't tell you quickly
 
