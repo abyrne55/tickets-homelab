@@ -265,13 +265,14 @@ describe("the scanner service worker's lifecycle", () => {
 describe("the scanner service worker's fetch boundaries", () => {
   /** Send one request through the worker's fetch handler and return the
    * answer the worker handed to respondWith, if any. A navigate mode goes on
-   * after construction: the Request constructor alone would drop it. */
+   * after construction: Deno rejects it in the Request constructor. */
   const fireRequest = async (
     path: string,
     init?: RequestInit,
   ): Promise<Response | undefined> => {
-    const request = new Request(`${SITE}${path}`, init);
-    if (init?.mode === "navigate") {
+    const { mode, ...constructable } = init ?? {};
+    const request = new Request(`${SITE}${path}`, constructable);
+    if (mode === "navigate") {
       Object.defineProperty(request, "mode", { value: "navigate" });
     }
     let answered: Promise<Response> | undefined;
