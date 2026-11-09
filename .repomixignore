@@ -1,0 +1,5 @@
+# Low-signal, high-token files
+deno.lock
+LICENSE
+**/*.snapshot.html
+src/**/migrations/

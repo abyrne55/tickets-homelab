@@ -1,0 +1,16 @@
+[[repos]]
+repo = "builtin"
+hooks = [
+  { id = "check-added-large-files" },
+  { id = "check-case-conflict" },
+  { id = "forbid-new-submodules" },
+  { id = "check-json" },
+  { id = "check-yaml" },
+  { id = "check-xml" },
+  { id = "check-symlinks" },
+  { id = "destroyed-symlinks" },
+  { id = "check-merge-conflict" },
+  { id = "detect-private-key", exclude = "^(test/|src/ui/templates/admin/settings/(apple|google)-wallet\\.tsx$)" },
+  { id = "check-shebang-scripts-are-executable" },
+  { id = "check-executables-have-shebangs" },
+]
