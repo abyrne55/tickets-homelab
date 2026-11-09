@@ -1,0 +1,306 @@
+/**
+ * Confirmation and verification utilities for admin actions
+ */
+
+import { asString } from "#fp";
+import { t } from "#i18n";
+import {
+  type AuthSession,
+  formPolicyFor,
+  type Guard,
+  pageGuardFor,
+  type SessionGuard,
+  withAuth,
+} from "#routes/auth.ts";
+import {
+  errorRedirect,
+  htmlResponse,
+  notFoundResponse,
+  redirect,
+} from "#routes/response.ts";
+import { adminDestinationAt } from "#shared/admin-surface.ts";
+import {
+  type AuthedBase,
+  type AuthedHandlerArgs,
+  type AuthedHandleStep,
+  authedHandlerWithStep,
+} from "#shared/app-forms.ts";
+import { getFlash } from "#shared/flash-context.ts";
+import type { FormParams } from "#shared/form-data.ts";
+import type { ParamsRoute, ResponseHandler } from "#shared/response-steps.ts";
+
+/** Form guard: require auth + CSRF, call handler with session and form */
+export type FormGuard<TSession> = Guard<[TSession, FormParams]>;
+
+/** Verify identifier matches for confirmation (case-insensitive, trimmed) */
+export const verifyIdentifier = (expected: string, provided: string): boolean =>
+  expected.trim().toLowerCase() === provided.trim().toLowerCase();
+
+/** The configured label, calling a getter at request time so module scope
+ * never needs the message catalog. */
+const confirmLabel = (label: string | (() => string)): string =>
+  typeof label === "function" ? label() : label;
+
+/** Checks the form's confirm field, returning a redirect when it differs. */
+export const verifyOrRedirect = (
+  form: FormParams,
+  expected: string,
+  redirectUrl: string,
+  label = "Name",
+  action?: string,
+): Response | null => {
+  if (!verifyIdentifier(expected, form.getString("confirm_identifier"))) {
+    const suffix = action ? ` ${action}` : "";
+    return errorRedirect(
+      redirectUrl,
+      t("common.confirm_mismatch", {
+        lower: label.toLowerCase(),
+        suffix,
+        thing: label,
+      }),
+    );
+  }
+  return null;
+};
+
+/** The JSON counterpart: the error message, or null when it matches. */
+export const verifyIdentifierOrJsonError = (
+  expected: string,
+  provided: unknown,
+  label = "Name",
+): string | null => {
+  if (!verifyIdentifier(expected, asString(provided))) {
+    return `${label} does not match. Please provide the exact ${label.toLowerCase()} in confirm_identifier.`;
+  }
+  return null;
+};
+
+type VerifiedFormRouteConfig<TParams, TContext> = AuthedBase<
+  TParams,
+  TContext
+> & {
+  /** The identifier the user must type (for example, the entity name) */
+  identifier: (context: TContext, params: TParams) => string | Promise<string>;
+  /** Label for the identifier field (for example, "Listing name"). A getter
+   * defers the catalog read to request time, for a module that loads before
+   * its message group. */
+  identifierLabel: string | (() => string);
+  /** Action suffix for the mismatch error (for example, "deletion") */
+  actionLabel?: string;
+  /** Where to redirect on identifier mismatch */
+  mismatchRedirect: (context: TContext, params: TParams) => string;
+  /** Run after identifier verifies */
+  onConfirm: AuthedHandleStep<TParams, TContext>;
+};
+
+export const createVerifiedFormRoute = <TParams, TContext>(
+  config: VerifiedFormRouteConfig<TParams, TContext>,
+): ParamsRoute<TParams> =>
+  authedHandlerWithStep<TParams, TContext>(config, async (args) => {
+    const expected = await config.identifier(args.context, args.params);
+    const error = verifyOrRedirect(
+      args.form,
+      expected,
+      config.mismatchRedirect(args.context, args.params),
+      confirmLabel(config.identifierLabel),
+      config.actionLabel,
+    );
+    if (error) return error;
+    return config.onConfirm(args);
+  });
+
+/** Runs a verified delete: the delete step, then a redirect to the resource
+ * with a success flash. The delete and the redirect path read the loaded
+ * context, so the two flows cannot drift. The flash message defers its
+ * catalog read to request time, like every label. */
+export const verifiedDelete =
+  <TContext>(
+    del: (context: TContext) => Promise<unknown>,
+    redirectTo: (context: TContext) => string,
+    flashMessage: string | (() => string),
+  ): AuthedHandleStep<unknown, TContext> =>
+  async ({ context }: AuthedHandlerArgs<unknown, TContext>) => {
+    await del(context);
+    return redirect(redirectTo(context), confirmLabel(flashMessage), true);
+  };
+
+/** An explicit guard pair. Without one, both guards derive from the route
+ * declaration at the handler's own path. */
+export type AuthOption<TSession> = {
+  requireSession: SessionGuard<TSession>;
+  withForm: FormGuard<TSession>;
+};
+
+/** Configuration for creating confirmed-action GET/POST handler pair */
+export type ConfirmedHandlerConfig<T, TSession = AuthSession> = {
+  /** Optional explicit guard pair. Without one, both guards derive from the
+   * route's declaration at `path`. */
+  auth?: AuthOption<TSession>;
+  /** Route path pattern, for example "/admin/users/:id/delete" */
+  path: string;
+  /** Load the entity by ID (return null if not found) */
+  load: (id: number, session: TSession) => Promise<T | null>;
+  render: (
+    model: T,
+    session: TSession,
+    error?: string,
+  ) => string | Promise<string>;
+  /** Extract the identifier the user must type to confirm */
+  identifier: (model: T) => string | Promise<string>;
+  /** Perform the confirmed action. A response can keep the operator on the
+   *  confirmation page when a transaction rejects the action. The submitted
+   *  form rides along for actions that offer the operator a choice on the
+   *  confirmation page. */
+  onConfirm: (
+    model: T,
+    id: number,
+    session: TSession,
+    form: FormParams,
+  ) => Promise<void> | Promise<Response | undefined>;
+  successRedirect: string | ((model: T, id: number) => string);
+  successMessage: string;
+  /** Human-readable label for the identifier field (for example, "Username").
+   * A getter defers the catalog read to request time, for a module that
+   * loads before its message group. */
+  identifierLabel: string | (() => string);
+  /** Action label for the verification prompt (default "deletion") */
+  actionLabel?: string;
+  /** Optional pre-validation before loading (for example, a self-delete check) */
+  preValidate?: (
+    id: number,
+    session: TSession,
+  ) => Response | null | Promise<Response | null>;
+  /**
+   * Optional guard producing a user-facing error message, or null when the
+   * action is allowed. Unlike {@link preValidate}, this distinguishes the GET
+   * from the POST. The GET renders the error into the confirmation page with
+   * status 200, so it never redirects to itself. The POST blocks with an
+   * error redirect back to the confirmation page. The guard runs after the
+   * entity loads, so it can reason about the loaded model's id. Set
+   * {@link guardInTx} when the POST re-runs this guard inside the write's
+   * transaction. The framework then skips its own POST-time check, so the
+   * guarded state is read once.
+   */
+  guardError?: (
+    model: T,
+    id: number,
+    session: TSession,
+  ) => Promise<string | null>;
+  /** True when the handler's `onConfirm` re-runs this guard inside the write
+   *  transaction and maps a refusal to its own redirect. */
+  guardInTx?: boolean;
+  /** Optional custom not-found handler (defaults to 404 page) */
+  onNotFound?: ResponseHandler<[id: number, session: TSession]>;
+};
+
+export type ConfirmedHandlers = {
+  get: (request: Request, id: number) => Promise<Response>;
+  post: (request: Request, id: number) => Promise<Response>;
+};
+
+export const resolveAuth = <TSession>(
+  auth: AuthOption<TSession> | undefined,
+  pattern: string,
+) => {
+  if (auth) return auth;
+  // Without an explicit pair, the route's declaration gives both guards. The
+  // role is then written once, in the admin surface, and never again beside
+  // the handler.
+  const route = adminDestinationAt(pattern);
+  return {
+    requireSession: pageGuardFor(route) as SessionGuard<TSession>,
+    withForm: ((r: Request, h: ResponseHandler<never[]>) =>
+      withAuth(
+        r,
+        formPolicyFor(route),
+        h as Parameters<typeof withAuth>[2],
+      )) as FormGuard<TSession>,
+  };
+};
+
+/**
+ * Create a pair of GET (confirmation page) and POST (execute action) handlers
+ * for resources that need typed-identifier confirmation.
+ */
+export const createConfirmedHandlers = <T, TSession = AuthSession>(
+  config: ConfirmedHandlerConfig<T, TSession>,
+): ConfirmedHandlers => {
+  const notFound = (id: number, session: TSession) =>
+    config.onNotFound ? config.onNotFound(id, session) : notFoundResponse();
+  const { requireSession, withForm } = resolveAuth(config.auth, config.path);
+  const actionLabel = config.actionLabel ?? "deletion";
+  const resolveRedirect = (model: T, id: number) =>
+    typeof config.successRedirect === "function"
+      ? config.successRedirect(model, id)
+      : config.successRedirect;
+  const confirmPath = (id: number) => config.path.replace(/:(\w+)/, String(id));
+
+  const guardError = (model: T, id: number, session: TSession) =>
+    config.guardError ? config.guardError(model, id, session) : null;
+
+  const withModel = async (
+    id: number,
+    session: TSession,
+    proceed: (model: T) => Promise<Response>,
+  ): Promise<Response> => {
+    const rejection = config.preValidate
+      ? await config.preValidate(id, session)
+      : null;
+    if (rejection) return rejection;
+    const model = await config.load(id, session);
+    return model === null ? notFound(id, session) : proceed(model);
+  };
+
+  const get = (request: Request, id: number): Promise<Response> =>
+    requireSession(request, (session) =>
+      withModel(id, session, async (result) => {
+        // A guard error is rendered into the confirmation page (200), never a
+        // redirect — so the GET cannot loop back to itself. A flash error
+        // from a prior POST block takes precedence when present.
+        const flash = getFlash();
+        const error = flash.error ?? (await guardError(result, id, session));
+        return htmlResponse(
+          await config.render(result, session, error ?? undefined),
+        );
+      }),
+    );
+
+  /** The POST-time pre-check for handlers whose refusal lives in the
+   *  framework: an error redirect when the guard refuses, or null. A handler
+   *  that re-runs the guard inside its write transaction (guardInTx) blocks
+   *  there instead, so the guarded state is read once. */
+  const preGuardRedirect = async (
+    result: T,
+    id: number,
+    session: TSession,
+  ): Promise<Response | null> => {
+    if (config.guardInTx) return null;
+    const guard = await guardError(result, id, session);
+    return guard === null ? null : errorRedirect(confirmPath(id), guard);
+  };
+
+  const post = (request: Request, id: number): Promise<Response> =>
+    withForm(request, (session, form) =>
+      withModel(id, session, async (result) => {
+        const refusal = await preGuardRedirect(result, id, session);
+        if (refusal) return refusal;
+
+        const expected = await config.identifier(result);
+        const error = verifyOrRedirect(
+          form,
+          expected,
+          confirmPath(id),
+          confirmLabel(config.identifierLabel),
+          actionLabel,
+        );
+        if (error) return error;
+
+        return (
+          (await config.onConfirm(result, id, session, form)) ??
+          redirect(resolveRedirect(result, id), config.successMessage, true)
+        );
+      }),
+    );
+
+  return { get, post };
+};

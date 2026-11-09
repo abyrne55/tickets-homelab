@@ -1,0 +1,435 @@
+/**
+ * Encrypted booking-token links for contact history.
+ *
+ * Contact preferences own the contact row and outreach stats. This module owns
+ * the append-only encrypted ticket-token list that lets an admin resolve a
+ * contact's other bookings without decrypting every attendee.
+ */
+
+import type { ResultSet } from "@libsql/client";
+import { blindIndexFor } from "#crypto/hashing.ts";
+import { decryptWithOwnerKey, encryptWithOwnerKey } from "#crypto/hybrid.ts";
+
+import { openEach } from "#crypto/open-each.ts";
+import type { BlindIndex, OwnerKeyEncrypted } from "#crypto/sealed.ts";
+import {
+  execute,
+  queryOne,
+  resultRows,
+  type SqlStatement,
+  type TxScope,
+} from "#db/client.ts";
+import { type ContactChannel, contactHash } from "#db/contact-preferences.ts";
+import { settings } from "#db/settings.ts";
+import { nowMs } from "#shared/now.ts";
+
+/** Booking origin: an online public checkout vs an admin manual add. Each is
+ * counted in its own plaintext column so the split survives without the owner
+ * key. */
+export type BookingSource = "admin" | "public";
+
+/** The source a webhook payload reports: the stored source, or "unknown"
+ * when no stored contact history holds the answer. */
+export type WebhookBookingSource = BookingSource | "unknown";
+
+/** A booked ticket token linked to a contact, with the source that booked it. */
+export type BookingToken = { source: BookingSource; token: string };
+
+/** Plaintext booking-count columns that the keyless public paths can touch. */
+type BookingCountColumn = "public_booking_count" | "admin_booking_count";
+
+/** The plaintext booking-count column for each source. */
+const BOOKING_COLUMN: Record<BookingSource, BookingCountColumn> = {
+  admin: "admin_booking_count",
+  public: "public_booking_count",
+};
+
+/** One-character tag stored before each ticket token in the encrypted list. */
+const SOURCE_TAG: Record<BookingSource, "p" | "a"> = {
+  admin: "a",
+  public: "p",
+};
+
+const TAG_SOURCE: Record<string, BookingSource> = {
+  a: "admin",
+  p: "public",
+};
+
+const TOKEN_LINE_SEPARATOR = "\t";
+
+const tokenMarkerFor = blindIndexFor("contact-token:");
+
+type StoredTokenLine = {
+  encrypted: OwnerKeyEncrypted;
+  marker: BlindIndex | null;
+  raw: string;
+};
+
+/**
+ * Create one searchable token entry for the append-only tokens blob,
+ * terminated by a newline so entries concatenate on the column without a
+ * separator table. The marker is scoped to this contact row, so two contact
+ * rows cannot be linked just because they share one booking token. The source
+ * and token stay owner-key-encrypted.
+ */
+const encryptTokenEntry = async (
+  hash: string,
+  source: BookingSource,
+  token: string,
+): Promise<string> => {
+  const marker = await tokenMarkerFor(hash, token);
+  const encrypted = await encryptWithOwnerKey(
+    `${SOURCE_TAG[source]}${token}`,
+    settings.publicKey,
+  );
+  return `${marker}${TOKEN_LINE_SEPARATOR}${encrypted}\n`;
+};
+
+/** Split a tokens blob into its per-entry stored lines. */
+const splitTokenBlob = (blob: string): StoredTokenLine[] =>
+  blob
+    .split("\n")
+    .filter(Boolean)
+    .map((raw) => {
+      const separatorAt = raw.indexOf(TOKEN_LINE_SEPARATOR);
+      return separatorAt === -1
+        ? { encrypted: raw as OwnerKeyEncrypted, marker: null, raw }
+        : {
+            encrypted: raw.slice(separatorAt + 1) as OwnerKeyEncrypted,
+            marker: raw.slice(0, separatorAt) as BlindIndex,
+            raw,
+          };
+    });
+
+/** Decrypt one entry back to its source + ticket token. */
+const parseTokenEntry = async (
+  line: OwnerKeyEncrypted,
+  privateKey: CryptoKey,
+): Promise<BookingToken> => {
+  const decoded = await decryptWithOwnerKey(line, privateKey);
+  return { source: TAG_SOURCE[decoded[0]!]!, token: decoded.slice(1) };
+};
+
+type TokenEntryInput = {
+  hash: string;
+  source: BookingSource;
+  ticketToken: string;
+};
+
+const preparedTokenEntry = async ({
+  hash,
+  source,
+  ticketToken,
+}: TokenEntryInput): Promise<{
+  args: [string, number, string];
+  marker: BlindIndex;
+}> => {
+  const [encrypted, marker] = await Promise.all([
+    encryptTokenEntry(hash, source, ticketToken),
+    tokenMarkerFor(hash, ticketToken),
+  ]);
+  return { args: [hash, nowMs(), encrypted], marker };
+};
+
+/** Build the replay-safe visit + booking write for one contact. The marker is
+ * checked by the conflict update, so a retry neither appends nor increments. */
+const bookingActivityStatement = async (
+  input: TokenEntryInput,
+): Promise<SqlStatement> => {
+  const { source } = input;
+  const column = BOOKING_COLUMN[source];
+  const entry = await preparedTokenEntry(input);
+  return {
+    args: [...entry.args, `${entry.marker}${TOKEN_LINE_SEPARATOR}`],
+    sql: `INSERT INTO contact_preferences
+            (contact_hash, last_activity, visits, ${column}, attendee_tokens_blob)
+          VALUES (?, ?, 1, 1, ?)
+          ON CONFLICT(contact_hash) DO UPDATE SET
+            visits = visits + 1,
+            ${column} = ${column} + 1,
+            last_activity = excluded.last_activity,
+            attendee_tokens_blob = attendee_tokens_blob || excluded.attendee_tokens_blob
+          WHERE INSTR(attendee_tokens_blob, ?) = 0`,
+  };
+};
+
+/** Run one token write on the caller's transaction, or as its own write when
+ *  no caller transaction is open. */
+const writeTokenStatement = (
+  transaction: TxScope | undefined,
+  statement: SqlStatement,
+): Promise<ResultSet> =>
+  transaction === undefined
+    ? execute(statement.sql, statement.args)
+    : transaction.execute(statement);
+
+/** Append one encrypted ticket token without changing booking counts. */
+const appendBookingToken = async (
+  input: TokenEntryInput,
+  transaction?: TxScope,
+): Promise<void> => {
+  const entry = await preparedTokenEntry(input);
+  await writeTokenStatement(transaction, {
+    args: entry.args,
+    sql: `INSERT INTO contact_preferences (contact_hash, last_activity, attendee_tokens_blob)
+     VALUES (?, ?, ?)
+     ON CONFLICT(contact_hash) DO UPDATE SET
+       last_activity = excluded.last_activity,
+       attendee_tokens_blob = attendee_tokens_blob || excluded.attendee_tokens_blob`,
+  });
+};
+
+/** The contacts a person's non-empty email and phone name, in search order. */
+const contactsFor = (
+  email: unknown,
+  phone: unknown,
+): [ContactChannel, string][] => {
+  const contacts: [ContactChannel, string][] = [];
+  if (typeof email === "string" && email.trim())
+    contacts.push(["email", email]);
+  if (typeof phone === "string" && phone.trim()) contacts.push(["sms", phone]);
+  return contacts;
+};
+
+/** Build one replay-safe activity statement for each non-empty contact on an
+ * order. These statements can be included in the booking transaction. */
+export const orderActivityStatements = async (
+  email: unknown,
+  phone: unknown,
+  source: BookingSource,
+  ticketToken: string,
+): Promise<SqlStatement[]> => {
+  const hashes = await Promise.all(
+    contactsFor(email, phone).map(([channel, value]) =>
+      contactHash(channel, value),
+    ),
+  );
+  return Promise.all(
+    hashes.map((hash) =>
+      bookingActivityStatement({ hash, source, ticketToken }),
+    ),
+  );
+};
+
+/** Append a ticket token to a contact's encrypted list without touching counts. */
+const addBookingToken = async (
+  hash: string,
+  ticketToken: string,
+  source: BookingSource,
+  transaction?: TxScope,
+): Promise<void> => {
+  await appendBookingToken({ hash, source, ticketToken }, transaction);
+};
+
+/** Load a contact's encrypted token blob, or null when no row exists. With a
+ *  caller transaction the read sees that transaction's own writes. */
+const loadTokenBlob = async (
+  hash: string,
+  transaction?: TxScope,
+): Promise<string | null> => {
+  const row = transaction
+    ? resultRows<{ attendee_tokens_blob: string }>(
+        await transaction.execute({
+          args: [hash],
+          sql: "SELECT attendee_tokens_blob FROM contact_preferences WHERE contact_hash = ?",
+        }),
+      )[0]
+    : await queryOne<{ attendee_tokens_blob: string }>(
+        "SELECT attendee_tokens_blob FROM contact_preferences WHERE contact_hash = ?",
+        [hash],
+      );
+  return row?.attendee_tokens_blob ?? null;
+};
+
+/** Split a loaded token blob, treating a missing or empty blob as no tokens. */
+const tokenLinesFrom = (blob: string | null): StoredTokenLine[] =>
+  blob ? splitTokenBlob(blob) : [];
+
+/** Load a contact's token entries as stored lines. */
+const loadTokenLines = async (
+  hash: string,
+  transaction?: TxScope,
+): Promise<StoredTokenLine[]> =>
+  tokenLinesFrom(await loadTokenBlob(hash, transaction));
+
+/** Decrypt loaded token lines into source + ticket token pairs. */
+const bookingTokensFrom = openEach(parseTokenEntry);
+
+/** Read only the newest booked ticket tokens, decrypting no older entries. */
+export const getRecentBookingTokens = async (
+  hash: string,
+  privateKey: CryptoKey,
+  limit: number,
+): Promise<BookingToken[]> => {
+  if (limit <= 0) return [];
+  return bookingTokensFrom(
+    (await loadTokenLines(hash)).slice(-limit).map((line) => line.encrypted),
+    privateKey,
+  );
+};
+
+/** Read how one stored booking was made, from the contact history the booking
+ * wrote when it happened. Looks in the contacts the attendee's email and phone
+ * point at. Null when no contact still holds the token. The token list only
+ * fills from bookings made after it shipped, and GDPR erasure removes it, so
+ * the origin is then gone. */
+export const storedBookingSource = async (
+  email: string,
+  phone: string,
+  ticketToken: string,
+  privateKey: CryptoKey,
+): Promise<BookingSource | null> => {
+  for (const [channel, value] of contactsFor(email, phone)) {
+    const line = await findTokenLine(
+      await contactHash(channel, value),
+      ticketToken,
+    );
+    if (line) {
+      return (await parseTokenEntry(line.encrypted, privateKey)).source;
+    }
+  }
+  return null;
+};
+
+/** Find a contact's stored entry for one ticket token, or null when the
+ * contact holds no such booking. */
+const findTokenLine = async (
+  hash: string,
+  ticketToken: string,
+  transaction?: TxScope,
+): Promise<StoredTokenLine | null> => {
+  const marker = await tokenMarkerFor(hash, ticketToken);
+  return (
+    (await loadTokenLines(hash, transaction)).find(
+      (entry) => entry.marker === marker,
+    ) ?? null
+  );
+};
+
+/** Remove the first entry for `ticketToken` from a contact's encrypted list. */
+const removeBookingToken = async (
+  hash: string,
+  ticketToken: string,
+  privateKey: CryptoKey,
+  transaction?: TxScope,
+): Promise<BookingSource | null> => {
+  const match = await findTokenLine(hash, ticketToken, transaction);
+  if (!match) return null;
+  const removed = await parseTokenEntry(match.encrypted, privateKey);
+  // Delete just this entry's ciphertext line in place. REPLACE operates on the
+  // column's current value at write time, so a keyless checkout append that
+  // lands after our read is preserved instead of overwritten by a stale rewrite.
+  await writeTokenStatement(transaction, {
+    args: [`${match.raw}\n`, nowMs(), hash],
+    sql: "UPDATE contact_preferences SET attendee_tokens_blob = REPLACE(attendee_tokens_blob, ?, ''), last_activity = ? WHERE contact_hash = ?",
+  });
+  return removed.source;
+};
+
+/** Add the token when it is missing, preserving the existing list otherwise. */
+const ensureBookingToken = async (
+  hash: string,
+  ticketToken: string,
+  source: BookingSource,
+  createMissingContact: boolean,
+  transaction?: TxScope,
+): Promise<void> => {
+  const blob = await loadTokenBlob(hash, transaction);
+  if (blob === null && !createMissingContact) return;
+  const marker = await tokenMarkerFor(hash, ticketToken);
+  if (tokenLinesFrom(blob).some((entry) => entry.marker === marker)) return;
+  await addBookingToken(hash, ticketToken, source, transaction);
+};
+
+type ContactTokenValues = { email: string; phone: string };
+
+export type ContactTokenSync = {
+  ticketToken: string;
+  before: ContactTokenValues;
+  after: ContactTokenValues;
+  privateKey: CryptoKey;
+  /** Source to use when a token is first attached and no stored history
+   * names the booking's source — a genuinely admin-made booking. A channel
+   * the edit adds inherits the stored source instead. */
+  source: BookingSource;
+  /** Only real bookings link into Previous bookings. */
+  hasBooking: boolean;
+  /** True when this sync is triggered by an attendee gaining its first real
+   * booking (a placeholder edited to a real quantity). A missing contact row
+   * is then created for an unchanged contact value so the booking links. It
+   * is not skipped the way a routine unchanged edit skips an erased row. */
+  firstRealBooking: boolean;
+};
+
+const hashForValue = (
+  channel: ContactChannel,
+  value: string,
+): Promise<string | null> =>
+  value.trim() ? contactHash(channel, value) : Promise.resolve(null);
+
+const valueFor = (
+  channel: ContactChannel,
+  values: ContactTokenValues,
+): string => (channel === "email" ? values.email : values.phone);
+
+const syncChannelToken = async (
+  channel: ContactChannel,
+  sync: ContactTokenSync,
+  storedSource: BookingSource | null,
+  transaction?: TxScope,
+): Promise<void> => {
+  const oldHash = await hashForValue(channel, valueFor(channel, sync.before));
+  const newHash = await hashForValue(channel, valueFor(channel, sync.after));
+  const changed = oldHash !== newHash;
+  const removedSource =
+    oldHash !== null && changed
+      ? await removeBookingToken(
+          oldHash,
+          sync.ticketToken,
+          sync.privateKey,
+          transaction,
+        )
+      : null;
+
+  if (!sync.hasBooking || newHash === null) return;
+  await ensureBookingToken(
+    newHash,
+    sync.ticketToken,
+    removedSource ?? storedSource ?? sync.source,
+    changed || sync.firstRealBooking,
+    transaction,
+  );
+};
+
+/** The source the attendee's stored contact history already gives this
+ * booking, or null when no contact holds the token. Scanned before either
+ * channel sync writes, over the contacts the edit moves between. */
+const storedSourceFor = async (
+  sync: ContactTokenSync,
+  transaction?: TxScope,
+): Promise<BookingSource | null> => {
+  for (const channel of ["email", "sms"] as const) {
+    for (const value of [
+      valueFor(channel, sync.before),
+      valueFor(channel, sync.after),
+    ]) {
+      const hash = await hashForValue(channel, value);
+      if (hash === null) continue;
+      const line = await findTokenLine(hash, sync.ticketToken, transaction);
+      if (line) {
+        return (await parseTokenEntry(line.encrypted, sync.privateKey)).source;
+      }
+    }
+  }
+  return null;
+};
+
+/** Keep an attendee's ticket token under the contacts that currently own it. */
+export const syncAttendeeContactTokens = async (
+  sync: ContactTokenSync,
+  transaction?: TxScope,
+): Promise<void> => {
+  const storedSource = await storedSourceFor(sync, transaction);
+  await syncChannelToken("email", sync, storedSource, transaction);
+  await syncChannelToken("sms", sync, storedSource, transaction);
+};

@@ -1,0 +1,44 @@
+import { schemaMigration } from "./define.ts";
+
+/**
+ * The tables one payment record lives in: the payment itself, the money taken
+ * against it, the work and messages that follow, and any problem for the owner
+ * to settle.
+ */
+export default schemaMigration(
+  "2026-07-26_payment_records",
+  "Create the tables one payment record lives in.",
+  {
+    indexes: [
+      "idx_payment_case_decisions_retry",
+      "idx_payment_case_decisions_revision",
+      "idx_payment_cases_alert",
+      "idx_payment_cases_payment_resource",
+      "idx_payment_cases_reconcile",
+      "idx_payment_cases_redaction",
+      "idx_payment_charges_callback_replay",
+      "idx_payment_charges_next_action",
+      "idx_payment_charges_reference",
+      "idx_payment_charges_refund_state",
+      "idx_payment_completion_deliveries_pending",
+      "idx_payment_completion_deliveries_unique",
+      "idx_payment_completion_effects_unique",
+      "idx_payment_sessions_attendee",
+      "idx_payment_sessions_reconcile",
+      "idx_payment_sessions_redaction",
+      "idx_payment_sessions_reference",
+      "idx_refund_confirmation_references_unique",
+      "idx_refund_confirmations_attendee",
+    ],
+    newTables: [
+      "payment_sessions",
+      "payment_completion_effects",
+      "payment_completion_deliveries",
+      "payment_charges",
+      "payment_cases",
+      "payment_case_decisions",
+      "refund_confirmations",
+      "refund_confirmation_references",
+    ],
+  },
+);

@@ -1,0 +1,424 @@
+/**
+ * The editable attendee form (create and edit).
+ *
+ * An attendee has ONE shared date range — a start date plus a length — applied
+ * to every daily listing they book. The listing editor is a fixed table with
+ * one quantity box per bookable listing. A quantity of 1 or more books it, and
+ * 0 leaves it out. There are no add-line or remove-line buttons, and the form
+ * works without JavaScript.
+ */
+
+import { compact, range } from "#fp";
+import { t } from "#i18n";
+import {
+  ADJUSTMENT_SLOTS,
+  ATTENDEE_FORM_ID,
+  DAY_COUNT_FIELD,
+  PAYMENT_SLOTS,
+  resolveStatusId,
+  STATUS_FIELD,
+} from "#routes/admin/attendee-form-model.ts";
+import { ADJUSTMENT_DESCRIPTION_LIMIT } from "#shared/booking-inputs.ts";
+import { formatDateLabel } from "#shared/date-labels.ts";
+import { addDays } from "#shared/dates.ts";
+import { CsrfForm } from "#shared/forms/csrf-form.tsx";
+import { MAX_INPUT_LENGTH } from "#shared/limits.ts";
+import { START_DATE_FIELD } from "#shared/order-select.ts";
+import { parseDateString } from "#shared/validation/date-string.ts";
+import { renderAdminPageSpec } from "#templates/admin/admin-page-spec.tsx";
+import { ListingEditor } from "#templates/admin/attendee-form/listing-editor.tsx";
+import { LogisticsSection } from "#templates/admin/attendee-form/logistics.tsx";
+import { TaxSaveFields } from "#templates/admin/attendee-form/tax.tsx";
+import type {
+  AttendeeFormProps,
+  AttendeeFormTemplateData,
+} from "#templates/admin/attendee-form/types.ts";
+import { EditQuestions } from "#templates/admin/attendees.tsx";
+import { SaveActions } from "#templates/components/actions.tsx";
+import { AddressFieldWithLookup } from "#templates/components/address-field.tsx";
+import {
+  type FormSection,
+  FormSections,
+} from "#templates/components/aggregate-sections.tsx";
+import { ErrorAlert } from "#templates/components/error.tsx";
+import {
+  idOptions,
+  SelectField,
+  type SelectOption,
+} from "#templates/components/select-field.tsx";
+import { textareaBody } from "#templates/components/textarea.tsx";
+import { PHONE_INPUT_PATTERN } from "#templates/fields/ticket.ts";
+import {
+  CONTACT_TEXTAREA_LIMIT,
+  PHONE_FIELD_LENGTH,
+} from "#templates/fields/validators.ts";
+import { type AdminSession, MAX_DURATION_DAYS } from "#types";
+
+/** Option list for the day-count select: 1…horizon, each labelled with the
+ * resulting end date when a start date is known. A malformed submitted date
+ * falls back to the plain day-count labels: validation reports the bad
+ * date, and the re-render must not throw while showing it. */
+const dayCountOptions = (startDate: string): SelectOption[] =>
+  range(1, MAX_DURATION_DAYS + 1).map((n) => {
+    const day = parseDateString(startDate);
+    const label = day
+      ? t("attendee_form.day_count_option_with_end", {
+          count: n,
+          end: formatDateLabel(addDays(day, n - 1)),
+        })
+      : t("attendee_form.day_count_option", { count: n });
+    return { label, value: String(n) };
+  });
+
+/** Shared start date + length for every daily listing. The length is a select
+ * of day counts (the end date is derived, never edited directly). The
+ * "availability inaccurate" notice shows until a date is saved. A small
+ * progressive-enhancement script (client/admin/attendee-dates.ts) re-shows it
+ * when the dates are changed. It reveals the length select once a start date is
+ * set.
+ *
+ * The dates only apply to daily listings, so the whole section is hidden when
+ * there are none in play, and the start date is never HTML-`required` — it's
+ * optional unless a daily listing is actually booked, which the server enforces. */
+const SharedDateFields = ({ data }: AttendeeFormProps): JSX.Element => {
+  // Shown when there's no saved/known date yet (a bare create form); the PE
+  // re-shows it whenever the dates are dirtied so the operator re-saves.
+  const noticeHidden = !(data.mode === "create" && !data.parsed.startDate);
+  return (
+    <>
+      <p class="small">{t("attendee_form.dates_hint")}</p>
+      {data.dateError && <ErrorAlert>{data.dateError}</ErrorAlert>}
+      <label for={START_DATE_FIELD}>
+        {t("attendee_form.start_date")}
+        <input
+          id={START_DATE_FIELD}
+          name={START_DATE_FIELD}
+          type="date"
+          value={data.parsed.startDate}
+        />
+      </label>
+      <output class="warning" data-availability-notice hidden={noticeHidden}>
+        {t("attendee_form.availability_notice")}
+      </output>
+      <label data-day-count-label for={DAY_COUNT_FIELD}>
+        {t("attendee_form.length")}
+        <SelectField
+          id={DAY_COUNT_FIELD}
+          name={DAY_COUNT_FIELD}
+          options={dayCountOptions(data.parsed.startDate)}
+          value={String(data.parsed.dayCount)}
+        />
+      </label>
+    </>
+  );
+};
+
+/**
+ * The status dropdown and a status/balance mismatch notice (precomputed by the
+ * route). The outstanding balance itself is not editable here — it projects
+ * from the money ledger, and owners adjust it through the ledger (an auditable
+ * write-off correction) rather than a free-text field on this form.
+ */
+const StatusField = ({ data }: AttendeeFormProps): JSX.Element => {
+  const { statusId } = data.parsed;
+  const selectedId = resolveStatusId(statusId, data.statuses);
+  return (
+    <>
+      {data.balanceNotice && (
+        <output class={data.balanceNotice.tone}>
+          {data.balanceNotice.message}
+        </output>
+      )}
+      {data.statuses.length <= 1 ? (
+        <input name={STATUS_FIELD} type="hidden" value={selectedId} />
+      ) : (
+        <label for={STATUS_FIELD}>
+          {t("common.status")}
+          <SelectField
+            id={STATUS_FIELD}
+            name={STATUS_FIELD}
+            options={idOptions(data.statuses, (s) => s.name)}
+            value={String(selectedId)}
+          />
+        </label>
+      )}
+    </>
+  );
+};
+
+/**
+ * True when the last submit left any error on the form — an attendee, date,
+ * form-wide, save, or per-line error. When it did, each error is an
+ * {@link ErrorAlert} (focusable), so the browser hands autofocus to the first
+ * one and scrolls straight to it; the name field then gives up its default
+ * autofocus so a failed submit lands on the problem, not the page top.
+ */
+const formHasError = (data: AttendeeFormTemplateData): boolean =>
+  Boolean(
+    data.saveError || data.formError || data.attendeeError || data.dateError,
+  ) || data.parsed.lines.some((line) => line.error !== null);
+
+/**
+ * The editable attendee form: contact details, the shared date range, optional
+ * custom questions, and the listing editor — all inside one CsrfForm. The
+ * CsrfForm renders the flash inline when a redirect targeted this form's id.
+ */
+/** The attendee's own contact fields — name, status, and the optional email,
+ * phone, address, and special instructions. The form's first section. */
+const ContactDetailFields = ({ data }: AttendeeFormProps): JSX.Element => (
+  <>
+    <label for="name">
+      {t("common.name")}
+      <input
+        autocomplete="off"
+        autofocus={!formHasError(data)}
+        id="name"
+        maxlength={MAX_INPUT_LENGTH}
+        name="name"
+        required
+        type="text"
+        value={data.parsed.name}
+      />
+    </label>
+
+    <StatusField data={data} />
+
+    <label for="email">
+      {t("common.email")}
+      <input
+        autocomplete="off"
+        id="email"
+        maxlength={MAX_INPUT_LENGTH}
+        name="email"
+        type="email"
+        value={data.parsed.email || ""}
+      />
+    </label>
+
+    <label for="phone">
+      {t("common.phone")}
+      <input
+        autocomplete="off"
+        id="phone"
+        maxlength={PHONE_FIELD_LENGTH}
+        name="phone"
+        pattern={PHONE_INPUT_PATTERN}
+        title={t("attendee_form.phone_title")}
+        type="text"
+        value={data.parsed.phone || ""}
+      />
+    </label>
+
+    <AddressFieldWithLookup address={data.parsed.address || ""} />
+
+    <label for="special_instructions">
+      {t("common.special_instructions")}
+      <textarea
+        autocomplete="off"
+        id="special_instructions"
+        maxlength={CONTACT_TEXTAREA_LIMIT}
+        name="special_instructions"
+        rows={3}
+      >
+        {textareaBody(data.parsed.special_instructions || "")}
+      </textarea>
+    </label>
+  </>
+);
+
+/** One money block: the hint line, then one render per numbered slot. The
+ *  blocks are fixed blank-aligned, so the form needs no client script and a
+ *  rejected save keeps every value. Later money goes through the booking's
+ *  Ledger tab instead. */
+const MoneySlotsFields = ({
+  count,
+  hintKey,
+  renderSlot,
+}: {
+  count: number;
+  hintKey: string;
+  renderSlot: (slot: number) => JSX.Element;
+}): JSX.Element => (
+  <>
+    <p class="muted small">{t(hintKey)}</p>
+    {range(0, count).map(renderSlot)}
+  </>
+);
+
+/** The form's sections in order: contact details, then the custom questions
+ * and shared dates when they apply, then the listing registrations, then the
+ * money an operator records now (create only). Each is a legend-led
+ * {@link FormSection}, so a header can never regress to a bare heading. */
+const editFormSections = (data: AttendeeFormTemplateData): FormSection[] =>
+  compact([
+    {
+      children: <ContactDetailFields data={data} />,
+      legend: t("attendee_form.details_heading"),
+    },
+    data.taxPreview
+      ? {
+          children: <TaxSaveFields preview={data.taxPreview} />,
+          legend: t("attendee_form.tax_heading"),
+        }
+      : undefined,
+    data.questions.length > 0
+      ? {
+          children: (
+            <EditQuestions
+              atBooking={data.atBooking}
+              questions={data.questions}
+              selectedAnswerIds={data.selectedAnswerIds}
+              selectedTextAnswers={data.selectedTextAnswers}
+            />
+          ),
+          legend: t("attendee_form.custom_questions"),
+        }
+      : undefined,
+    data.hasDailyListings
+      ? {
+          children: <SharedDateFields data={data} />,
+          legend: t("attendee_form.dates_heading"),
+        }
+      : undefined,
+    {
+      children: (
+        <>
+          {data.hasMixedTimings && (
+            <output class="warning">
+              {t("attendee_form.mixed_timings_warning")}
+            </output>
+          )}
+          <ListingEditor data={data} />
+        </>
+      ),
+      legend: t("attendee_form.registrations_heading"),
+    },
+    data.mode === "create"
+      ? {
+          children: (
+            <MoneySlotsFields
+              count={PAYMENT_SLOTS}
+              hintKey="attendee_form.payments_hint"
+              renderSlot={(slot) => (
+                <label for={`payment_amount_${slot}`}>
+                  {t("attendee_form.payment_amount", { slot: slot + 1 })}
+                  <input
+                    id={`payment_amount_${slot}`}
+                    min="1"
+                    name={`payment_amount_${slot}`}
+                    type="number"
+                    value={data.parsed.payments[slot] || ""}
+                  />
+                </label>
+              )}
+            />
+          ),
+          legend: t("attendee_form.payments_heading"),
+        }
+      : undefined,
+    data.mode === "create"
+      ? {
+          children: (
+            <MoneySlotsFields
+              count={ADJUSTMENT_SLOTS}
+              hintKey="attendee_form.adjustments_hint"
+              renderSlot={(slot) => (
+                <div>
+                  <label for={`adjustment_description_${slot}`}>
+                    {t("attendee_form.adjustment_description", {
+                      slot: slot + 1,
+                    })}
+                    <input
+                      id={`adjustment_description_${slot}`}
+                      maxlength={ADJUSTMENT_DESCRIPTION_LIMIT}
+                      name={`adjustment_description_${slot}`}
+                      type="text"
+                      value={data.parsed.adjustments[slot]?.description || ""}
+                    />
+                  </label>
+                  <label for={`adjustment_amount_${slot}`}>
+                    {t("attendee_form.adjustment_amount", { slot: slot + 1 })}
+                    <input
+                      id={`adjustment_amount_${slot}`}
+                      name={`adjustment_amount_${slot}`}
+                      type="number"
+                      value={data.parsed.adjustments[slot]?.amount || ""}
+                    />
+                  </label>
+                </div>
+              )}
+            />
+          ),
+          legend: t("attendee_form.adjustments_heading"),
+        }
+      : undefined,
+  ]);
+
+const AttendeeEditForm = ({ data }: AttendeeFormProps): JSX.Element => {
+  const isEdit = data.mode === "edit";
+  const formAction =
+    data.mode === "create"
+      ? "/admin/attendees/new"
+      : `/admin/attendees/${data.attendee!.id}`;
+  return (
+    <CsrfForm action={formAction} id={ATTENDEE_FORM_ID}>
+      {data.returnUrl && (
+        <input name="return_url" type="hidden" value={data.returnUrl} />
+      )}
+
+      {/* Create renders its own title inside the form (the standalone page has
+          no entity heading above it); edit gets its "Attendee: …" heading from
+          the entity page shell. */}
+      {!isEdit && <h1>{t("attendee_form.title_create")}</h1>}
+
+      <FormSections sections={editFormSections(data)} />
+
+      <LogisticsSection logistics={data.logistics} />
+
+      <hr />
+
+      <SaveActions>
+        {isEdit ? t("attendee_form.save") : t("attendee_form.create")}
+      </SaveActions>
+    </CsrfForm>
+  );
+};
+
+/**
+ * The full form block: save/form errors, the warnings summary, the
+ * attendee-level error, then the form itself. Rendered as the whole create
+ * page and as the entity page's Edit tab.
+ */
+export const AttendeeFormPanel = ({ data }: AttendeeFormProps): JSX.Element => (
+  <>
+    {data.saveError && <ErrorAlert>{data.saveError}</ErrorAlert>}
+    {data.formError && <ErrorAlert>{data.formError}</ErrorAlert>}
+    {data.topWarnings.length > 0 && (
+      <output class="warning" role="alert">
+        <strong>{t("attendee_form.double_check")}</strong>
+        <ul>
+          {data.topWarnings.map((w) => (
+            <li>{w}</li>
+          ))}
+        </ul>
+      </output>
+    )}
+    {data.attendeeError && <ErrorAlert>{data.attendeeError}</ErrorAlert>}
+    <AttendeeEditForm data={data} />
+  </>
+);
+
+/** Render the standalone create page (/admin/attendees/new). Edit renders
+ * through the attendee entity page instead. */
+export const attendeeFormPage = (
+  data: AttendeeFormTemplateData,
+  session: AdminSession,
+): string =>
+  renderAdminPageSpec({
+    // The title lives inside the form (see AttendeeEditForm), so the page shell
+    // carries no prose heading of its own — just the <title> for the tab.
+    active: "/admin/attendees/new",
+    body: <AttendeeFormPanel data={data} />,
+    session,
+    title: t("attendee_form.title_create"),
+  });

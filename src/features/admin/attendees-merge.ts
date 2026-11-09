@@ -1,0 +1,497 @@
+/**
+ * Admin attendee merge routes
+ */
+
+import { pick } from "@std/collections";
+import { logActivity } from "#db/activity-log.ts";
+import type { ListingAttendeeRow } from "#db/attendee-types.ts";
+import { decryptAttendeeOrNull, decryptPiiBlob } from "#db/attendees/pii.ts";
+import {
+  getAttendeeRaw,
+  LISTING_ATTENDEE_ROW_COLS,
+} from "#db/attendees/queries.ts";
+import { getAttendeesByTokens } from "#db/attendees/tokens.ts";
+import { updateAttendeePII } from "#db/attendees/update.ts";
+import { queryAll, type TxScope } from "#db/client.ts";
+import { syncAttendeeContactTokens } from "#db/contact-tokens.ts";
+import { loadPaymentMoveSnapshot, orRefusal } from "#db/payment-admit-move.ts";
+import { getQuestionsWithListingIds } from "#db/questions/queries.ts";
+import { filter, map, pipe, unique } from "#fp";
+import { t } from "#i18n";
+import { formGuard, formPolicyFor } from "#routes/auth.ts";
+import {
+  type AttendeeRouteParams,
+  createEntityHandler,
+} from "#routes/entity.ts";
+import { errorRedirect, redirect } from "#routes/response.ts";
+import { adminDestinationAt } from "#shared/admin-surface.ts";
+import type { FormParams } from "#shared/form-data.ts";
+import {
+  applyAttendeeMerge,
+  buildAttendeeMergeDiff,
+  conflictBookingEntries,
+  validateAttendeeMergeDecision,
+} from "#shared/merge/attendee-merge.ts";
+import type {
+  AttendeeMergeDecisionInput,
+  AttendeeMergeDiff,
+  MergeAnswerChoice,
+  MergeValueChoice,
+} from "#shared/merge/attendee-merge-types.ts";
+import type { ParamsRoute } from "#shared/response-steps.ts";
+import { requireRequestPrivateKey } from "#shared/session-private-key.ts";
+import { AttendeeMergePanel } from "#templates/admin/attendees/merge-panel.tsx";
+import type { Attendee, ContactInfo } from "#types";
+
+/** Load and decrypt a target attendee by ID for merge operations */
+const loadMergeTarget = async (
+  attendeeId: number,
+): Promise<Attendee | null> => {
+  const pk = await requireRequestPrivateKey();
+  const raw = await getAttendeeRaw(attendeeId);
+  return decryptAttendeeOrNull(raw, pk);
+};
+
+type MergeSourceLookup = ContactInfo &
+  Pick<Attendee, "email_owed" | "email_pending" | "webhooks_pending"> & {
+    id: number;
+    lat: string;
+    lng: string;
+    payment_id: string;
+    ticket_token: string;
+    bookings: ListingAttendeeRow[];
+  };
+
+/** Look up and decrypt a source attendee by ticket token */
+const loadMergeSource = async (
+  token: string,
+): Promise<MergeSourceLookup | null> => {
+  const pk = await requireRequestPrivateKey();
+  const results = await getAttendeesByTokens([token]);
+  const raw = results[0];
+  if (!raw) return null;
+  // The token read selects only what the merge reads back: id, the queue
+  // counters, bookings and the PII blob. Opening the blob directly skips the
+  // attendee-shaped decrypt. That decrypt fabricates columns the read never
+  // selected. paidListing stays false: no reader wants the source's payment
+  // pointer — the target keeps its own.
+  return {
+    bookings: raw.bookings,
+    email_owed: raw.email_owed,
+    email_pending: raw.email_pending,
+    id: raw.id,
+    webhooks_pending: raw.webhooks_pending,
+    ...(await decryptPiiBlob(raw.pii_blob, pk, false)),
+  };
+};
+
+/** Load all listing_attendees rows for an attendee */
+const loadAttendeeBookings = (
+  attendeeId: number,
+): Promise<ListingAttendeeRow[]> =>
+  queryAll<ListingAttendeeRow>(
+    `SELECT ${LISTING_ATTENDEE_ROW_COLS}
+     FROM listing_attendees WHERE attendee_id = ? ORDER BY start_at, listing_id`,
+    [attendeeId],
+  );
+
+/** Collect unique listing IDs from two sets of bookings */
+const collectListingIds = (
+  targetBookings: ListingAttendeeRow[],
+  sourceBookings: ListingAttendeeRow[],
+): number[] =>
+  unique([...targetBookings, ...sourceBookings].map((b) => b.listing_id));
+
+type MergeSummary = Awaited<ReturnType<typeof applyAttendeeMerge>>["summary"];
+
+/** The five values a merge compares, whichever attendee they are read off. */
+const PII_FIELDS = [
+  "address",
+  "email",
+  "name",
+  "phone",
+  "special_instructions",
+] as const;
+
+type MergePii = Pick<Attendee, (typeof PII_FIELDS)[number]>;
+
+/** The values a merge compares, read off either attendee. */
+const extractPii = (person: MergePii): MergePii => pick(person, PII_FIELDS);
+
+/** Build merge diff from source + target */
+const buildMergeDiffFor = async (
+  target: Attendee,
+  source: MergeSourceLookup,
+  attendeeId: number,
+): Promise<AttendeeMergeDiff> => {
+  const targetBookings = await loadAttendeeBookings(attendeeId);
+  const allListingIds = collectListingIds(targetBookings, source.bookings);
+  const { questions } = await getQuestionsWithListingIds(allListingIds);
+
+  return buildAttendeeMergeDiff(
+    {
+      sourceBookings: source.bookings,
+      sourceId: source.id,
+      sourcePii: extractPii(source),
+      targetBookings,
+      targetId: attendeeId,
+      targetPii: extractPii(target),
+    },
+    questions,
+  );
+};
+
+/** Update target attendee PII based on merge decisions */
+const updateTargetPiiFromDecision = async (
+  attendeeId: number,
+  decision: AttendeeMergeDecisionInput,
+  source: MergeSourceLookup,
+  target: Attendee,
+  transaction: TxScope,
+): Promise<void> => {
+  // The (possibly-source) value of one PII field, read off the side the
+  // operator's decision names. The field is one of the five contact fields,
+  // which both sides carry as strings — no widening cast needed.
+  const chosen = (field: keyof ContactInfo): string => {
+    const decisionChoice = decision.pii[field];
+    return decisionChoice === "source" ? source[field] : target[field];
+  };
+  // The pin follows whichever side's address the operator keeps. When the kept
+  // side has no pin but the OTHER side pinned the very same address text, keep
+  // that pin. Identical addresses render as one "(same)" value on the merge
+  // form, so dropping the only pin there is a silent loss.
+  const kept = decision.pii.address === "source" ? source : target;
+  const other = kept === source ? target : source;
+  const keptIsPinned = Boolean(kept.lat && kept.lng);
+  const addressFrom =
+    keptIsPinned || kept.address !== other.address ? kept : other;
+  const email = chosen("email");
+  const phone = chosen("phone");
+  await updateAttendeePII(
+    attendeeId,
+    {
+      address: chosen("address"),
+      email,
+      lat: addressFrom.lat,
+      lng: addressFrom.lng,
+      name: chosen("name"),
+      payment_id: target.payment_id,
+      phone,
+      special_instructions: chosen("special_instructions"),
+      ticket_token: target.ticket_token,
+    },
+    transaction,
+  );
+  // The target keeps its ticket token, but the merge can switch its kept email
+  // or phone to the source's value. The token follows whichever contact now
+  // owns it. The deleted source's token stays stale and filtered out on read.
+  await syncAttendeeContactTokens(
+    {
+      after: { email, phone },
+      before: { email: target.email, phone: target.phone },
+      firstRealBooking: false,
+      hasBooking: true,
+      privateKey: await requireRequestPrivateKey(),
+      source: "admin",
+      ticketToken: target.ticket_token,
+    },
+    transaction,
+  );
+};
+
+/** Build labeled count strings from summary fields, omitting zero-count entries */
+const mergeCountParts = (fields: [number, string][]): string[] =>
+  pipe(
+    filter(([count]: [number, string]) => count > 0),
+    map(([count, label]) => `${count} ${label}`),
+  )(fields);
+
+/** The booking-movement counts every merge message leads with, before each
+ *  surface adds its own (the log is fuller, and the flash is a short
+ *  confirmation). */
+const bookingMoveParts = (summary: MergeSummary): [number, string][] => [
+  [summary.bookingsMoved, "booking(s) moved"],
+  [summary.bookingsSkipped, "booking(s) skipped"],
+];
+
+/** Build a merge message's parts: a lead line, then the changed-count phrases
+ * (the shared booking moves, plus the surface's own extra counts). */
+const mergeMessageParts =
+  (
+    lead: (sourceName: string, mergedPiiName: string) => string,
+    extraCounts: (summary: MergeSummary) => [number, string][],
+  ) =>
+  (
+    summary: MergeSummary,
+    sourceName: string,
+    mergedPiiName: string,
+  ): string[] => [
+    lead(sourceName, mergedPiiName),
+    ...mergeCountParts([...bookingMoveParts(summary), ...extraCounts(summary)]),
+  ];
+
+/** Build activity log message parts for a merge summary */
+const buildMergeLogParts = mergeMessageParts(
+  (sourceName, mergedPiiName) =>
+    `Attendee '${sourceName}' merged into '${mergedPiiName}'`,
+  (summary) => [
+    [summary.bookingsReplacedTarget, "booking(s) replaced"],
+    [summary.bookingsCredited, "payment(s) kept as credit"],
+    [summary.bookingsWrittenOff, "payment(s) written off"],
+    [summary.answersTakenFromSource, "answer(s) from source"],
+    [summary.answersCleared, "answer(s) cleared"],
+  ],
+);
+
+/** Build flash message parts for a merge */
+const buildMergeFlashParts = mergeMessageParts(
+  (sourceName, mergedPiiName) => `Merged ${sourceName} into ${mergedPiiName}`,
+  (summary) => [
+    [summary.bookingsCredited, "payment(s) credited"],
+    [summary.bookingsWrittenOff, "payment(s) written off"],
+  ],
+);
+
+/** Validate merge POST preconditions, returning an error Response or the source */
+const validateMergePostInput = async (
+  attendeeId: number,
+  form: FormParams,
+): Promise<
+  | { ok: true; source: MergeSourceLookup; sourceToken: string }
+  | { ok: false; response: Response }
+> => {
+  const actionsTab = `/admin/attendees/${attendeeId}/actions`;
+  const sourceToken = form.getString("source_token");
+  if (!sourceToken) {
+    return {
+      ok: false,
+      response: errorRedirect(actionsTab, t("attendees.merge_source_required")),
+    };
+  }
+
+  const source = await loadMergeSource(sourceToken);
+  if (!source) {
+    return {
+      ok: false,
+      response: errorRedirect(
+        `${actionsTab}?token=${encodeURIComponent(sourceToken)}`,
+        t("attendees.merge_source_token_not_found"),
+      ),
+    };
+  }
+
+  if (source.id === attendeeId) {
+    return {
+      ok: false,
+      response: errorRedirect(actionsTab, t("attendees.merge_self_refusal")),
+    };
+  }
+
+  return { ok: true, source, sourceToken };
+};
+
+/** Apply merge decisions and return the success redirect response */
+const applyMergeDecisions = async (
+  attendeeId: number,
+  target: Attendee,
+  source: MergeSourceLookup,
+  diff: AttendeeMergeDiff,
+  decision: AttendeeMergeDecisionInput,
+): Promise<Response> => {
+  const result = await applyAttendeeMerge({
+    decision,
+    diff,
+    privateKey: await requireRequestPrivateKey(),
+    sourceId: source.id,
+    sourcePii: extractPii(source),
+    targetId: attendeeId,
+    targetPii: {
+      ...extractPii(target),
+      payment_id: target.payment_id,
+      ticket_token: target.ticket_token,
+    },
+    // The merged PII writes with the merge, so its failure rolls the delete back.
+    updateTargetPii: (tx) =>
+      updateTargetPiiFromDecision(attendeeId, decision, source, target, tx),
+  });
+
+  const mergedPiiName =
+    decision.pii.name === "source" ? source.name : target.name;
+  const { summary } = result;
+  await logActivity(
+    buildMergeLogParts(summary, source.name, mergedPiiName).join(". "),
+    target.listing_id,
+    attendeeId,
+  );
+
+  return redirect(
+    `/admin/attendees/${attendeeId}`,
+    buildMergeFlashParts(summary, source.name, mergedPiiName).join(". "),
+    true,
+  );
+};
+
+/**
+ * Reads one of a set of choices off the form. A value we do not know falls
+ * back, and a fallback of `undefined` leaves the choice to the operator.
+ */
+const oneChoiceOf =
+  <TChoice extends string, TFallback extends TChoice | undefined>(
+    known: readonly TChoice[],
+    fallback: TFallback,
+  ): ((raw: string) => TChoice | TFallback) =>
+  (raw) =>
+    known.find((choice) => choice === raw) ?? fallback;
+
+/** Which side a PII field takes. Anything but "source" keeps the target. */
+const toPiiChoice = oneChoiceOf(["source", "target"], "target");
+
+/** Parse PII decisions from form (each field: "source" or "target") */
+const parsePiiDecisions = (
+  form: FormParams,
+  diff: AttendeeMergeDiff,
+): Record<string, MergeValueChoice> => {
+  const pii: Record<string, MergeValueChoice> = {};
+  for (const field of diff.piiFields) {
+    const val = form.getString(`pii_${field.field}`);
+    pii[field.field] = toPiiChoice(val);
+  }
+  return pii;
+};
+
+/** Normalize a raw answer choice string into a MergeAnswerChoice */
+const toAnswerChoice = oneChoiceOf(["source", "clear", "target"], "target");
+
+/** Parse answer decisions from form (only conflicting items) */
+const parseAnswerDecisions = (
+  form: FormParams,
+  diff: AttendeeMergeDiff,
+): Record<string, MergeAnswerChoice> => {
+  const answers: Record<string, MergeAnswerChoice> = {};
+  for (const item of diff.answerItems) {
+    if (item.conflict) {
+      const val = form.getString(`answer_${item.questionId}`);
+      answers[String(item.questionId)] = toAnswerChoice(val);
+    }
+  }
+  return answers;
+};
+
+/** Normalize a raw booking choice string into a MergeBookingChoice */
+const toBookingChoice = oneChoiceOf(
+  ["take_source", "skip_source", "keep_target"],
+  "keep_target",
+);
+
+/** Build a per-conflict decision Record by parsing each NON-moveable booking's
+ *  form field (keyed by "listingId:startAt"). A `parse` result of `undefined`
+ *  leaves the entry out. A blank money choice stays absent, and validation can
+ *  demand it. `toBookingChoice` always resolves, so it fills every row. */
+const parseConflictDecisions = <T>(
+  diff: AttendeeMergeDiff,
+  parse: (key: string) => T | undefined,
+): Record<string, T> => {
+  const out: Record<string, T> = {};
+  for (const { key } of conflictBookingEntries(diff)) {
+    const value = parse(key);
+    if (value !== undefined) out[key] = value;
+  }
+  return out;
+};
+
+/** Reads one decision per conflicting booking, from the fields a prefix names. */
+const conflictDecisions =
+  <T>(prefix: string, toChoice: (raw: string) => T | undefined) =>
+  (form: FormParams, diff: AttendeeMergeDiff): Record<string, T> =>
+    parseConflictDecisions(diff, (key) =>
+      toChoice(form.getString(`${prefix}_${key}`)),
+    );
+
+/** Parse booking decisions from form (only non-moveable items) */
+const parseBookingDecisions = conflictDecisions("booking", toBookingChoice);
+
+/** Normalize a raw money choice. An empty or unknown value stays ABSENT, so
+ *  validation can require an explicit decision (decision 17, never defaulted). */
+const toMoneyChoice = oneChoiceOf(["credit", "writeoff"], undefined);
+
+/** Parse money decisions from form (only conflicting items). A blank choice is
+ *  omitted, so validateAttendeeMergeDecision rejects the merge until the
+ *  operator decides what happens to the discarded booking's money. */
+const parseMoneyDecisions = conflictDecisions("money", toMoneyChoice);
+
+/** Parse merge decision form data into AttendeeMergeDecisionInput */
+const parseMergeDecisionForm = (
+  form: FormParams,
+  diff: AttendeeMergeDiff,
+): AttendeeMergeDecisionInput => ({
+  answers: parseAnswerDecisions(form, diff),
+  bookings: parseBookingDecisions(form, diff),
+  money: parseMoneyDecisions(form, diff),
+  pii: parsePiiDecisions(form, diff),
+  version: form.getString("merge_version"),
+});
+
+const mergeHandler = createEntityHandler<AttendeeRouteParams, Attendee>(
+  ({ attendeeId }) => loadMergeTarget(attendeeId),
+)(
+  formGuard(
+    formPolicyFor(adminDestinationAt("/admin/attendees/:attendeeId/merge")),
+  ),
+);
+
+/**
+ * Build the merge panel for the attendee page's Actions tab. It holds the
+ * token search form alone. When a `?token=` search is in flight, it holds the
+ * source preview and decision form. The message shows inline when the token
+ * does not resolve.
+ */
+export const loadMergePanel = async (
+  target: Attendee,
+  token: string,
+): Promise<JSX.Element> => {
+  if (!token) return AttendeeMergePanel(target, null, null);
+  const source = await loadMergeSource(token);
+  if (!source) {
+    return AttendeeMergePanel(target, null, token, "Ticket token not found");
+  }
+  if (source.id === target.id) {
+    return AttendeeMergePanel(
+      target,
+      null,
+      token,
+      "Cannot merge an attendee with themselves",
+    );
+  }
+  const admission = (await loadPaymentMoveSnapshot([target.id, source.id]))
+    .admission.merge;
+  if (admission.kind === "blocked") {
+    return AttendeeMergePanel(target, source, token, admission.reason);
+  }
+  const diff = await buildMergeDiffFor(target, source, target.id);
+  return AttendeeMergePanel(target, source, token, undefined, diff);
+};
+
+/** Handle POST /admin/attendees/:attendeeId/merge — validate + apply decisions */
+export const handleMergePost: ParamsRoute<AttendeeRouteParams> = mergeHandler(
+  async (target, _session, form) => {
+    const input = await validateMergePostInput(target.id, form);
+    if (!input.ok) return input.response;
+    const { source, sourceToken } = input;
+    const diff = await buildMergeDiffFor(target, source, target.id);
+    const decision = parseMergeDecisionForm(form, diff);
+    // Anything that stops the merge sends the operator back to the Actions
+    // tab's merge panel. There the decision radios reset, as always, but the
+    // message flashes and the search re-runs.
+    const mergePanel = `/admin/attendees/${target.id}/actions?token=${encodeURIComponent(
+      sourceToken,
+    )}`;
+    const validation = validateAttendeeMergeDecision(diff, decision);
+    if (!validation.valid) {
+      return errorRedirect(mergePanel, validation.errors.join("; "));
+    }
+    return orRefusal(
+      () => applyMergeDecisions(target.id, target, source, diff, decision),
+      (message) => errorRedirect(mergePanel, message),
+    );
+  },
+);

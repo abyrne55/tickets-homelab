@@ -1,0 +1,364 @@
+/**
+ * Built sites — stores records of sites created via the admin builder.
+ * Site data (name, bunny URL) is encrypted in a single blob for privacy.
+ */
+
+import type { InValue } from "@libsql/client";
+import { decrypt, encrypt } from "#crypto/encryption.ts";
+import { queryAll, queryOne } from "#db/client.ts";
+import { retryWrite } from "#db/retry-write.ts";
+import {
+  cachedTable,
+  col,
+  defineTable,
+  type Table,
+  type TableSchema,
+} from "#db/table.ts";
+import type { RowFilter, RowOptions, TableReader } from "#db/table-reader.ts";
+import { compareByName } from "#shared/name-order.ts";
+import {
+  blobToSiteFields,
+  buildSiteDataBlobFromInput,
+  parseSiteDataBlob,
+} from "./built-sites/blob.ts";
+import {
+  builtSiteCrudBlobSchema,
+  builtSiteCrudPlainSchema,
+  builtSiteFormMappings,
+  builtSiteInputKeyMap,
+  builtSitePlainColumns,
+  builtSitePlainSchema,
+  createdCol,
+  emptyBuiltSiteFormInput,
+  idCol,
+  mapPlainFields,
+  plainSiteInput,
+} from "./built-sites/fields.ts";
+import {
+  type BuiltSite,
+  type BuiltSiteBlobInput,
+  type BuiltSiteFormInput,
+  type BuiltSiteInput,
+  type BuiltSitePlainFields,
+  type BuiltSiteRow,
+  type BuiltSiteUpdate,
+  type DbProvider,
+  DEFAULT_UPDATE_TIER,
+  type HostingProvider,
+  type UpdateTier,
+} from "./built-sites/types.ts";
+
+const rawBuiltSiteSchema = {
+  ...builtSitePlainSchema,
+  created: createdCol,
+  id: idCol,
+  site_data: col.encrypted(encrypt, decrypt),
+} satisfies TableSchema<BuiltSiteRow>;
+
+const builtSiteSelectColumns = Object.keys(rawBuiltSiteSchema).join(", ");
+
+const rawBuiltSitesTable = defineTable<BuiltSiteRow, BuiltSiteInput>({
+  name: "built_sites",
+  primaryKey: "id",
+  schema: rawBuiltSiteSchema,
+});
+
+/** Build raw table input from site-shaped fields */
+const toRawInput = (
+  input: Partial<BuiltSitePlainFields> & Partial<BuiltSiteBlobInput>,
+): BuiltSiteInput => ({
+  ...plainSiteInput(input),
+  siteData: buildSiteDataBlobFromInput(input),
+});
+
+const toDbColumnValues = (
+  input: Partial<BuiltSitePlainFields> & Partial<BuiltSiteBlobInput>,
+): Record<string, InValue> => ({
+  ...mapPlainFields(input, "dbKey"),
+  site_data: buildSiteDataBlobFromInput(input),
+});
+
+/** Convert a raw DB row (after decryption) to a BuiltSite */
+const rowToBuiltSite = (row: BuiltSiteRow): BuiltSite => {
+  const blob = parseSiteDataBlob(row.site_data);
+  return {
+    ...(Object.fromEntries(
+      builtSitePlainColumns.map((column) => [
+        column.siteKey,
+        column.fromRow(row[column.dbKey] as never),
+      ]),
+    ) as BuiltSitePlainFields),
+    ...blobToSiteFields(blob),
+    created: row.created,
+    id: row.id,
+  };
+};
+
+export const builtSites = cachedTable({
+  fetchAll: () =>
+    queryAndDecrypt(
+      `SELECT ${builtSiteSelectColumns} FROM built_sites ORDER BY created DESC`,
+    ),
+  name: "built_sites",
+  table: rawBuiltSitesTable,
+});
+
+/** Query and decrypt built site rows */
+const queryAndDecrypt = async (sql: string): Promise<BuiltSite[]> => {
+  const rows = await queryAll<BuiltSiteRow>(sql);
+  const decrypted = await Promise.all(
+    rows.map((row) => rawBuiltSitesTable.fromDb(row)),
+  );
+  const sites = decrypted.map(rowToBuiltSite);
+  sites.sort(compareByName);
+  return sites;
+};
+
+/**
+ * The façade's reads. A built site is assembled from the raw row's encrypted
+ * blob, so every read goes through the raw table's reader and is opened here.
+ *
+ * A filter therefore names the one column a caller reads sites by, `id`. The
+ * site's other fields live inside the blob, so no read of any kind can filter
+ * on them, and `pick` has no narrower set of columns to offer.
+ */
+const rawFilter = (
+  filter: RowFilter<BuiltSite> = {},
+): RowFilter<BuiltSiteRow> => {
+  const { id, ...notAColumn } = filter;
+  const named = Object.keys(notAColumn);
+  if (named.length > 0) {
+    throw new Error(
+      `Cannot filter built sites by ${named.join(
+        ", ",
+      )}: a site's fields are stored inside one encrypted blob, not as columns. Filter by id.`,
+    );
+  }
+  return id === undefined ? {} : { id };
+};
+
+/** Read built sites through the raw table and open each one's blob. One site is
+ * this same read capped at one row, so there is no second path for it. */
+const readSites = async (
+  filter: RowFilter<BuiltSiteRow>,
+  options: RowOptions | undefined,
+): Promise<BuiltSite[]> =>
+  (await rawBuiltSitesTable.read.many(filter, options)).map(rowToBuiltSite);
+
+const firstOf = async <Item>(items: Promise<Item[]>): Promise<Item | null> => {
+  const [first = null] = await items;
+  return first;
+};
+
+/** A built site is only ever handed back whole and already opened: its fields
+ * live in one encrypted blob, so there is no half of a site to give out and no
+ * raw row a caller could make sense of. */
+const refuseUnopened = (): never => {
+  throw new Error(
+    "A built site's fields are stored in one encrypted blob, so a read can only hand back whole, opened sites. Read the whole site.",
+  );
+};
+
+const builtSiteReads: TableReader<BuiltSite> = {
+  exists: (filter, options) =>
+    rawBuiltSitesTable.read.exists(rawFilter(filter), options),
+  // The filter is checked before anything is awaited, so a field that is not a
+  // column fails at the call rather than in a rejected promise later.
+  many: (filter, options) => readSites(rawFilter(filter), options),
+  one: (filter, options) =>
+    firstOf(readSites(rawFilter(filter), { ...options, limit: 1 })),
+  // Both of these would hand back something that is not an opened site — some
+  // of its columns, or rows nobody has parsed the blob out of.
+  pick: refuseUnopened,
+  statement: refuseUnopened,
+};
+
+export const findBuiltSiteByIdPrimary = async (
+  id: InValue,
+): Promise<BuiltSite | null> => {
+  const row = await rawBuiltSitesTable.findByIdPrimary!(id);
+  return row ? rowToBuiltSite(row) : null;
+};
+
+/** The built site with this id, read from the primary. Throws when the row
+ * is gone, because every caller holds an id it just read or wrote. */
+export const requireBuiltSiteByIdPrimary = async (
+  id: number,
+): Promise<BuiltSite> => {
+  const site = await findBuiltSiteByIdPrimary(id);
+  if (!site) throw new Error(`Built site ${id} not found`);
+  return site;
+};
+
+/** Store one revision-fenced change to a built site. Returns the stored row,
+ * or null when the revision moved underneath us and the write must retry. */
+const storeBuiltSiteChanges = async (
+  id: InValue,
+  existing: BuiltSite,
+  changes: BuiltSiteUpdate,
+): Promise<BuiltSiteRow | null> => {
+  const statement = await rawBuiltSitesTable.updateStatement(
+    id,
+    toRawInput({
+      ...existing,
+      ...changes,
+      siteDataRevision: existing.siteDataRevision + 1,
+    }),
+    { args: [existing.siteDataRevision], sql: "site_data_revision = ?" },
+  );
+  return queryOne<BuiltSiteRow>(statement.sql, statement.args);
+};
+
+/** Apply `changes` only while the row still sits at `expectedRevision`; a
+ * concurrent write that moved it returns false, with no retry. */
+export const updateBuiltSiteIfUnchanged = async (
+  id: InValue,
+  expectedRevision: number,
+  changes: BuiltSiteUpdate,
+): Promise<boolean> => {
+  const existing = await findBuiltSiteByIdPrimary(id);
+  if (!existing || existing.siteDataRevision !== expectedRevision) return false;
+  return (await storeBuiltSiteChanges(id, existing, changes)) !== null;
+};
+
+/** Update a whole built-site record without overwriting a concurrent blob write. */
+export const updateBuiltSite = (
+  id: InValue,
+  changesFor: (existing: BuiltSite) => BuiltSiteUpdate | null,
+): Promise<BuiltSite | null> =>
+  retryWrite(`Could not update built site ${String(id)}`, async () => {
+    const existing = await findBuiltSiteByIdPrimary(id);
+    if (!existing) return { value: null };
+    const changes = changesFor(existing);
+    if (!changes) return { value: existing };
+    const stored = await storeBuiltSiteChanges(id, existing, changes);
+    // A null row means the revision moved: signal retryWrite, not "stored
+    // nothing", or a losing edit would drop silently.
+    if (!stored) return null;
+    return { value: rowToBuiltSite(await rawBuiltSitesTable.fromDb(stored)) };
+  });
+
+/**
+ * CRUD-compatible table adapter that presents BuiltSite (with individual fields)
+ * while storing data as an encrypted blob underneath.
+ */
+export const builtSitesCrudTable: Table<BuiltSite, BuiltSiteFormInput> = {
+  columns: rawBuiltSitesTable.columns,
+  deleteById: (id: InValue): Promise<void> => builtSites.table.deleteById(id),
+
+  // findByIdPrimary is intentionally omitted: it is optional on Table (like
+  // insertStatement/updateStatement) and only used on the transactional
+  // afterWrite write-back path, which this façade resource never takes.
+
+  fromDb: (row: BuiltSite): Promise<BuiltSite> => Promise.resolve(row),
+  inputKeyMap: builtSiteInputKeyMap,
+
+  insert: async (input: BuiltSiteFormInput): Promise<BuiltSite> => {
+    const row = await builtSites.table.insert(toRawInput(input));
+    return rowToBuiltSite(row);
+  },
+  name: "built_sites",
+  primaryKey: "id",
+  read: builtSiteReads,
+  // The façade's rows are already decrypted (its fromDb is identity), so a
+  // single column's stored value is already its readable value.
+  readColumn: <K extends keyof BuiltSite & string>(
+    _col: K,
+    value: BuiltSite[K],
+  ): Promise<BuiltSite[K]> => Promise.resolve(value),
+
+  // The CRUD adapter is a façade over the raw table — the built-site blob
+  // is always reconstructed from BuiltSiteFormInput, so rowToInput just picks
+  // the exposed camelCase fields off an already-decrypted BuiltSite.
+  rowToInput: (
+    row: BuiltSite,
+    _exclude?: readonly string[],
+  ): Partial<BuiltSiteFormInput> =>
+    Object.fromEntries(
+      builtSiteFormMappings.map(({ siteKey }) => [siteKey, row[siteKey]]),
+    ) as Partial<BuiltSiteFormInput>,
+  schema: {
+    ...builtSiteCrudPlainSchema,
+    ...builtSiteCrudBlobSchema,
+    created: createdCol,
+    id: idCol,
+  },
+
+  toDbValues: (
+    input: BuiltSiteFormInput | Partial<BuiltSiteFormInput>,
+  ): Promise<Record<string, InValue>> =>
+    Promise.resolve(
+      toDbColumnValues({ ...emptyBuiltSiteFormInput(), ...input }),
+    ),
+
+  update: async (
+    id: InValue,
+    input: Partial<BuiltSiteFormInput>,
+  ): Promise<BuiltSite | null> => updateBuiltSite(id, () => input),
+};
+
+/** Insert a new built site record */
+export const insertBuiltSite = async (
+  name: string,
+  siteUrl: string,
+  dbUrl = "",
+  dbToken = "",
+  assignable = false,
+  hostingId = "",
+  updates: UpdateTier = DEFAULT_UPDATE_TIER,
+  hostingProvider: HostingProvider = "bunny",
+  dbProvider: DbProvider = "bunny",
+  scheduledTaskKey: string | null = null,
+): Promise<BuiltSiteRow> =>
+  await builtSites.table.insert(
+    toRawInput({
+      assignable,
+      dbProvider,
+      dbToken,
+      dbUrl,
+      hostingId,
+      hostingProvider,
+      name,
+      scheduledTaskKey,
+      siteUrl,
+      updates,
+    }),
+  );
+
+/** Get all assignable built sites */
+export const getAssignableBuiltSites = async (): Promise<BuiltSite[]> => {
+  const all = await builtSites.getAll();
+  return all.filter((s) => s.assignable);
+};
+
+/** Look up a built site by renewal token index (HMAC blind index) */
+export const getBuiltSiteByRenewalTokenIndex = async (
+  tokenIndex: string,
+): Promise<BuiltSite | null> => {
+  const rows = await queryAll<BuiltSiteRow>(
+    `SELECT ${builtSiteSelectColumns} FROM built_sites WHERE renewal_token_index = ?`,
+    [tokenIndex],
+  );
+  if (rows.length === 0) return null;
+  const decrypted = await rawBuiltSitesTable.fromDb(rows[0]!);
+  return rowToBuiltSite(decrypted);
+};
+
+/** Update built site renewal state: token index, deadline, and renewal blob together */
+export const updateBuiltSiteRenewalState = (
+  siteId: number,
+  updates: {
+    renewalTokenIndex?: string | null;
+    readOnlyFrom?: string;
+    renewalToken?: string;
+  },
+): Promise<BuiltSite | null> =>
+  updateBuiltSite(siteId, (existing) => ({
+    renewalToken: updates.renewalToken ?? existing.renewalToken,
+    ...(updates.renewalTokenIndex !== undefined
+      ? { renewalTokenIndex: updates.renewalTokenIndex }
+      : {}),
+    ...(updates.readOnlyFrom !== undefined
+      ? { readOnlyFrom: updates.readOnlyFrom }
+      : {}),
+  }));

@@ -1,0 +1,177 @@
+import { getGroupRemainingByListingId } from "#db/attendees/capacity/groups.ts";
+import { getActiveHolidays } from "#db/holidays.ts";
+import { getAllListings } from "#db/listings/records.ts";
+import { filter, pipe } from "#fp";
+import { apiResponse } from "#routes/api/cors.ts";
+import { withGuardedListing } from "#routes/api/guards.ts";
+import {
+  buildChildPublicListings,
+  mapParentChildren,
+  toPublicListing,
+  toResolvedPublicListing,
+} from "#routes/api/public-listing.ts";
+import { isRegistrationClosed } from "#routes/format.ts";
+import { keepParentDailyDatesChildrenCanServe } from "#routes/public/booking-dates.ts";
+import { classifyForDiscovery } from "#routes/public/discovery.ts";
+import {
+  loadBookablePackages,
+  publicGroupSummary,
+} from "#routes/public/group-liveness.ts";
+import { listingHasSpots } from "#shared/booking.ts";
+import { getAvailableDates, getBookableStartDates } from "#shared/dates.ts";
+import { isPublicListing } from "#shared/listing-visibility.ts";
+import { sortListings } from "#shared/sort-listings.ts";
+import { parseNonNegativeInt } from "#shared/validation/number.ts";
+import type { ListingWithCount } from "#types";
+
+/** GET /api/listings — list active, non-hidden listings */
+export const handleListListings = async (): Promise<Response> => {
+  const allListings = await getAllListings();
+  const holidays = await getActiveHolidays();
+  const visibleListings = pipe(
+    filter<ListingWithCount>(isPublicListing),
+    (active) => sortListings(active, holidays),
+  )(allListings);
+  // A child is never standalone-bookable, so omit children from
+  // the discovery list — a client must not find one here and then hit the
+  // booking 400. A parent with no
+  // bookable child is sold out: its own row capacity ignores its
+  // children. The list must project it to sold-out / not-bookable to stay
+  // consistent with the detail/availability endpoints. Otherwise a
+  // client lists it as bookable, then hits the parent-sold-out outcome at detail.
+  const { nonStandaloneChildIds, soldOutParentIds } =
+    await classifyForDiscovery(visibleListings);
+  const bookableListings = visibleListings.filter(
+    (e) => !nonStandaloneChildIds.has(e.id),
+  );
+  const groupRemaining = await getGroupRemainingByListingId(bookableListings);
+  const listings = bookableListings.map((e) => {
+    const publicListing = toPublicListing(
+      e,
+      isRegistrationClosed(e),
+      undefined,
+      groupRemaining.get(e.id),
+    );
+    return soldOutParentIds.has(e.id)
+      ? { ...publicListing, isSoldOut: true, maxPurchasable: 0 }
+      : publicListing;
+  });
+  // Packages are first-class products: a bookable package bundle is listed by
+  // name/slug and is booked whole at /ticket/<group-slug>.
+  const packages = (await loadBookablePackages()).map((loaded) => ({
+    ...publicGroupSummary(loaded),
+    url: `/ticket/${loaded.group.slug}`,
+  }));
+  return apiResponse({ listings, packages });
+};
+
+/** GET /api/listings/:slug — single listing detail */
+export const handleGetListing = withGuardedListing(
+  async (_request, listing, isSoldOutParent) => {
+    let availableDates: string[] | undefined;
+    if (listing.listing_type === "daily") {
+      const holidays = await getActiveHolidays();
+      // A daily parent's API dates must match what the web selector offers. A
+      // date no required child can serve (for the inherited span) is removed
+      // from the parent's own calendar. The API therefore never advertises a
+      // date the fold rejects. For a non-parent daily listing this is a no-op.
+      availableDates = await keepParentDailyDatesChildrenCanServe(
+        listing,
+        getAvailableDates(listing, holidays),
+        holidays,
+      );
+    }
+    const [publicListing, children] = await Promise.all([
+      toResolvedPublicListing(listing, availableDates),
+      buildChildPublicListings(listing),
+    ]);
+    // A parent advertises its required children so a client can choose a valid one
+    // (slug, price, inputs, dates) before the booking POST.
+    const withChildren =
+      children.length > 0 ? { ...publicListing, children } : publicListing;
+    // A parent with no bookable child is sold out. The route
+    // listing's own capacity ignores its children, so project the discovery
+    // sold-out outcome onto the response rather than advertising it as bookable.
+    return apiResponse({
+      listing: isSoldOutParent
+        ? { ...withChildren, isSoldOut: true, maxPurchasable: 0 }
+        : withChildren,
+    });
+  },
+);
+
+/** Per-child availability for a parent's required children at a date/quantity, or
+ * null when the listing is not a parent. A daily child takes the parent's date.
+ * A standard child is date-less. An inactive (`active=0`) or registration-closed
+ * child reports `available: false` regardless of spare capacity: the
+ * booking fold rejects it (`childActive`/`childOpen` in shared.tsx). The
+ * availability endpoint reuses the same `active` + `isRegistrationClosed`
+ * predicates the fold uses, so it never advertises a child the booking POST
+ * refuses. */
+const buildChildAvailability = (
+  parent: ListingWithCount,
+  date: string | undefined,
+  quantity: number,
+): Promise<{ slug: string; available: boolean }[] | null> =>
+  mapParentChildren(parent, async (child) => {
+    let childDateAvail = true;
+    if (child.listing_type === "daily" && date) {
+      childDateAvail = getBookableStartDates(
+        child,
+        await getActiveHolidays(),
+      ).includes(date);
+    }
+    return {
+      available:
+        child.active &&
+        !isRegistrationClosed(child) &&
+        childDateAvail &&
+        // The capacity check drops the date itself for a date-less child, so
+        // the parent's date is passed straight through.
+        (await listingHasSpots(child, quantity, date)),
+      slug: child.slug,
+    };
+  });
+
+/** GET /api/listings/:slug/availability — check if spots are available */
+export const handleCheckAvailability = withGuardedListing(
+  async (request, listing, isSoldOutParent) => {
+    // A parent with no bookable child is sold out. Its own capacity
+    // ignores its children, so report it unavailable rather than letting the
+    // route listing's standalone spots advertise it as bookable.
+    if (isSoldOutParent) return apiResponse({ available: false });
+    const url = new URL(request.url);
+    const rawQuantity = url.searchParams.get("quantity");
+    const quantity =
+      rawQuantity === null ? 1 : (parseNonNegativeInt(rawQuantity) ?? 1);
+    const date = url.searchParams.get("date") || undefined;
+    // A daily parent is available only on dates its required children can serve.
+    // A daily listing with no children is returned unchanged by the helper.
+    if (listing.listing_type === "daily" && date) {
+      const holidays = await getActiveHolidays();
+      const childServableDates = await keepParentDailyDatesChildrenCanServe(
+        listing,
+        getAvailableDates(listing, holidays),
+        holidays,
+      );
+      if (!childServableDates.includes(date)) {
+        return apiResponse({ available: false });
+      }
+    }
+    const available = await listingHasSpots(listing, quantity, date);
+    // For a parent, also report each required child's availability for the chosen
+    // date/quantity. A daily child inherits the parent's date. A standard child
+    // is date-less. A client can then pick a child that can actually serve the
+    // booking, rather than discovering that only when the booking POST rejects it.
+    const childAvailability = await buildChildAvailability(
+      listing,
+      date,
+      quantity,
+    );
+    return apiResponse(
+      childAvailability === null
+        ? { available }
+        : { available, children: childAvailability },
+    );
+  },
+);

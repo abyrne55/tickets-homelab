@@ -1,0 +1,302 @@
+import { defineAdminRoutes } from "#routes/admin/route-tables.ts";
+
+/**
+ * Delivery run sheet routes.
+ *
+ * `/admin/deliveries` shows the drop-offs and collections for the logistics
+ * agents a user drives, with a per-leg done toggle. An agent-class user is
+ * sent here as their only page and is pinned to today and tomorrow. Every
+ * other admin route is closed to agents by the default auth gate. Owners and
+ * managers reach it from the Calendar submenu and keep the full staff
+ * navigation. They get the shared calendar date picker, so they can open any
+ * date (and the day after it) rather than only today and tomorrow.
+ */
+
+import { decryptAttendees } from "#db/attendees/pii.ts";
+import { getAttendeesByIds } from "#db/attendees/queries.ts";
+import { getAllListings } from "#db/listings/records.ts";
+import { logisticsAgents } from "#db/logistics-agents.ts";
+import {
+  type AgentRunLeg,
+  getAgentRunSheet,
+  getAgentRunSheetDates,
+  setLegDone,
+} from "#db/logistics-run-sheet.ts";
+import { settings } from "#db/settings.ts";
+import { userAgents } from "#db/user-agents.ts";
+import { fieldById, requiredMapValue, unique } from "#fp";
+import { t } from "#i18n";
+import { getDateFilter, getMonthFilter } from "#routes/admin/actions.ts";
+import {
+  type AuthSession,
+  DELIVERY_FORM,
+  deliveryPage,
+  withAuth,
+} from "#routes/auth.ts";
+import { adminRedirect } from "#routes/response.ts";
+import { addDays } from "#shared/dates.ts";
+import { getFlash } from "#shared/flash-context.ts";
+import { requireRequestPrivateKey } from "#shared/session-private-key.ts";
+import { todayInTz } from "#shared/timezone.ts";
+import {
+  type DateString,
+  parseDateStringOrThrow,
+} from "#shared/validation/date-string.ts";
+import {
+  type DeliveryBookingView,
+  type DeliveryDayGroup,
+  renderRunSheetDays,
+} from "#templates/admin/deliveries/run-sheet.tsx";
+import {
+  agentDeliveriesPage,
+  type DeliveriesDateNav,
+} from "#templates/admin/deliveries.tsx";
+import {
+  type DatePickerDate,
+  selectableDates,
+} from "#templates/date-picker.tsx";
+import { type Attendee, isStaffRole } from "#types";
+
+/** Lookups used to flesh out a bare run-sheet leg into a display row. */
+type LegLookups = {
+  attendeeById: Map<number, Attendee>;
+  listingNameById: Map<number, string>;
+  agentNameById: Map<number, string>;
+};
+
+/** Drop-off legs sort ahead of collection legs within a booking. */
+const legOrder = (kind: AgentRunLeg["kind"]): number =>
+  kind === "start" ? 0 : 1;
+
+/** Group one date's legs into bookings, so a listing's drop-off and collection
+ * for the day appear together under a single entry. Bookings are ordered by
+ * their earliest leg time then listing name. Within a booking the drop-off
+ * comes before the collection. Each leg comes from a real booking for one of
+ * the user's real agents, so the attendee/listing/agent lookups always hit. */
+const bookingsForDate = (
+  legs: AgentRunLeg[],
+  date: string,
+  lookups: LegLookups,
+): DeliveryBookingView[] => {
+  const byBooking = new Map<string, DeliveryBookingView>();
+  for (const leg of legs.filter((l) => l.date === date)) {
+    const key = `${leg.attendeeId}|${leg.listingId}`;
+    let booking = byBooking.get(key);
+    if (!booking) {
+      const attendee = requiredMapValue(
+        lookups.attendeeById,
+        leg.attendeeId,
+        `Attendee ${leg.attendeeId} missing`,
+      );
+      booking = {
+        address: attendee.address,
+        attendeeId: leg.attendeeId,
+        attendeeName: attendee.name,
+        legs: [],
+        listingId: leg.listingId,
+        listingName: requiredMapValue(
+          lookups.listingNameById,
+          leg.listingId,
+          `Listing ${leg.listingId} missing`,
+        ),
+        phone: attendee.phone,
+        ticketToken: attendee.ticket_token,
+      };
+      byBooking.set(key, booking);
+    }
+    booking.legs.push({
+      agentName: requiredMapValue(
+        lookups.agentNameById,
+        leg.agentId,
+        `Agent ${leg.agentId} missing`,
+      ),
+      date: leg.date,
+      done: leg.done,
+      kind: leg.kind,
+      time: leg.time,
+    });
+  }
+  for (const booking of byBooking.values()) {
+    booking.legs.sort((a, b) => legOrder(a.kind) - legOrder(b.kind));
+  }
+  return Array.from(byBooking.values()).sort(
+    (a, b) =>
+      a.legs[0]!.time.localeCompare(b.legs[0]!.time) ||
+      a.listingName.localeCompare(b.listingName),
+  );
+};
+
+const buildGroups = (
+  legs: AgentRunLeg[],
+  baseDate: DateString,
+  tomorrow: DateString,
+  lookups: LegLookups,
+): DeliveryDayGroup[] => [
+  { bookings: bookingsForDate(legs, baseDate, lookups), date: baseDate },
+  { bookings: bookingsForDate(legs, tomorrow, lookups), date: tomorrow },
+];
+
+/** Where the owner edits the run-sheet templates. Null for every viewer who
+ * cannot open advanced settings, so no forbidden link renders. */
+const editTemplateHref = (session: AuthSession): string | null =>
+  session.adminLevel === "owner" && settings.features.logistics
+    ? "/admin/settings-advanced#settings-logistics-run-sheet"
+    : null;
+
+const loadLegLookups = async (
+  legs: AgentRunLeg[],
+  privateKey: CryptoKey,
+): Promise<LegLookups> => {
+  const attendeeIds = unique(legs.map((leg) => leg.attendeeId));
+  const [rawAttendees, listings, agents] = await Promise.all([
+    getAttendeesByIds(attendeeIds, "attendee-or-servicing"),
+    getAllListings(),
+    logisticsAgents.getAll(),
+  ]);
+  const decrypted = await decryptAttendees(rawAttendees, privateKey);
+  const attendeeById = new Map<number, Attendee>();
+  for (const attendee of decrypted) {
+    if (!attendeeById.has(attendee.id)) attendeeById.set(attendee.id, attendee);
+  }
+  return {
+    agentNameById: fieldById("name")(agents),
+    attendeeById,
+    listingNameById: fieldById("name")(listings),
+  };
+};
+
+/** Build the staff date picker for the run sheet: every date the user's agents
+ * have a delivery on is a selectable link. It uses the same calendar component
+ * as the calendar page. Agents never see it, so this only runs for staff. */
+const buildDateNav = async (
+  agentIds: number[],
+  today: string,
+  selected: string | null,
+  viewMonth: string | null,
+): Promise<DeliveriesDateNav> => {
+  const deliveryDates = await getAgentRunSheetDates(agentIds);
+  const availableDates: DatePickerDate[] = selectableDates(deliveryDates);
+  return { availableDates, selected, today, viewMonth };
+};
+
+/** Handle GET /admin/deliveries. The date scope is the module header's agent
+ * pin for agents and the calendar picker for staff. */
+const handleDeliveriesGet = deliveryPage(async (session, request) => {
+  const flash = getFlash();
+  const staff = isStaffRole(session.adminLevel);
+  const agentIds = await userAgents.getIds(session.userId);
+  if (agentIds.length === 0) {
+    return agentDeliveriesPage(
+      [],
+      {
+        editTemplateHref: editTemplateHref(session),
+        error: flash.error,
+        noAgents: true,
+        success: flash.success,
+      },
+      session,
+      null,
+    );
+  }
+
+  const today = parseDateStringOrThrow(
+    todayInTz(settings.timezone),
+    "the configured timezone's clock",
+  );
+  // Only staff can open a different date. An agent's date and month params
+  // are ignored, so a driver always sees just today and tomorrow.
+  const selected = staff ? getDateFilter(request) : null;
+  const viewMonth = staff ? getMonthFilter(request) : null;
+  // The date filter validated its param, so a staff-selected value only
+  // needs the brand. An agent's base is the clock's parsed today.
+  const baseDate = selected
+    ? parseDateStringOrThrow(selected, "the deliveries date filter")
+    : today;
+  const tomorrow = addDays(baseDate, 1);
+  const legs = await getAgentRunSheet(agentIds, [baseDate, tomorrow]);
+
+  const privateKey = await requireRequestPrivateKey();
+  const lookups = await loadLegLookups(legs, privateKey);
+  const groups = buildGroups(legs, baseDate, tomorrow, lookups);
+  const days = await renderRunSheetDays(groups, {
+    bodyTemplate: settings.logisticsRunSheetBody,
+    headingTemplate: settings.logisticsRunSheetHeading,
+    phonePrefix: settings.phonePrefix,
+    today,
+  });
+  const dateNav = staff
+    ? await buildDateNav(agentIds, today, selected, viewMonth)
+    : null;
+  return agentDeliveriesPage(
+    days,
+    {
+      editTemplateHref: editTemplateHref(session),
+      error: flash.error,
+      noAgents: false,
+      success: flash.success,
+    },
+    session,
+    dateNav,
+  );
+});
+
+/** Whether a mark for `date` is allowed for the marking user. An agent only
+ * ever sees today and tomorrow, so a mark from one can name only those two
+ * days. Staff can open any date on the run sheet, so their date is left to
+ * the query's per-day scoping (and agent ownership) to police. */
+const markDateAllowed = (session: AuthSession, date: string): boolean => {
+  if (isStaffRole(session.adminLevel)) return true;
+  const today = parseDateStringOrThrow(
+    todayInTz(settings.timezone),
+    "the configured timezone's clock",
+  );
+  return date === today || date === addDays(today, 1);
+};
+
+/** Handle POST /admin/deliveries/mark — toggle a leg done, scoped to the
+ * agent's own logistics agents and to the run-sheet day it was shown on. */
+const handleDeliveriesMark = (request: Request): Promise<Response> =>
+  withAuth(request, DELIVERY_FORM, async (session, form) => {
+    const attendeeId = form.getOptionalInt("attendee_id");
+    const listingId = form.getOptionalInt("listing_id");
+    const kind = form.getString("kind");
+    const date = form.getString("date");
+    const done = form.getFlag("done");
+    if (
+      attendeeId === null ||
+      listingId === null ||
+      (kind !== "start" && kind !== "end") ||
+      !markDateAllowed(session, date)
+    ) {
+      return adminRedirect(
+        "deliveries",
+        {},
+        t("deliveries.invalid_request"),
+        false,
+      );
+    }
+
+    const agentIds = await userAgents.getIds(session.userId);
+    const updated = await setLegDone(
+      attendeeId,
+      listingId,
+      kind,
+      date,
+      done,
+      agentIds,
+    );
+    if (!updated) {
+      return adminRedirect("deliveries", {}, t("deliveries.not_yours"), false);
+    }
+    return adminRedirect(
+      "deliveries",
+      {},
+      done ? t("deliveries.marked_done") : t("deliveries.marked_not_done"),
+      true,
+    );
+  });
+
+export const adminHandlers = defineAdminRoutes({
+  "GET /admin/deliveries": handleDeliveriesGet,
+  "POST /admin/deliveries/mark": handleDeliveriesMark,
+});

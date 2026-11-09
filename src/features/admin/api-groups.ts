@@ -1,0 +1,283 @@
+/**
+ * Admin JSON API routes for groups — accessible via API key or cookie+CSRF.
+ */
+
+import { hmacHash } from "#crypto/hashing.ts";
+import {
+  type PackageFlags,
+  readPackageFlagsTxOrNull,
+  writePackageMembersTx,
+} from "#db/groups/membership/package-writes.ts";
+import {
+  generateUniqueGroupSlug,
+  groups,
+  loadPackageMemberPricingByGroupIds,
+} from "#db/groups.ts";
+import { requiredMapValue } from "#fp";
+import {
+  deleteGroup,
+  soldHiddenPackageError,
+  validateGroupWithPackage,
+} from "#routes/admin/groups.ts";
+import { ADMIN_API, CONTENT_API } from "#routes/auth.ts";
+import { ADMIN_API_RESOURCES } from "#shared/admin-api-resources.ts";
+import {
+  type CatalogApiBody,
+  invalidApiValueField,
+  projectCatalogFields,
+} from "#shared/catalog-fields/definition.ts";
+import {
+  type GroupInput,
+  groupCatalogFields,
+  type PackageMemberInput,
+} from "#shared/catalog-fields/fields.ts";
+import {
+  isValidMemberPrice,
+  isValidMemberQuantity,
+  memberDayPricesFault,
+} from "#shared/groups/package-member-values.ts";
+import { packageGroups } from "#shared/package-membership.ts";
+import { defineCrudApi } from "#shared/rest/crud-api.ts";
+import {
+  parseOptionalArray,
+  parseUpdateSlug,
+  requireEntityField,
+  requireStrings,
+} from "#shared/rest/crud-parsers.ts";
+import {
+  errorResult,
+  okResult,
+  parseOptionalResult,
+  type Result,
+} from "#shared/result.ts";
+import { normalizeSlug } from "#shared/slug.ts";
+import type { DayPrices, Group, GroupListing } from "#types";
+
+/** A package member override in a JSON request body. `price` is minor units:
+ * `null` means no override (use the listing's own price), `0` means free in the
+ * package, and a positive value overrides the price. `quantity` defaults to 1.
+ * `day_prices` reprices spans for a customisable member (day count → per-unit
+ * minor units). Omitted or empty means every span charges the listing's own
+ * day price. A non-null flat `price` wins over the per-day entries. */
+export type PackageMemberBody = {
+  listing_id: number;
+  price: number | null;
+  quantity?: number;
+  day_prices?: Record<string, number>;
+};
+
+/** JSON body accepted by POST /api/admin/groups */
+export type CreateGroupBody = {
+  name: string;
+  package_members?: PackageMemberBody[];
+} & CatalogApiBody<typeof groupCatalogFields>;
+
+/** JSON body accepted by PUT /api/admin/groups/:groupId */
+export type UpdateGroupBody = Partial<CreateGroupBody> & { slug?: string };
+
+// DELETE /api/admin/groups/:groupId takes the shared DeleteBody the
+// crud-parsers module exports.
+
+/** Parse one JSON package-member entry, failing closed on anything malformed.
+ * `price` is minor units: `null` (or absent) means no override, `0` means free
+ * in the package, and a positive integer overrides the price. `quantity` is
+ * optional and defaults to 1. */
+/** Parse one member's optional `day_prices` object into a {@link DayPrices}
+ * map, failing closed on anything malformed. Keys must be positive whole day
+ * counts, and values must be non-negative integer minor units. `undefined`
+ * when absent. */
+const parseMemberDayPrices = (raw: unknown): Result<DayPrices | undefined> =>
+  parseOptionalResult(raw, (value) => {
+    if (typeof value !== "object" || value === null || Array.isArray(value)) {
+      return errorResult("package_members day_prices must be an object");
+    }
+    // The shared module decides which part breaks. The API names the part
+    // with its own message.
+    switch (memberDayPricesFault(value as Record<string, unknown>)) {
+      case "days":
+        return errorResult(
+          "package_members day_prices keys must be positive day counts",
+        );
+      case "prices":
+        return errorResult(
+          "package_members day_prices values must be non-negative integers",
+        );
+      case null:
+        return okResult(
+          Object.fromEntries(
+            Object.entries(value).map(([days, price]) => [Number(days), price]),
+          ) as DayPrices,
+        );
+    }
+  });
+
+const parsePackageMember = (item: unknown): Result<PackageMemberInput> => {
+  if (typeof item !== "object" || item === null) {
+    return errorResult("package_members entries must be objects");
+  }
+  const {
+    day_prices,
+    listing_id,
+    price = null,
+    quantity = 1,
+  } = item as Record<string, unknown>;
+  if (!Number.isInteger(listing_id) || (listing_id as number) <= 0) {
+    return errorResult("package_members listing_id must be a positive integer");
+  }
+  if (!isValidMemberPrice(price)) {
+    return errorResult(
+      "package_members price must be a non-negative integer or null",
+    );
+  }
+  if (!isValidMemberQuantity(quantity)) {
+    return errorResult("package_members quantity must be a positive integer");
+  }
+  const dayPrices = parseMemberDayPrices(day_prices);
+  if (!dayPrices.ok) return dayPrices;
+  return okResult({
+    dayPrices: dayPrices.value ?? {},
+    listingId: listing_id as number,
+    price: price as number | null,
+    quantity: quantity as number,
+  });
+};
+
+/**
+ * Parse the optional `package_members` array from a JSON body. `undefined`
+ * means the key is absent (partial update: leave existing overrides untouched).
+ * An empty array clears them. Fails closed (see {@link parseOptionalArray}):
+ * any malformed entry rejects the whole request rather than being dropped.
+ */
+const parsePackageMembers = (
+  body: Record<string, unknown>,
+): Result<PackageMemberInput[] | undefined> =>
+  parseOptionalArray(
+    body.package_members,
+    "package_members",
+    parsePackageMember,
+  );
+
+/**
+ * Persist package overrides in the group write's transaction, with
+ * partial-update semantics. Clearing the group's package flag clears all
+ * overrides. Absent `package_members` leaves existing rows untouched.
+ * Otherwise the rows are set. Rechecks the sold-hidden invariant when
+ * un-packaging. A checkout that committed between the request-level check and
+ * this write then rolls the change back, rather than revealing concealed
+ * member names.
+ */
+
+/** Map a stored membership row (plus any per-day overrides) to the JSON
+ * `package_members` entry shape clients PUT. List and single-row hydration
+ * then serialize members identically, and the configuration round-trips
+ * losslessly. `day_prices` is only present when overrides exist. */
+const toMember = (
+  m: GroupListing,
+  dayPrices: ReadonlyMap<number, number> | undefined,
+): PackageMemberBody => ({
+  listing_id: m.listing_id,
+  price: m.package_price,
+  quantity: m.quantity,
+  ...(dayPrices && dayPrices.size > 0
+    ? {
+        day_prices: Object.fromEntries(
+          [...dayPrices].map(([days, price]) => [String(days), price]),
+        ),
+      }
+    : {}),
+});
+
+const toGroupInput = async (
+  body: Record<string, unknown>,
+  existing: Group | null,
+): Promise<Result<GroupInput>> => {
+  const name = existing
+    ? requireEntityField(body, "name", existing.name)
+    : requireStrings(body, ["name"]);
+  if (!name.ok) return name;
+  const invalid = invalidApiValueField(groupCatalogFields, body);
+  if (invalid) return errorResult(`${invalid} has an invalid value`);
+  const fields = projectCatalogFields(groupCatalogFields, "api", body);
+
+  const members = parsePackageMembers(body);
+  if (!members.ok) return members;
+  if (!existing && members.value !== undefined) {
+    return errorResult(
+      "package_members cannot be set on create; create the group, assign listings, then update it",
+    );
+  }
+
+  const slug = existing
+    ? await parseUpdateSlug(body, existing.slug, normalizeSlug, hmacHash)
+    : await generateUniqueGroupSlug();
+  return okResult({
+    ...(existing
+      ? projectCatalogFields(groupCatalogFields, "storedApi", existing)
+      : {}),
+    ...fields,
+    ...slug,
+    maxAttendees: fields.maxAttendees ?? existing?.max_attendees ?? 0,
+    name: typeof name.value === "string" ? name.value : name.value.name,
+    packageMembers: members.value,
+  });
+};
+
+export const groupApiRoutes = defineCrudApi<
+  typeof ADMIN_API_RESOURCES.groups,
+  Group,
+  GroupInput,
+  Group,
+  Group,
+  PackageFlags | null
+>(ADMIN_API_RESOURCES.groups, {
+  afterWrite: (tx, id, input, flags) =>
+    writePackageMembersTx(
+      tx,
+      id,
+      flags,
+      input,
+      input.isPackage === false ? [] : input.packageMembers,
+    ),
+  // Role parity with the group pages: the list and edit pages admit content
+  // admins (owner, manager, editor — areas-a-l.ts "groups"). The delete page
+  // is staff-only ("groupDelete"), so an editor edits through the API
+  // exactly as far as the dashboard allows.
+  deletePolicy: ADMIN_API,
+  getAll: () => groups.cache.getAll(),
+  // Only package groups appear in the map. Non-package groups hydrate to no
+  // extra fields. Single-row responses use this same batch path with one row.
+  hydrate: async (rows) => {
+    const pkgGroups = packageGroups(rows);
+    const pricingByGroup = await loadPackageMemberPricingByGroupIds(
+      pkgGroups.map((row) => row.id),
+    );
+    return new Map(
+      pkgGroups.map((row) => {
+        const pricing = requiredMapValue(
+          pricingByGroup,
+          row.id,
+          "Missing package pricing",
+        );
+        return [
+          row.id,
+          {
+            package_members: pricing.rows.map((member) =>
+              toMember(member, pricing.dayPrices.get(member.listing_id)),
+            ),
+          },
+        ];
+      }),
+    );
+  },
+  nameField: "name",
+  onDelete: deleteGroup,
+  policy: CONTENT_API,
+  readState: readPackageFlagsTxOrNull,
+  stripKeys: ["slug_index"],
+  table: groups.table,
+
+  toCreateInput: (body) => toGroupInput(body, null),
+  toUpdateInput: toGroupInput,
+  validate: validateGroupWithPackage,
+  validateDelete: soldHiddenPackageError,
+});

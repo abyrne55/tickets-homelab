@@ -1,0 +1,11 @@
+.git
+.github
+.claude
+.scratch
+.bin
+.deno
+node_modules
+test
+*.db*
+.db-key
+.env

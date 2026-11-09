@@ -1,0 +1,176 @@
+import { defineAdminRoutes } from "#routes/admin/route-tables.ts";
+
+/**
+ * Admin builder routes — create new Tickets instances via Bunny API
+ * Owner-only access, gated behind CAN_BUILD_SITES=true env var
+ */
+
+import { logActivity } from "#db/activity-log.ts";
+import { providerOrBunny } from "#db/built-sites/types.ts";
+import {
+  builtSites,
+  builtSitesCrudTable,
+  insertBuiltSite,
+} from "#db/built-sites.ts";
+import { settings } from "#db/settings.ts";
+import { t } from "#i18n";
+import { authPage, formPolicyFor, pageGuardFor } from "#routes/auth.ts";
+import { adminRedirect, notFoundResponse } from "#routes/response.ts";
+import { adminDestinationAt } from "#shared/admin-surface.ts";
+import { createAuthedFormRoute } from "#shared/app-forms.ts";
+import { builderApi } from "#shared/builder.ts";
+import {
+  isBuilderEnabled,
+  isBunnyDbEnabled,
+  isDenoDeployEnabled,
+  isTursoEnabled,
+} from "#shared/config.ts";
+import { siteBaseUrl } from "#shared/site-address.ts";
+import {
+  adminBuilderPage,
+  type BuiltSiteDisplay,
+} from "#templates/admin/builder.tsx";
+import { builderForm } from "#templates/fields/builder.ts";
+
+/** Convert built sites to display format */
+const toDisplay = (
+  sites: Awaited<ReturnType<typeof builtSites.getAll>>,
+): BuiltSiteDisplay[] =>
+  sites.map((s) => ({
+    created: new Date(s.created).toLocaleDateString("en-GB", {
+      day: "numeric",
+      month: "short",
+      year: "numeric",
+    }),
+    name: s.name,
+    siteUrl: s.siteUrl,
+  }));
+
+const renderBuilderPage = authPage(
+  pageGuardFor(adminDestinationAt("/admin/builder")),
+)(async (session, _request, flash) =>
+  adminBuilderPage(
+    session,
+    toDisplay(await builtSites.getAll()),
+    flash.error,
+    flash.success,
+  ),
+);
+
+/** GET /admin/builder — show builder form and built sites list */
+const handleBuilderGet = (request: Request): Promise<Response> =>
+  isBuilderEnabled()
+    ? renderBuilderPage(request)
+    : Promise.resolve(notFoundResponse());
+
+const dbProviderConfigError = (
+  providerVal: string | null | undefined,
+  dbUrl: string | null | undefined,
+): string | null => {
+  if (providerVal === "bunny" && !isBunnyDbEnabled())
+    return "Bunny database is not configured";
+  if (providerVal === "turso" && !isTursoEnabled())
+    return "Turso is not configured";
+  if (providerVal === "manual" && !dbUrl)
+    return "Database URL is required when using manual provider";
+  return null;
+};
+
+const builderPost = createAuthedFormRoute({
+  auth: formPolicyFor(adminDestinationAt("/admin/builder")),
+  form: builderForm,
+  onInvalid: ({ error }) => adminRedirect("builder", {}, error, false),
+  onValid: async ({ form, values }) => {
+    if (values.db_url) {
+      const dbTest = await builderApi.testDbConnection(
+        values.db_url,
+        values.db_token,
+      );
+      if (!dbTest.ok) {
+        return adminRedirect(
+          "builder",
+          {},
+          t("builder.db_connection_failed", { error: dbTest.error }),
+          false,
+        );
+      }
+    }
+
+    const hostingProvider = providerOrBunny(values.hosting_provider, "deno");
+
+    if (hostingProvider === "deno" && !isDenoDeployEnabled()) {
+      return adminRedirect(
+        "builder",
+        {},
+        t("builder.deno_deploy_not_configured"),
+        false,
+      );
+    }
+
+    const dbProviderVal = values.db_provider;
+    const dbProvider = providerOrBunny(dbProviderVal, "turso");
+
+    const dbError = dbProviderConfigError(dbProviderVal, values.db_url);
+    if (dbError) return adminRedirect("builder", {}, dbError, false);
+
+    let retainedSiteId: number | null = null;
+    const assignable = form.getFlag("assignable");
+    const result = await settings.withCurrentTask("builder", () =>
+      builderApi.buildSite(
+        {
+          ...(dbProviderVal === "manual" ? {} : { dbProvider }),
+          dbToken: values.db_token,
+          dbUrl: values.db_url,
+          hostingProvider,
+          siteName: values.site_name,
+        },
+        async (prepared) => {
+          const row = await insertBuiltSite(
+            values.site_name,
+            prepared.defaultHostname,
+            prepared.dbUrl,
+            prepared.dbToken,
+            false,
+            prepared.hostingId,
+            undefined,
+            prepared.hostingProvider,
+            prepared.dbProvider,
+            prepared.scheduledTaskKey,
+          );
+          retainedSiteId = row.id;
+          return row.id;
+        },
+      ),
+    );
+
+    if (!result.ok) return adminRedirect("builder", {}, result.error, false);
+
+    const buildResult = result.value;
+    if (!buildResult.ok)
+      return adminRedirect("builder", {}, buildResult.error, false);
+
+    if (retainedSiteId === null) {
+      throw new Error("Built site was published before it was retained");
+    }
+    if (assignable) {
+      await builtSitesCrudTable.update(retainedSiteId, { assignable: true });
+    }
+    await logActivity(`Built new site: ${values.site_name}`);
+
+    return adminRedirect(
+      "builder",
+      {},
+      t("builder.site_created", {
+        name: values.site_name,
+        url: siteBaseUrl(buildResult.defaultHostname),
+      }),
+      true,
+    );
+  },
+});
+
+export const adminHandlers = defineAdminRoutes({
+  "GET /admin/builder": handleBuilderGet,
+  "POST /admin/builder": (r: Request) =>
+    isBuilderEnabled() ? builderPost(r, {}) : notFoundResponse(),
+});

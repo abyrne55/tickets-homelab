@@ -1,0 +1,70 @@
+/** OpenGraph head tags for a public listing page. */
+
+import { escapeHtml } from "#jsx/escape-html.ts";
+import { getImageProxyUrl } from "#shared/image-proxy-url.ts";
+import type { ItemImageColumns } from "#types";
+
+/** OpenGraph meta tags for a public listing page. */
+export const buildOgTags = (
+  listing: {
+    name: string;
+    description?: string | null | undefined;
+    image_alt_text?: string | undefined;
+    slug: string;
+    image_url: string;
+  },
+  baseUrl: string,
+): string => {
+  const tags = [
+    `<meta property="og:title" content="${escapeHtml(listing.name)}">`,
+    `<meta property="og:type" content="website">`,
+    `<meta property="og:url" content="${escapeHtml(baseUrl)}/ticket/${escapeHtml(
+      listing.slug,
+    )}">`,
+  ];
+  if (listing.description) {
+    tags.push(
+      `<meta property="og:description" content="${escapeHtml(
+        listing.description,
+      )}">`,
+    );
+  }
+  if (listing.image_url) {
+    tags.push(
+      `<meta property="og:image" content="${escapeHtml(baseUrl)}${escapeHtml(
+        getImageProxyUrl(listing.image_url),
+      )}">`,
+    );
+    if (listing.image_alt_text) {
+      tags.push(
+        `<meta property="og:image:alt" content="${escapeHtml(
+          listing.image_alt_text,
+        )}">`,
+      );
+    }
+  }
+  return tags.join("\n");
+};
+
+/** Build the OG head extra for the ticket page from its header bits.
+ * Returns `undefined` when there is no header image, name, or base url to tag
+ * from. */
+export const ticketPageHeadExtra = (
+  headerImage: ItemImageColumns | null,
+  headerName: string | undefined,
+  headerDescription: string | null | undefined,
+  slugs: string[],
+  baseUrl: string | undefined,
+): string | undefined => {
+  if (!headerImage || !headerName || !baseUrl) return;
+  return buildOgTags(
+    {
+      description: headerDescription,
+      image_alt_text: headerImage.image_alt_text,
+      image_url: headerImage.image_url,
+      name: headerName,
+      slug: slugs.join("+"),
+    },
+    baseUrl,
+  );
+};

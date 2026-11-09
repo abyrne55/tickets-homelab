@@ -1,0 +1,343 @@
+/**
+ * First-class uploaded images and their ordered item links.
+ */
+
+import type { InValue } from "@libsql/client";
+import { decrypt, encrypt } from "#crypto/encryption.ts";
+import type { StoredRowOf } from "#db/chosen-columns.ts";
+import {
+  executeBatch,
+  type SqlStatement,
+  type TxScope,
+  useTransaction,
+} from "#db/client.ts";
+import { defineIdTable } from "#db/define-id-table.ts";
+import { numberedStatement } from "#db/numbered-statement.ts";
+import { defineOrderedCollection } from "#db/ordered-collection.ts";
+import { type Read, readOneRow, readRows } from "#db/read.ts";
+import {
+  defineRecordTarget,
+  ITEM_TARGET_COLUMNS,
+  type RecordTarget,
+  type RecordTargets,
+} from "#db/record-target.ts";
+import { settingsVersionIncrement } from "#db/settings/cache.ts";
+import { type ColumnDef, col, writeTableRow } from "#db/table.ts";
+import { readById } from "#db/table-reader.ts";
+import { equals } from "#db/where-clauses.ts";
+import { decryptImageFilename } from "#shared/images/broken.ts";
+import type { NonEmptyString } from "#shared/validation/string.ts";
+import {
+  type Image,
+  type ImageUse,
+  type ImageUseItemType,
+  ImageUseItemTypeSchema,
+  type ItemImageColumns,
+} from "#types";
+
+export type ImageInput = {
+  name: string;
+  filename: NonEmptyString;
+  filenameThumb: NonEmptyString;
+  altText?: string | undefined;
+};
+
+/** One record an image can be attached to. */
+export type ImageUseTarget = RecordTarget<ImageUseItemType>;
+
+/** How to name and ask for the records images hang off. Each kind lists its
+ * table so an attach can insist the record is really there. */
+export const imageUseTargets: RecordTargets<ImageUseItemType> =
+  defineRecordTarget({
+    columns: ITEM_TARGET_COLUMNS,
+    kinds: ImageUseItemTypeSchema.options,
+    tables: {
+      group: "groups",
+      listing: "listings",
+      news: "news_posts",
+      page: "site_pages",
+    },
+  });
+
+export type OrderedImage = Image & { sort_order: number };
+
+/** Encrypted filename column: sealed on write. On read, a value that will not
+ * decrypt to a real filename becomes the broken-image marker. It is reported,
+ * never thrown. One broken record must not take down every page that lists
+ * images. The `as` cast is the same sanctioned read boundary as col.encrypted. */
+const encryptedFilenameText = (label: string): ColumnDef<NonEmptyString> =>
+  col.converted<NonEmptyString>({
+    read: (raw: InValue, rowId?: unknown) =>
+      decryptImageFilename(raw as string, `image ${String(rowId)} ${label}`),
+    write: (value: NonEmptyString) => encrypt(value),
+  });
+
+export const imagesTable = defineIdTable<Image, ImageInput>("images", {
+  alt_text: col.encryptedText(encrypt, decrypt),
+  filename: encryptedFilenameText("filename"),
+  filename_thumb: encryptedFilenameText("thumbnail filename"),
+  id: col.generated<number>(),
+  name: col.encryptedText(encrypt, decrypt),
+});
+
+const imageColumns = imagesTable.read.pick([
+  "id",
+  "name",
+  "filename",
+  "filename_thumb",
+  "alt_text",
+]);
+
+export const imageFileColumns = imagesTable.read.pick([
+  "id",
+  "filename",
+  "filename_thumb",
+  "alt_text",
+]);
+
+export const getAllImages = (): Promise<Image[]> =>
+  imageColumns.many({}, { order: "id DESC" });
+
+export const getImageById = readById(imagesTable);
+
+export const imageFilenameSubquery = (
+  itemType: ImageUseItemType,
+  itemIdExpr: string,
+  filenameColumn: "filename" | "filename_thumb" | "alt_text",
+  alias: string,
+): string =>
+  `COALESCE((SELECT image.${filenameColumn}
+      FROM image_uses AS imageUse
+      JOIN images AS image ON image.id = imageUse.image_id
+     WHERE imageUse.item_type = '${itemType}'
+       AND imageUse.item_id = ${itemIdExpr}
+     ORDER BY imageUse.sort_order ASC, imageUse.image_id ASC
+     LIMIT 1), '') AS ${alias}`;
+
+export const imageFilenameSubqueries = (
+  itemType: ImageUseItemType,
+  itemIdExpr: string,
+): string =>
+  [
+    imageFilenameSubquery(itemType, itemIdExpr, "filename", "image_url"),
+    imageFilenameSubquery(itemType, itemIdExpr, "alt_text", "image_alt_text"),
+    imageFilenameSubquery(
+      itemType,
+      itemIdExpr,
+      "filename_thumb",
+      "image_thumb_url",
+    ),
+  ].join(", ");
+
+/** The images attached to one item, in the order the operator arranged them.
+ * Both image reads below want the same rows and differ only in which columns
+ * they open, so they say it once here. */
+const imagesOfItem = (
+  columns: string,
+  itemType: ImageUseItemType,
+  itemId: number,
+): Read => ({
+  columns,
+  from: "image_uses AS imageUse JOIN images AS image ON image.id = imageUse.image_id",
+  order: "imageUse.sort_order ASC, imageUse.image_id ASC",
+  where: imageUseTargets.where(
+    imageUseTargets.of(itemType)(itemId),
+    "imageUse",
+  ),
+});
+
+export const getImageFilenamesForItem = async (
+  itemType: ImageUseItemType,
+  itemId: number,
+): Promise<ItemImageColumns> => {
+  type ImageFileRow = StoredRowOf<Image, typeof imageFileColumns.columns> & {
+    id: number;
+  };
+  const stored = await readOneRow<ImageFileRow>(
+    imagesOfItem(imageFileColumns.columnsSql("image"), itemType, itemId),
+  );
+  if (!stored)
+    return { image_alt_text: "", image_thumb_url: "", image_url: "" };
+  const image = await imageFileColumns.read(
+    stored,
+    `${stored.id} (first image of ${itemType} ${itemId})`,
+  );
+  return {
+    image_alt_text: image.alt_text,
+    image_thumb_url: image.filename_thumb,
+    image_url: image.filename,
+  };
+};
+
+export const getImagesForItem = async (
+  itemType: ImageUseItemType,
+  itemId: number,
+): Promise<OrderedImage[]> => {
+  type OrderedImageRow = StoredRowOf<Image, typeof imageColumns.columns> & {
+    sort_order: number;
+  };
+  const rows = await readRows<OrderedImageRow>(
+    imagesOfItem(
+      `${imageColumns.columnsSql("image")}, imageUse.sort_order`,
+      itemType,
+      itemId,
+    ),
+  );
+  const images = await imageColumns.readAll(rows);
+  return images.map((image, index) => ({
+    ...image,
+    sort_order: rows[index]!.sort_order,
+  }));
+};
+
+export const getImageUsesForImage = (imageId: number): Promise<ImageUse[]> =>
+  readRows<ImageUse>({
+    columns: "image_id, item_type, item_id, sort_order",
+    from: "image_uses",
+    order: "item_type ASC, item_id ASC",
+    where: equals("image_id", imageId),
+  });
+
+const imageUseOrder = defineOrderedCollection({
+  key: "image_id",
+  scope: ["item_type", "item_id"] as const,
+  table: "image_uses",
+});
+
+/**
+ * The insert that links an image to a record, ignoring a link already there.
+ * It only lands while the image and record still exist, so a stale request can
+ * never leave a link to nothing.
+ */
+const linkImageStatement = (
+  imageId: number,
+  target: ImageUseTarget,
+  sortOrder: number,
+): SqlStatement =>
+  numberedStatement((bind) => {
+    const image = bind(imageId);
+    const itemId = bind(target.id);
+    return `INSERT OR IGNORE INTO image_uses (image_id, item_type, item_id, sort_order)
+          SELECT ${image}, ${bind(target.kind)}, ${itemId}, ${bind(sortOrder)}
+           WHERE EXISTS (SELECT 1 FROM images WHERE id = ${image})
+             AND ${imageUseTargets.existsSql(target.kind, itemId)}`;
+  });
+
+/** Clear every image link of one record. */
+export const clearImageUsesForItemStatement =
+  imageUseTargets.deleteFrom("image_uses");
+
+export const setImagesForItem = (
+  itemType: ImageUseItemType,
+  itemId: number,
+  imageIds: readonly number[],
+): Promise<void> => {
+  const target = imageUseTargets.of(itemType)(itemId);
+  const uniqueIds = [...new Set(imageIds)];
+  return executeBatch([
+    clearImageUsesForItemStatement(target),
+    ...uniqueIds.map((imageId, index) =>
+      linkImageStatement(imageId, target, index),
+    ),
+  ]);
+};
+
+export const appendImageToItem = (
+  imageId: number,
+  target: ImageUseTarget,
+): Promise<void> =>
+  useTransaction(undefined, async (transaction) => {
+    const sortOrder = await imageUseOrder.next({
+      scope: [target.kind, target.id],
+      transaction,
+    });
+    await transaction.execute(linkImageStatement(imageId, target, sortOrder));
+  });
+
+/** Drop this image's links to every record other than the ones named. Naming
+ *  none of them drops all of its links. */
+const clearStaleImageUseTargetsStatement = (
+  imageId: number,
+  targets: readonly ImageUseTarget[],
+): SqlStatement => {
+  const kept = targets.map((target) => imageUseTargets.where(target));
+  return {
+    args: [
+      imageId,
+      ...kept.flatMap((clauses) => clauses.flatMap((clause) => clause.args)),
+    ],
+    sql: `DELETE FROM image_uses WHERE image_id = ?${
+      kept.length === 0
+        ? ""
+        : ` AND NOT (${kept
+            .map(
+              (clauses) =>
+                `(${clauses.map((clause) => clause.clause).join(" AND ")})`,
+            )
+            .join(" OR ")})`
+    }`,
+  };
+};
+
+export const setItemsForImage = (
+  imageId: number,
+  targets: readonly ImageUseTarget[],
+): Promise<void> => {
+  const unique = imageUseTargets.unique(targets);
+  return useTransaction(undefined, async (transaction) => {
+    const sortOrders = await imageUseOrder.nextMany({
+      items: unique.map((target) => ({ scope: [target.kind, target.id] })),
+      transaction,
+    });
+    await transaction.batch([
+      clearStaleImageUseTargetsStatement(imageId, unique),
+      ...unique.map((target, index) =>
+        linkImageStatement(imageId, target, sortOrders[index]!),
+      ),
+    ]);
+  });
+};
+
+/** Run one images-row write with the shared version bump in the same
+ * transaction. */
+const withImageVersionBump = <T>(
+  write: (transaction: TxScope) => Promise<T>,
+): Promise<T> =>
+  useTransaction(undefined, async (transaction) => {
+    const result = await write(transaction);
+    await transaction.execute(settingsVersionIncrement());
+    return result;
+  });
+
+/** Insert one image record. The insert is unconditional, so the written row
+ * always comes back. */
+export const insertImageRecord = async (input: ImageInput): Promise<Image> =>
+  withImageVersionBump((transaction) =>
+    writeTableRow(transaction, imagesTable, { input, kind: "insert" }),
+  );
+
+/** Update one image record's metadata. Returns null when the id names no
+ * row. The update takes its SET clause from the provided columns alone. An
+ * input with no defined value names no column to write: it throws here
+ * instead of wiping a stored field or failing at the database. */
+export const updateImageRecord = async (
+  id: number,
+  input: Partial<ImageInput>,
+): Promise<Image | null> => {
+  if (Object.values(input).every((value) => value === undefined)) {
+    throw new Error(`Image ${id} update names no column to write`);
+  }
+  return withImageVersionBump((transaction) =>
+    writeTableRow(transaction, imagesTable, { id, input, kind: "update" }),
+  );
+};
+
+export const deleteImageRecord = async (imageId: number): Promise<void> => {
+  await executeBatch([
+    { args: [imageId], sql: "DELETE FROM image_uses WHERE image_id = ?" },
+    { args: [imageId], sql: "DELETE FROM images WHERE id = ?" },
+    // The shared version is the signal every isolate reads, so a deletion
+    // here drops the cached URLs the other isolates still hold.
+    settingsVersionIncrement(),
+  ]);
+};

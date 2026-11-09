@@ -1,0 +1,105 @@
+/**
+ * The one discoverable menu of in-transaction ledger operations, so
+ * autocompleting `ledgerTx.` lists the whole surface. Wrap a call in
+ * `withTransaction`, or use {@link inOwnTx}, for a standalone operation.
+ *
+ * The leaf `…Tx` functions stay where they are implemented, so the lower-level
+ * primitives can compose each other without an import cycle.
+ *
+ * `correct.X` pairs with `read.X`: the read is the figure the correction steers.
+ */
+
+import {
+  attendeeAccount,
+  modifierAccount,
+  revenueAccount,
+} from "#accounting/accounts.ts";
+import { postWriteoffAdjustmentTx } from "#accounting/adjustments.ts";
+import {
+  attendeeOwedTx,
+  listingIncomeTx,
+  modifierRevenueTx,
+} from "#accounting/queries.ts";
+import { postTransfersTx } from "#accounting/store.ts";
+import { type TxScope, withTransaction } from "#db/client.ts";
+import type { AccountRef } from "#shared/ledger/types.ts";
+
+/**
+ * The read and the post go through the same `tx`, so a re-submit of the same
+ * target is a no-op. Concurrent submits then serialise on the write lock. Both
+ * append the delta and overshoot the target without it.
+ *
+ * `toCredit` exists because the two figure kinds move in opposite directions. A
+ * figure that IS the account balance moves with `target − current`. What an
+ * attendee owes is that balance NEGATED, so it moves with `current − target`.
+ *
+ * The adjustment sources and sinks at `writeoff`, never external cash, so cash
+ * reports stay honest.
+ */
+const corrector =
+  (
+    read: (tx: TxScope, id: number) => Promise<number>,
+    account: (id: number) => AccountRef,
+    keyPrefix: string,
+    toCredit: (current: number, target: number) => number,
+  ) =>
+  async (tx: TxScope, id: number, target: number): Promise<void> => {
+    const current = await read(tx, id);
+    await postWriteoffAdjustmentTx(tx, account(id), toCredit(current, target), [
+      keyPrefix,
+      id,
+    ]);
+  };
+
+/** Credit to move a figure that IS the account balance onto `target`. */
+const toBalance = (current: number, target: number): number => target - current;
+/** Credit to move what is owed (the account balance's NEGATION) onto `target`. */
+const toOwed = (current: number, target: number): number => current - target;
+
+export const ledgerTx = {
+  /** Post a manual `writeoff` adjustment moving an account's balance by `delta`
+   *  (in "credit-the-account" terms — a zero delta posts nothing). */
+  adjust: postWriteoffAdjustmentTx,
+  /** Read-then-adjust corrections that move a projected figure onto a target,
+   *  symmetric with {@link ledgerTx.read} (each `read.X` is the figure `correct.X`
+   *  steers). Re-submitting the same target posts nothing. */
+  correct: {
+    /** Correct a listing's recognised income to a target. */
+    income: corrector(
+      listingIncomeTx,
+      revenueAccount,
+      "income-adjust",
+      toBalance,
+    ),
+    /** Correct a modifier's net revenue to a target. */
+    modifierRevenue: corrector(
+      modifierRevenueTx,
+      modifierAccount,
+      "modifier-revenue-adjust",
+      toBalance,
+    ),
+    /** Correct what an attendee owes to a target. */
+    owed: corrector(attendeeOwedTx, attendeeAccount, "balance-adjust", toOwed),
+  },
+  /** Post pre-built legs — the primitive every other write composes. */
+  post: postTransfersTx,
+  /** In-transaction projection reads, for read-then-write corrections. */
+  read: {
+    /** A listing's recognised income (gross credits less write-off debits). */
+    income: listingIncomeTx,
+    /** A modifier's net revenue (balanceOf(modifier)). */
+    modifierRevenue: modifierRevenueTx,
+    /** What an attendee currently owes (−balanceOf(attendee)). */
+    owed: attendeeOwedTx,
+  },
+};
+
+/**
+ * Adapt an in-transaction correction (`ledgerTx.correct.X`) into a standalone
+ * call that opens its own write transaction. It serves the admin "adjust this
+ * figure" forms that correct a single figure outside any larger unit of work.
+ */
+export const inOwnTx =
+  (correct: (tx: TxScope, id: number, target: number) => Promise<void>) =>
+  (id: number, target: number): Promise<void> =>
+    withTransaction((tx) => correct(tx, id, target));

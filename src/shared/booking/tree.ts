@@ -1,0 +1,231 @@
+// effects: pure
+import type { ListingWithCount } from "#types";
+
+/**
+ * One in-memory model that represents a standalone listing, a multi-slug cart,
+ * a regular group, a package, and parent/child folding as configurations of the
+ * *same* structure.
+ *
+ * The single source of truth for two things every booking surface must agree
+ * on: the `nodeKey` scheme a node is addressed by, and the exact `name="…"` its
+ * control emits. Render and submit import the *same* helpers, which is what
+ * makes "behaviour identical" mechanically true instead of a promise.
+ */
+
+/** What page/root a tree was entered through. A standalone listing (or an ad-hoc
+ * multi-slug cart) carries a slug *list*; a group/package carries its group id. */
+export type RootRef =
+  | { readonly kind: "listing"; readonly slugs: readonly string[] }
+  | { readonly kind: "group"; readonly groupId: number }
+  | { readonly kind: "package"; readonly groupId: number };
+
+/** How a node hangs off its parent/root. `none` is a top-level standalone node;
+ * the others record the edge (and its owning group/parent) a member/child came
+ * through, so a listing reachable by more than one path stays distinguishable. */
+export type EdgeRef =
+  | { readonly kind: "none" }
+  | { readonly kind: "group_member"; readonly groupId: number }
+  | { readonly kind: "parent_child"; readonly parentId: number };
+
+/** How many of a node an order takes. `REQUIRED`/`FIXED` are known before render
+ * (a package member's `fixed × packageQty`); `OPTIONAL`/`BUYER_CHOICE` are chosen
+ * by the buyer. */
+export type QuantityRule =
+  | { readonly kind: "REQUIRED"; readonly qty: number }
+  | { readonly kind: "FIXED"; readonly qty: number }
+  | { readonly kind: "OPTIONAL"; readonly min: number; readonly max: number }
+  | { readonly kind: "BUYER_CHOICE" };
+
+/** Which price a node charges. `OVERRIDE` (flat package price) wins, then
+ * `PAY_MORE` (pay-what-you-want), then `DAY_PRICE` (daily/customisable), then
+ * `BASE`. */
+export type PriceRule =
+  | { readonly kind: "BASE" }
+  | { readonly kind: "OVERRIDE"; readonly amountMinor: number }
+  | {
+      readonly kind: "PAY_MORE";
+      readonly minMinor: number;
+      readonly maxMinor: number;
+    }
+  | {
+      readonly kind: "DAY_PRICE";
+      /** A package member's per-day overrides (day count → per-unit minor
+       * price), consulted before the listing's own day price. Absent outside
+       * packages, so a standalone customisable listing prices unchanged. */
+      readonly overrides?: ReadonlyMap<number, number> | undefined;
+    };
+
+/** Whether a node is ever named on a buyer surface. A `HIDDEN` node is dropped
+ * from render, never rendered-then-hidden (hidden-package privacy invariant). */
+export type Visibility = "SHOWN" | "HIDDEN";
+
+/** A node's date/duration facet. `INHERIT` takes the parent's resolved span (a
+ * folded child), the others carry their own date/span or none. */
+export type DateSpan =
+  | { readonly kind: "NONE" }
+  | { readonly kind: "DATE"; readonly date: string }
+  | {
+      readonly kind: "SPAN";
+      readonly date: string;
+      readonly durationDays: number;
+    }
+  | { readonly kind: "INHERIT" };
+
+/** One listing plus the facets every booking model already needs. `children` is
+ * empty for a leaf; a package member that is a parent is simply a node one level
+ * deeper — no special case. */
+export type BookingNode = {
+  readonly nodeKey: string;
+  readonly listingId: number;
+  readonly listing: ListingWithCount;
+  readonly edgeRef: EdgeRef;
+  readonly quantityRule: QuantityRule;
+  readonly priceRule: PriceRule;
+  readonly visibility: Visibility;
+  readonly dateSpan: DateSpan;
+  readonly children: readonly BookingNode[];
+};
+
+/** A whole booking: the root/page identity and the
+ * top-level nodes. */
+export type BookingTree = {
+  readonly rootRef: RootRef;
+  readonly nodes: readonly BookingNode[];
+};
+
+/** The listing ids that keep their own buyer-chosen `quantity_<id>` control:
+ * every node whose quantity is the buyer's choice (a standalone listing, plus a
+ * member the cart also added by its own slug). Both the render side (which rows
+ * get a quantity selector) and the submit parser read this from one place. */
+export const standaloneListingIds = (tree: BookingTree): Set<number> =>
+  new Set(
+    tree.nodes
+      .filter((node) => node.quantityRule.kind === "BUYER_CHOICE")
+      .map((node) => node.listingId),
+  );
+
+// ---------------------------------------------------------------------------
+// Node identity — the `nodeKey` scheme (single source of truth)
+// ---------------------------------------------------------------------------
+
+/** A standalone / group-member / package-member listing addressed by its own id. */
+export const listingNodeKey = (listingId: number): string =>
+  `listing:${listingId}`;
+
+/** A regular (non-package) group member: the same listing under a different group
+ * is a different node. */
+export const groupMemberNodeKey = (
+  groupId: number,
+  listingId: number,
+): string => `group:${groupId}/member:${listingId}`;
+
+/** A package member: distinct from the standalone path so a package override and
+ * a standalone price on the same listing never collapse. */
+export const packageMemberNodeKey = (
+  groupId: number,
+  listingId: number,
+): string => `package:${groupId}/member:${listingId}`;
+
+/** A required child under a parent, addressed by its parent's *full* nodeKey
+ * (the ancestor path) so the same child is a distinct canonical identity under
+ * each provenance: a standalone parent (`listing:5/child:9`), a package-member
+ * parent (`package:3/member:5/child:9`), and a regular-group-member parent
+ * (`group:3/member:5/child:9`) never collapse. Phase 2 signs and revalidates by
+ * `nodeKey`, so a package-scaled / hidden-package child must not share a key with
+ * the standalone parent's child (the same child under two *different* parents was
+ * already distinct via the parent id; embedding the whole path also separates the
+ * same parent listing reached by two different roots). */
+export const childNodeKey = (parentNodeKey: string, childId: number): string =>
+  `${parentNodeKey}/child:${childId}`;
+
+// ---------------------------------------------------------------------------
+// Form field names — the single source of truth render and submit share
+// ---------------------------------------------------------------------------
+
+/** The form control's name for one kind and the ids that address it, joined
+ * by underscores (for example `child_qty_5_9`). */
+const fieldNameFor =
+  (kind: string) =>
+  (...ids: number[]): string =>
+    [kind, ...ids].join("_");
+
+/** The per-listing quantity control (`quantity_<id>`) — a standalone listing, a
+ * multi-slug cart member, a regular group member, or a parent. */
+export const quantityFieldName = fieldNameFor("quantity");
+
+/** The pay-what-you-want price control for a top-level listing
+ * (`custom_price_<id>`). */
+export const customPriceFieldName = fieldNameFor("custom_price");
+
+/** One child's per-unit quantity control (`child_qty_<parentId>_<childId>`). */
+export const childQuantityFieldName = fieldNameFor("child_qty");
+
+/** One child's pay-what-you-want price control
+ * (`child_price_<parentId>_<childId>`). */
+export const childPriceFieldName = fieldNameFor("child_price");
+
+/** One package's "number of packages" control (`package_quantity_<groupId>`).
+ * Per group, so a page selling several bundles posts one count each. */
+export const packageQuantityFieldName = fieldNameFor("package_quantity");
+
+/** A node's per-package fixed quantity: a `FIXED` (package member) node carries
+ * it; any other rule contributes 1 (a buyer-chosen node counts once per unit). */
+export const nodeFixedQuantity = (node: BookingNode): number =>
+  node.quantityRule.kind === "FIXED" ? node.quantityRule.qty : 1;
+
+/** Whether a top-level node is one package's member: a `FIXED` node hanging off
+ * that group. Regular group members share the edge kind but are `BUYER_CHOICE`. */
+export const isMemberNodeOf =
+  (groupId: number) =>
+  (node: BookingNode): boolean =>
+    node.edgeRef.kind === "group_member" &&
+    node.edgeRef.groupId === groupId &&
+    node.quantityRule.kind === "FIXED";
+
+/** One package's member nodes as their own tree, so per-package walks (the
+ * bundle capacity limit, the bundle price total) see just that bundle on a page
+ * selling several alongside other listings. */
+export const packageSubTree = (
+  tree: BookingTree,
+  groupId: number,
+): BookingTree => ({
+  nodes: tree.nodes.filter(isMemberNodeOf(groupId)),
+  rootRef: { groupId, kind: "package" },
+});
+
+/** Each top-level node's fixed per-package quantity keyed by listing id — the
+ * tree-derived member quantity map, so consumers holding a tree never re-read
+ * (and non-null-assert) the ctx's parallel packageQuantities. */
+export const fixedQuantitiesByListingId = (
+  tree: BookingTree,
+): Map<number, number> =>
+  new Map(tree.nodes.map((node) => [node.listingId, nodeFixedQuantity(node)]));
+
+/** The quantity form field a node's control posts, or `null` when the node has
+ * no buyer-chosen quantity of its own (a package member — its quantity is its
+ * package's count × its fixed per-package quantity, submitted via
+ * {@link packageQuantityFieldName}). This is the "stable nodeKey → field name"
+ * projection: render emits it and submit parses it, from one place. */
+export const nodeQuantityFieldName = (node: BookingNode): string | null => {
+  switch (node.edgeRef.kind) {
+    case "parent_child":
+      return childQuantityFieldName(node.edgeRef.parentId, node.listingId);
+    case "group_member":
+      // A package member has no per-member quantity control; a regular group
+      // member uses the ordinary per-listing quantity field.
+      return node.quantityRule.kind === "FIXED"
+        ? null
+        : quantityFieldName(node.listingId);
+    default:
+      return quantityFieldName(node.listingId);
+  }
+};
+
+/** The pay-more price form field a node's control posts, or `null` when the node
+ * cannot be priced pay-what-you-want. Mirrors {@link nodeQuantityFieldName}. */
+export const nodePriceFieldName = (node: BookingNode): string | null => {
+  if (node.priceRule.kind !== "PAY_MORE") return null;
+  return node.edgeRef.kind === "parent_child"
+    ? childPriceFieldName(node.edgeRef.parentId, node.listingId)
+    : customPriceFieldName(node.listingId);
+};

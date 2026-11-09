@@ -1,0 +1,26 @@
+// effects: pure
+/** Pure helpers for account identity. */
+
+import { sameOn } from "#fp";
+import type { AccountRef } from "./types.ts";
+
+/**
+ * Separator used to build a canonical map key from an account's (type, id).
+ * NUL cannot appear in a sane type/id, and `validateTransfer` rejects it, so the
+ * key is unambiguous: `("a", "b c")` and `("a b", "c")` never collide. With a
+ * plain space they do.
+ */
+export const ACCOUNT_KEY_SEPARATOR = "\u0000";
+
+/** A stable, collision-free key for use as a Map key / for dedupe / grouping. */
+export const accountKey = (a: AccountRef): string =>
+  `${a.type}${ACCOUNT_KEY_SEPARATOR}${a.id}`;
+
+/** Structural equality of two account references. */
+export const sameAccount = sameOn<AccountRef>("type", "id");
+
+/** Build an account reference, stringifying a numeric row id. */
+export const account = (type: string, id: number | string): AccountRef => ({
+  id: String(id),
+  type,
+});

@@ -1,0 +1,616 @@
+/**
+ * Resolve which modifiers apply to a checkout, and rebuild them in the webhook.
+ *
+ * A modifier's stored `calc_value` is the positive magnitude the owner entered;
+ * this layer turns it into the signed value the pricing engine expects (fixed
+ * amounts converted from major to minor units, discounts negated, multipliers
+ * left as the literal factor). The webhook re-fetches modifiers by id and
+ * rebuilds the same specs, so provider metadata amounts are never trusted.
+ */
+
+import { hmacHash } from "#crypto/hashing.ts";
+import type { TxScope } from "#db/client.ts";
+import { getVisits, hashEmail, hashPhone } from "#db/contact-preferences.ts";
+import { listingGroups } from "#db/groups/table.ts";
+import { modifierUsedQuantities } from "#db/modifier-usage.ts";
+import {
+  getActiveModifiers,
+  getModifierGroupListingIdsByModifierId,
+  modifierIdsByAnswerId,
+  modifierListings,
+} from "#db/modifiers.ts";
+import { byId, requiredMapValue, unique } from "#fp";
+import { t } from "#i18n";
+import { itemsSubtotal } from "#shared/booking-fee.ts";
+import { formatCurrency, toMinorUnits } from "#shared/currency.ts";
+import { matchKey } from "#shared/keys.ts";
+import {
+  scopeIsChildDeadEnd,
+  scopeReachesPage,
+} from "#shared/listing-parents-rules.ts";
+import type { CheckoutItem, ModifierSpec } from "#shared/payments.ts";
+import {
+  type ModifierTrigger,
+  signedModifierValue,
+} from "#shared/price-modifier.ts";
+import type { Modifier } from "#types";
+
+/** The signed value one stored modifier applies, reading it off the columns
+ * this table spells in snake_case. */
+const signedValue = (modifier: Modifier): number =>
+  signedModifierValue({
+    direction: modifier.direction,
+    kind: modifier.calc_kind,
+    value: modifier.calc_value,
+  });
+
+/** Resolve the listing ids each "groups"-scoped modifier covers. The default
+ * resolves the group→listing membership live (the DB join); the would-be variant
+ * passes a resolver that expands against in-memory listings, and an optional
+ * transaction reads the resolver's rows through it. */
+type GroupScopeResolver = (
+  groupScopedIds: number[],
+  tx?: TxScope,
+) => Promise<Map<number, number[]>>;
+
+const liveGroupScopeResolver: GroupScopeResolver =
+  getModifierGroupListingIdsByModifierId;
+
+/** Per-modifier in-scope listing ids: null = whole order, an array = scoped. */
+type ListingScopes = Map<number, number[] | null>;
+
+/** The resolved scope of a modifier whose id the scope map always holds. */
+const scopeOf = (scopes: ListingScopes, modifier: Modifier): number[] | null =>
+  requiredMapValue(scopes, modifier.id, `Modifier ${modifier.id} missing`);
+
+/** The active opt-in add-on modifiers plus each one's resolved listing scopes —
+ * the shared starting point for the add-on and child-reachability checks. */
+export type OptionalAddOns = { optional: Modifier[]; scopes: ListingScopes };
+
+/** Batched listing scopes for modifiers: null = whole order, array = scoped.
+ * `resolveGroupScopes` chooses how a "groups"-scoped modifier's member listing
+ * ids are resolved (live join by default; in-memory for the would-be check),
+ * and the optional transaction reads every scope row through it. */
+const listingIdsByModifierId = async (
+  modifiers: Modifier[],
+  resolveGroupScopes: GroupScopeResolver = liveGroupScopeResolver,
+  tx?: TxScope,
+): Promise<ListingScopes> => {
+  const scopes: ListingScopes = new Map();
+  const listingScoped = modifiers.filter((m) => m.scope === "listings");
+  const groupScoped = modifiers.filter((m) => m.scope === "groups");
+  for (const modifier of modifiers) {
+    if (modifier.scope === "all") scopes.set(modifier.id, null);
+  }
+  // Sequential even without a transaction: a transaction runs one statement
+  // at a time, so its two reads cannot overlap.
+  const listingLinks = await modifierListings.getIdsByKeys(
+    listingScoped.map((m) => m.id),
+    tx,
+  );
+  const groupLinks = await resolveGroupScopes(
+    groupScoped.map((m) => m.id),
+    tx,
+  );
+  // Each lookup seeds an entry for every id it was given, so these maps cover
+  // exactly the scoped modifiers — copy their links straight in.
+  for (const [id, ids] of listingLinks) scopes.set(id, ids);
+  for (const [id, ids] of groupLinks) scopes.set(id, ids);
+  return scopes;
+};
+
+/** Build the checkout spec for a modifier applied `quantity` times. */
+const toSpec = (
+  modifier: Modifier,
+  quantity: number,
+  listingIds: number[] | null,
+): ModifierSpec => ({
+  id: modifier.id,
+  kind: modifier.calc_kind,
+  listingIds,
+  name: modifier.name,
+  quantity,
+  trigger: modifier.trigger,
+  value: signedValue(modifier),
+});
+
+/** Subtotal of the items a modifier is scoped to (the whole cart when its
+ * listing ids are null), used for the minimum-subtotal and "alongside" checks. */
+const inScopeSubtotal = (
+  items: CheckoutItem[],
+  listingIds: number[] | null,
+): number =>
+  itemsSubtotal(
+    listingIds === null
+      ? items
+      : items.filter((i) => listingIds.includes(i.listingId)),
+  );
+
+/** A modifier eligible by scope and minimum subtotal, with the quantity the
+ * buyer asked for (1 for automatic/code modifiers; the chosen count for an
+ * opt-in add-on). Stock is clamped after candidates are gathered. */
+type Candidate = {
+  modifier: Modifier;
+  listingIds: number[] | null;
+  quantity: number;
+};
+
+/** How many units of a modifier can actually be applied, capping the requested
+ * quantity at the remaining stock. Unlimited stock grants the full request. */
+const stockedQuantity = (
+  modifier: Modifier,
+  requested: number,
+  used: Map<number, number>,
+): number => {
+  if (modifier.stock === null) return requested;
+  const remaining = modifier.stock - (used.get(modifier.id) ?? 0);
+  return Math.max(0, Math.min(requested, remaining));
+};
+
+/** A stored `max_per_order` the resolve path may apply, read only when the
+ * modifier is actually requested. The column has no CHECK constraint, so a
+ * repaired or imported row can carry a cap the admin form refuses. A cap of
+ * 0 would silently drop the charge from the order, so refuse it loudly — but
+ * only on the orders the cap would charge, so one corrupt row cannot break
+ * pricing for carts that picked no linked answer. */
+const checkedPerOrderCap = (modifier: Modifier, cap: number): number => {
+  if (!Number.isInteger(cap) || cap < 1) {
+    throw new Error(
+      `Modifier "${modifier.name}" (id ${modifier.id}) stores max_per_order ${cap}. The column must hold a whole number of 1 or more`,
+    );
+  }
+  return cap;
+};
+
+/** How many times a modifier is requested for a cart: automatic modifiers
+ * apply once, a "code" modifier applies once when the entered code matches, an
+ * opt-in add-on applies as many times as the buyer chose, and an "answer"
+ * modifier applies once per selected answer linked to it (0 = none chosen) —
+ * capped at `max_per_order` when set, so a once-per-order answer surcharge
+ * such as a delivery fee applies however many tickets picked the answer. A
+ * result below 1 means the modifier doesn't trigger at all. */
+const triggerQuantity = (
+  modifier: Modifier,
+  codeIndex: string | null,
+  addOns: Map<number, number>,
+  answerQuantities: Map<number, number>,
+): number => {
+  if (modifier.trigger === "code") {
+    return codeIndex !== null && modifier.code_index === codeIndex ? 1 : 0;
+  }
+  if (modifier.trigger === "optional") return addOns.get(modifier.id) ?? 0;
+  if (modifier.trigger === "answer") {
+    const requested = answerQuantities.get(modifier.id) ?? 0;
+    const cap = modifier.max_per_order;
+    if (requested < 1 || cap === null) return requested;
+    return Math.min(requested, checkedPerOrderCap(modifier, cap));
+  }
+  return 1;
+};
+
+/** All active modifiers keyed by id, for the re-fetch-by-id lookups that
+ * rebuild specs from refs and resolve answer-trigger scopes. */
+const activeModifiersById = async (): Promise<Map<number, Modifier>> =>
+  byId(await getActiveModifiers());
+
+/** Resolve the in-scope listing ids (null = whole order) of every active
+ * answer-trigger modifier among `ids`. Ids that aren't an active answer
+ * modifier are omitted, so a stale link never contributes a quantity. */
+const answerModifierScopes = async (ids: number[]): Promise<ListingScopes> => {
+  const byId = await activeModifiersById();
+  return listingIdsByModifierId(
+    ids
+      .map((id) => byId.get(id))
+      .filter(
+        (modifier): modifier is Modifier => modifier?.trigger === "answer",
+      ),
+  );
+};
+
+/** Whether a resolved scope covers a listing: null = whole order (always),
+ * an array = only its listings, undefined = not an eligible modifier (never). */
+const scopeCoversListing = (
+  scope: number[] | null | undefined,
+  listingId: number,
+): boolean =>
+  scope === null || (Array.isArray(scope) && scope.includes(listingId));
+
+/**
+ * Total quantity each "answer"-triggered modifier is requested for, respecting
+ * the modifier's own scope. A linked answer counts only when it was selected on
+ * a listing the modifier applies to (every booked listing, for a whole-order
+ * modifier), so a listing/group-scoped answer modifier is never inflated by the
+ * same shared answer being picked on a listing outside its scope. Each in-scope
+ * selection adds that listing's ticket quantity, so one "Large size +£5"
+ * modifier wired to several answers is applied once per matching ticket.
+ */
+export const answerModifierQuantities = async (
+  listingAnswerIds: Record<string, number[]> | undefined,
+  listingQuantities: Map<number, number>,
+): Promise<Map<number, number>> => {
+  const entries = Object.entries(listingAnswerIds ?? {});
+  const answerIds = unique(entries.flatMap(([, ids]) => ids));
+  const modifiersByAnswer = await modifierIdsByAnswerId(answerIds);
+  if (modifiersByAnswer.size === 0) return new Map();
+  const scopes = await answerModifierScopes(
+    unique([...modifiersByAnswer.values()].flat()),
+  );
+
+  const quantities = new Map<number, number>();
+  for (const [listingIdStr, ids] of entries) {
+    const listingId = Number(listingIdStr);
+    // Answers are filed under the order's own lines, so every key here has a
+    // chosen quantity. A miss would price the modifier by NaN, so say so.
+    const count = requiredMapValue(
+      listingQuantities,
+      listingId,
+      `Listing ${listingId} carries answers but no chosen quantity`,
+    );
+    const modifierIds = ids.flatMap((id) => modifiersByAnswer.get(id) ?? []);
+    for (const modifierId of modifierIds) {
+      if (scopeCoversListing(scopes.get(modifierId), listingId)) {
+        quantities.set(modifierId, (quantities.get(modifierId) ?? 0) + count);
+      }
+    }
+  }
+  return quantities;
+};
+
+export type PricingContext = { visits: number };
+
+const NO_VISITS: PricingContext = { visits: 0 };
+
+export const buyerVisits = async (
+  email?: string,
+  phone?: string,
+): Promise<number> => {
+  const usable = (value: string | undefined): value is string =>
+    typeof value === "string" && value.trim() !== "";
+  const hashes = await Promise.all(
+    [
+      usable(email) ? hashEmail(email) : null,
+      usable(phone) ? hashPhone(phone) : null,
+    ].filter((hash): hash is Promise<string> => hash !== null),
+  );
+  if (hashes.length === 0) return 0;
+  const counts = await Promise.all(hashes.map(getVisits));
+  return Math.max(0, ...counts);
+};
+
+export type ResolveOptions = {
+  code?: string;
+  addOns?: Map<number, number>;
+  answerQuantities?: Map<number, number>;
+  ctx?: PricingContext;
+};
+
+/**
+ * Active modifiers eligible for a cart, each with the quantity the buyer asked
+ * for, *before* any stock clamp: past the visit gate, actually triggered
+ * (quantity >= 1), in scope, and past the minimum subtotal. Automatic modifiers
+ * always trigger; a "code" modifier triggers only on a matching code; an
+ * "optional" add-on triggers per chosen unit (`opts.addOns`); an "answer"
+ * modifier triggers per linked answer selected (`opts.answerQuantities`).
+ *
+ * `resolveModifiers` clamps these to the stock remaining; the sold-out check
+ * reads the requested quantity straight off them, so both share one eligibility
+ * pass and agree on which modifiers apply.
+ */
+const eligibleCandidates = async (
+  items: CheckoutItem[],
+  opts: ResolveOptions,
+): Promise<Candidate[]> => {
+  const addOns = opts.addOns ?? new Map<number, number>();
+  const answerQuantities = opts.answerQuantities ?? new Map<number, number>();
+  const ctx = opts.ctx ?? NO_VISITS;
+  const codeIndex = opts.code?.trim()
+    ? await hmacHash(matchKey(opts.code))
+    : null;
+  const activeModifiers = await getActiveModifiers();
+  const scopes = await listingIdsByModifierId(activeModifiers);
+  return (
+    await Promise.all(
+      activeModifiers.map(async (modifier): Promise<Candidate | null> => {
+        if (modifier.min_visits > ctx.visits) return null;
+        const listingIds = scopeOf(scopes, modifier);
+        const base = inScopeSubtotal(items, listingIds);
+        // A scoped modifier only applies alongside its listings/groups.
+        if (listingIds !== null && base === 0) return null;
+        if (base < modifier.min_subtotal) return null;
+        // The quantity runs last: its corrupt-cap refusal must only fire for
+        // a modifier the gates say this cart will really apply.
+        const quantity = triggerQuantity(
+          modifier,
+          codeIndex,
+          addOns,
+          answerQuantities,
+        );
+        if (quantity < 1) return null;
+        return { listingIds, modifier, quantity };
+      }),
+    )
+  ).filter((c): c is Candidate => c !== null);
+};
+
+/** A read over a checkout cart: the items plus the resolve options. */
+type CartRead<Out> = (
+  items: CheckoutItem[],
+  opts?: ResolveOptions,
+) => Promise<Out>;
+
+/**
+ * Build a stock-aware cart read: gather the {@link eligibleCandidates} that
+ * pass `keep`, load how many units of each stock-limited one are already used
+ * (one batched lookup; none when nothing is stock-limited), and let `project`
+ * turn the pair into the caller's result. The shared first pass of the stock
+ * clamp and the sold-out check, so they agree on which modifiers apply.
+ */
+const stockAwareCartRead =
+  <Out>(
+    keep: (candidate: Candidate) => boolean,
+    project: (candidates: Candidate[], used: Map<number, number>) => Out,
+  ): CartRead<Out> =>
+  async (items, opts = {}) => {
+    const candidates = (await eligibleCandidates(items, opts)).filter(keep);
+    const used = await modifierUsedQuantities(
+      candidates
+        .filter((c) => c.modifier.stock !== null)
+        .map((c) => c.modifier.id),
+    );
+    return project(candidates, used);
+  };
+
+/**
+ * The modifiers that apply to a cart: {@link eligibleCandidates} with their
+ * quantities clamped to the stock remaining (a candidate clamped to zero drops
+ * out). Each surviving modifier is applied its (possibly clamped) number of
+ * times.
+ */
+export const resolveModifiers: CartRead<ModifierSpec[]> = stockAwareCartRead(
+  () => true,
+  (candidates, used) =>
+    candidates
+      .map((c) => ({
+        candidate: c,
+        quantity: stockedQuantity(c.modifier, c.quantity, used),
+      }))
+      .filter(({ quantity }) => quantity >= 1)
+      .map(({ candidate, quantity }) =>
+        toSpec(candidate.modifier, quantity, candidate.listingIds),
+      ),
+);
+
+/**
+ * Names of answer-triggered modifiers the buyer over-subscribed: tiers that
+ * would actually apply to this cart — the same eligibility `resolveModifiers`
+ * uses (scope, minimum subtotal, visit gate) — and are stock-limited, but whose
+ * requested quantity exceeds the stock remaining. Because an answer is recorded
+ * on every ticket that picked it (it can't be partially fulfilled like an
+ * opt-in add-on), the submission is blocked rather than silently clamped.
+ *
+ * Gating on eligibility, not stock alone, means a tier the cart is too small
+ * for — or that the buyer lacks the visits for — isn't reported sold out when
+ * no surcharge would apply.
+ */
+export const oversubscribedAnswerTiers: CartRead<string[]> = stockAwareCartRead(
+  (c) => c.modifier.trigger === "answer" && c.modifier.stock !== null,
+  (limited, used) =>
+    limited
+      .filter((c) => stockedQuantity(c.modifier, c.quantity, used) < c.quantity)
+      .map((c) => c.modifier.name),
+);
+
+/** Whether any active modifier is unlocked by a promo code, so the public
+ * order form knows to offer a code field. */
+export const hasPromoCodeModifiers = async (): Promise<boolean> =>
+  (await getActiveModifiers()).some((m) => m.trigger === "code");
+
+/** Display details for an opt-in add-on offered on the public order form. */
+export type AddOnOption = {
+  id: number;
+  name: string;
+  /** Buyer-facing price effect, e.g. "+£5", "−10%", "×1.5". */
+  priceLabel: string;
+  /** True when selecting this add-on can route an otherwise-free cart to payment. */
+  requiresPayment: boolean;
+  /** The most units a buyer may select, capped by remaining stock. */
+  maxQuantity: number;
+};
+
+/** Default ceiling on the add-on quantity selector when stock is unlimited. */
+export const ADDON_MAX_QUANTITY = 20;
+
+/** The buyer-facing price label for an add-on: a signed amount or percentage,
+ * or a bare multiplier (whose factor already encodes its direction). */
+const addOnPriceLabel = (modifier: Modifier): string => {
+  if (modifier.calc_kind === "multiply") return `×${modifier.calc_value}`;
+  const sign = modifier.direction === "discount" ? "−" : "+";
+  const amount =
+    modifier.calc_kind === "fixed"
+      ? formatCurrency(toMinorUnits(modifier.calc_value))
+      : `${modifier.calc_value}%`;
+  return `${sign}${amount}`;
+};
+
+const addOnCanRequirePayment = (modifier: Modifier): boolean =>
+  modifier.calc_kind === "fixed" && signedValue(modifier) > 0;
+
+/** Active opt-in ("optional") add-on modifiers paired with their resolved
+ * listing scopes (null = whole order), the shared starting point for the add-on
+ * listing and the child-reachability hard block. `resolveGroupScopes` chooses how
+ * group scopes resolve (live join by default; in-memory for the would-be
+ * pre-save check). */
+export const optionalAddOnsWithScopes = async (
+  resolveGroupScopes?: GroupScopeResolver,
+  tx?: TxScope,
+): Promise<OptionalAddOns> => {
+  const optional = (await getActiveModifiers(tx)).filter(
+    (m) => m.trigger === "optional",
+  );
+  return {
+    optional,
+    scopes: await listingIdsByModifierId(optional, resolveGroupScopes, tx),
+  };
+};
+
+/**
+ * The opt-in add-ons offered for a page's listings: active "optional"
+ * modifiers whose scope covers the whole order or overlaps the page, with
+ * stock left. Each carries the quantity ceiling the selector should allow.
+ */
+export const getOptionalAddOns = async (
+  pageListingIds: number[],
+): Promise<AddOnOption[]> => {
+  const { optional, scopes } = await optionalAddOnsWithScopes();
+  const pageIds = new Set(pageListingIds);
+  const scoped = optional.filter((modifier) =>
+    scopeReachesPage(scopeOf(scopes, modifier), pageIds),
+  );
+  const used = await modifierUsedQuantities(
+    scoped.filter((m) => m.stock !== null).map((m) => m.id),
+  );
+  return scoped
+    .map((modifier) => ({
+      maxQuantity: stockedQuantity(modifier, ADDON_MAX_QUANTITY, used),
+      modifier,
+    }))
+    .filter(({ maxQuantity }) => maxQuantity >= 1)
+    .map(({ maxQuantity, modifier }) => ({
+      id: modifier.id,
+      maxQuantity,
+      name: modifier.name,
+      priceLabel: addOnPriceLabel(modifier),
+      requiresPayment: addOnCanRequirePayment(modifier),
+    }));
+};
+
+/**
+ * A direct `/ticket/<parent>` page loads add-ons from **only the parent's own
+ * listing id**, never its group siblings. So `parentPageListingIds` is the
+ * parent's *actual* page id set, not the wider group. An add-on scoped to
+ * {child, parent-sibling} but not the parent is a dead end that page cannot
+ * reach, and must block.
+ *
+ * The test is **reachability**, not "the child appears in the scope". An add-on
+ * scoped to the child *and also* to the parent still loads through the parent's
+ * page ids and must NOT block the edge.
+ */
+export const childOnlyAddOnName = async (
+  childId: number,
+  parentPageListingIds: readonly number[],
+): Promise<string | null> =>
+  childOnlyAddOnNameWithScopes(
+    await optionalAddOnsWithScopes(),
+    childId,
+    parentPageListingIds,
+  );
+
+/** The reachability loop shared by the live-scope {@link childOnlyAddOnName} and
+ * the would-be-scope {@link childOnlyAddOnNameForListings} (a listing save that
+ * changes `group_id`): the name of the first active opt-in add-on whose resolved
+ * scope dead-ends through `childId` for a parent page of `parentPageListingIds`,
+ * or null. */
+export const childOnlyAddOnNameWithScopes = (
+  { optional, scopes }: OptionalAddOns,
+  childId: number,
+  parentPageListingIds: readonly number[],
+): string | null => {
+  const suppressed = new Set([childId]);
+  const reachable = new Set(parentPageListingIds);
+  const blocking = optional.find((modifier) =>
+    scopeIsChildDeadEnd(scopeOf(scopes, modifier), suppressed, reachable),
+  );
+  return blocking?.name ?? null;
+};
+
+/** A listing plus the ids of the groups it belongs to — the in-memory shape the
+ * would-be-scope reachability checks reason over. Built from `getAllListings`
+ * plus a `group_listings` membership map, with the saved listing's would-be
+ * group set applied. `active` is only consulted by the deactivation check. */
+export type ListingGroupMembership = {
+  id: number;
+  groupIds: number[];
+  active?: boolean;
+};
+
+/** Build the in-memory membership view of one listing from the complete
+ * listingId→groupIds map returned for its listing set. Shared by the
+ * would-be-scope builders so they agree on the shape. */
+export const toListingGroupMembership = (
+  listing: { id: number; active: boolean },
+  membership: Map<number, number[]>,
+): ListingGroupMembership => ({
+  active: listing.active,
+  groupIds: listingGroups.idsFor(membership, listing.id),
+  id: listing.id,
+});
+
+/** The ids of the supplied listings that belong to ANY of `groupIds` — the
+ * in-memory expansion of a "groups"-scoped modifier (or any group → its member
+ * listings resolution). A listing in several groups matches if any of them is in
+ * scope. Shared so the live and would-be scope resolutions agree. */
+export const listingIdsInGroups = (
+  groupIds: number[],
+  allListings: ListingGroupMembership[],
+): number[] => {
+  const groups = new Set(groupIds);
+  return allListings
+    .filter((listing) => listing.groupIds.some((g) => groups.has(g)))
+    .map((listing) => listing.id);
+};
+
+/** The post-save shape of an opt-in add-on whose child-reachability must hold:
+ * its trigger/active state and its **already-resolved** listing scope (null =
+ * whole order; for a group scope, every listing in the linked groups). */
+export type AddOnReachabilityCheck = {
+  active: boolean;
+  trigger: ModifierTrigger;
+  name: string;
+  scope: number[] | null;
+};
+
+/**
+ * The modifier-side mirror of {@link childOnlyAddOnName}, over the same
+ * reachability core, so the two blocks cannot drift.
+ *
+ * Only an **active, opt-in** add-on is gated. An inactive or non-`optional`
+ * modifier never loads on a booking page, so it cannot dead-end.
+ *
+ * `reachablePageIds` is the **active, non-child** listings, because only those
+ * serve a public booking page that loads add-ons.
+ */
+export const childUnreachableAddOnError = (
+  candidate: AddOnReachabilityCheck,
+  childListingIds: Set<number>,
+  reachablePageIds: Set<number>,
+): string | null => {
+  if (!candidate.active || candidate.trigger !== "optional") return null;
+  return scopeIsChildDeadEnd(candidate.scope, childListingIds, reachablePageIds)
+    ? t("modifiers.err_child_only_addon", { name: candidate.name })
+    : null;
+};
+
+/**
+ * Re-checks the *whole* add-on set, not just edges touching the saved listing.
+ * A plain non-child page can be the only thing rescuing a child-scoped add-on,
+ * and it has no edge of its own, so an edge-touching traversal misses it.
+ *
+ * `allListings` carries the save's would-be state, with the deactivated listing
+ * already marked inactive. A deactivation of the sole reachable page therefore
+ * drops it from the set and surfaces the dead end.
+ */
+/** The ids of listings that can still offer an add-on to a booker: an active
+ *  listing that isn't one of the suppressed children (only those serve their
+ *  own public booking page). Shared by the in-memory save re-check and the
+ *  modifier save guard. */
+export const reachablePageIds = (
+  listings: ReadonlyArray<{ id: number; active?: boolean }>,
+  suppressedChildIds: Set<number>,
+): Set<number> =>
+  new Set(
+    listings
+      .filter(
+        (listing) => listing.active && !suppressedChildIds.has(listing.id),
+      )
+      .map((listing) => listing.id),
+  );

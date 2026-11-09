@@ -1,0 +1,585 @@
+// effects: pure
+/**
+ * Curried functional utilities for array operations and composition.
+ *
+ * Several utilities here are thin curried adapters over `@std/collections`,
+ * keeping the project's pipe-friendly calling convention while delegating the
+ * actual work to the standard library.
+ */
+
+import {
+  chunk as stdChunk,
+  distinct as stdDistinct,
+  distinctBy as stdDistinctBy,
+  mapNotNullish as stdMapNotNullish,
+  partition as stdPartition,
+  sumOf as stdSumOf,
+} from "@std/collections";
+
+// --- Pipe type helpers ---
+//
+// `pipe` threads intermediate types left-to-right so that an unannotated
+// callback in a later stage (e.g. `map((x) => x.id)` after a `filter(...)`)
+// infers its parameter type from the previous stage's output. This is achieved
+// with arity-numbered overloads: TS threads A→B→C… across explicit parameters
+// far more readily than across a generic tuple, and the per-stage contextual
+// type lets the curried combinators (`map`, `filter`, `flatMap`, …) resolve
+// their element type parameter from the boundary instead of collapsing to
+// `unknown`. Omitting a variadic fallback is deliberate — a mismatched chain
+// has no matching overload and fails to compile, which is the safety contract
+// callers rely on. The largest chain in the repo today is 7 stages, and the
+// overloads cover 9, so adding a stage means adding one overload line.
+
+/**
+ * Compose functions left-to-right (pipe).
+ */
+export function pipe<A>(): (a: A) => A;
+export function pipe<A, B>(ab: (a: A) => B): (a: A) => B;
+export function pipe<A, B, C>(ab: (a: A) => B, bc: (b: B) => C): (a: A) => C;
+export function pipe<A, B, C, D>(
+  ab: (a: A) => B,
+  bc: (b: B) => C,
+  cd: (c: C) => D,
+): (a: A) => D;
+export function pipe<A, B, C, D, E>(
+  ab: (a: A) => B,
+  bc: (b: B) => C,
+  cd: (c: C) => D,
+  de: (d: D) => E,
+): (a: A) => E;
+export function pipe<A, B, C, D, E, F>(
+  ab: (a: A) => B,
+  bc: (b: B) => C,
+  cd: (c: C) => D,
+  de: (d: D) => E,
+  ef: (e: E) => F,
+): (a: A) => F;
+export function pipe<A, B, C, D, E, F, G>(
+  ab: (a: A) => B,
+  bc: (b: B) => C,
+  cd: (c: C) => D,
+  de: (d: D) => E,
+  ef: (e: E) => F,
+  fg: (f: F) => G,
+): (a: A) => G;
+export function pipe<A, B, C, D, E, F, G, H>(
+  ab: (a: A) => B,
+  bc: (b: B) => C,
+  cd: (c: C) => D,
+  de: (d: D) => E,
+  ef: (e: E) => F,
+  fg: (f: F) => G,
+  gh: (g: G) => H,
+): (a: A) => H;
+export function pipe<A, B, C, D, E, F, G, H, I>(
+  ab: (a: A) => B,
+  bc: (b: B) => C,
+  cd: (c: C) => D,
+  de: (d: D) => E,
+  ef: (e: E) => F,
+  fg: (f: F) => G,
+  gh: (g: G) => H,
+  hi: (h: H) => I,
+): (a: A) => I;
+export function pipe<A, B, C, D, E, F, G, H, I, J>(
+  ab: (a: A) => B,
+  bc: (b: B) => C,
+  cd: (c: C) => D,
+  de: (d: D) => E,
+  ef: (e: E) => F,
+  fg: (f: F) => G,
+  gh: (g: G) => H,
+  hi: (h: H) => I,
+  ij: (i: I) => J,
+): (a: A) => J;
+export function pipe(
+  ...fns: Array<(arg: unknown) => unknown>
+): (value: unknown) => unknown {
+  return (value: unknown): unknown => fns.reduce((acc, fn) => fn(acc), value);
+}
+
+/**
+ * Curried filter
+ */
+export const filter =
+  <T>(predicate: (item: T) => boolean) =>
+  (array: readonly T[]): T[] =>
+    array.filter(predicate);
+
+/**
+ * Curried map
+ */
+export const map =
+  <T, U>(fn: (item: T) => U) =>
+  (array: readonly T[]): U[] =>
+    array.map(fn);
+
+/**
+ * Curried flatMap
+ */
+export const flatMap =
+  <T, U>(fn: (item: T) => U[]) =>
+  (array: T[]): U[] =>
+    array.flatMap(fn);
+
+/**
+ * Split an array into [matching, rest] by a predicate, keeping order.
+ * Curried adapter over `@std/collections.partition`.
+ */
+export const partition =
+  <T>(predicate: (item: T) => boolean) =>
+  (array: T[]): [T[], T[]] =>
+    stdPartition(array, predicate);
+
+/**
+ * Curried map that drops null/undefined results in one pass.
+ * Curried adapter over `@std/collections.mapNotNullish`.
+ * Replaces the two-step pattern: compact(map(fn)(array))
+ */
+export const mapNotNullish =
+  <T, U>(fn: (item: T) => U | null | undefined) =>
+  (array: Iterable<T>): U[] =>
+    stdMapNotNullish(array, fn);
+
+/** Check items in order and stop at the first reported problem. */
+export const firstProblem =
+  <T>(check: (item: T) => string | null | Promise<string | null>) =>
+  async (items: readonly T[]): Promise<string | null> => {
+    for (const item of items) {
+      const problem = await check(item);
+      if (problem) return problem;
+    }
+    return null;
+  };
+
+/**
+ * Curried reduce
+ */
+export const reduce =
+  <T, U>(fn: (acc: U, item: T) => U, initial: U) =>
+  (array: T[]): U =>
+    array.reduce(fn, initial);
+
+/**
+ * Non-mutating sort with comparator
+ */
+export const sort =
+  <T>(comparator: (a: T, b: T) => number) =>
+  (array: T[]): T[] =>
+    array.toSorted(comparator);
+
+/** Sort strings in ascending locale order without changing the input. */
+export const sortStrings = (array: string[]): string[] =>
+  sort((a: string, b: string) => a.localeCompare(b))(array);
+
+/** The numbers, each once, smallest first. */
+export const sortedNumbers = (array: readonly number[]): number[] =>
+  unique([...array]).sort((a: number, b: number) => a - b);
+
+/**
+ * Remove duplicate values (by reference/value equality), keeping first
+ * occurrences in order. Curried adapter over `@std/collections.distinct`.
+ */
+export const unique = <T>(array: T[]): T[] => stdDistinct(array);
+
+/**
+ * Remove duplicates by a key function, keeping first occurrences in order.
+ * Curried adapter over `@std/collections.distinctBy`.
+ */
+export const uniqueBy =
+  <T>(fn: (item: T) => unknown) =>
+  (array: T[]): T[] =>
+    stdDistinctBy(array, fn);
+
+/**
+ * Group rows by a key, keeping only the chosen value from each row.
+ * Keys appear in first-occurrence order and each value list preserves input
+ * order.
+ */
+export const groupToMap =
+  <T, K, V>(keyOf: (row: T) => K, valueFrom: (row: T) => V) =>
+  (rows: readonly T[]): Map<K, V[]> =>
+    new Map(
+      [...Map.groupBy(rows, keyOf)].map(([key, group]) => [
+        key,
+        group.map(valueFrom),
+      ]),
+    );
+
+/**
+ * Key items by their own id, so a caller can look one up. Hand-rolled because
+ * `@std/collections.associateBy` keys by a string and gives back an object,
+ * while every caller here has number ids and wants a Map.
+ */
+export const byId = <T extends { id: number }>(
+  items: readonly T[],
+): Map<number, T> => new Map(items.map((item) => [item.id, item]));
+
+/** Keep the items a test accepts, then take one thing from each. */
+export const keepAndTake =
+  <T, R>(
+    keep: (item: T) => boolean,
+    take: (item: T) => R,
+  ): ((items: readonly T[]) => R[]) =>
+  (items) =>
+    items.filter(keep).map(take);
+
+/** Whether two records hold the same value in every named field. */
+export const sameOn =
+  <T>(...fields: readonly (keyof T)[]): ((left: T, right: T) => boolean) =>
+  (left, right) =>
+    fields.every((field) => left[field] === right[field]);
+
+/** A Map holding an empty list for each key, ready to be filled. */
+export const emptyListsFor = <Key, Value>(
+  keys: readonly Key[],
+): Map<Key, Value[]> => new Map(keys.map((key) => [key, []]));
+
+/**
+ * Whether two sequences hold the same values, in the same order. It stops at
+ * the first difference, so how long it takes says how much matched: never
+ * compare secrets with it.
+ */
+export const sameOrder = <T>(
+  left: ArrayLike<T>,
+  right: ArrayLike<T>,
+): boolean => {
+  if (left.length !== right.length) return false;
+  for (let index = 0; index < left.length; index++) {
+    if (left[index] !== right[index]) return false;
+  }
+  return true;
+};
+
+/** Read a required map entry, failing where a broken completeness invariant is
+ * first observed instead of passing an undefined value onward. */
+export const requiredMapValue = <Key, Value>(
+  values: ReadonlyMap<Key, Value>,
+  key: Key,
+  errorMessage: string,
+): Value => {
+  const value = values.get(key);
+  if (value === undefined) throw new Error(errorMessage);
+  return value;
+};
+
+/**
+ * Remove null and undefined values from array
+ */
+export const isNullish = (value: unknown): value is null | undefined =>
+  value === null || value === undefined;
+
+export const isNotNullish = <T>(value: T | null | undefined): value is T =>
+  !isNullish(value);
+
+/** Ask whether a value is one of a fixed list: `isOneOf(["a", "b"])("a")` is
+ * true. Curried, so a list of words becomes one named check. */
+export const isOneOf =
+  (values: readonly string[]): ((value: string | undefined) => boolean) =>
+  (value) =>
+    value !== undefined && values.includes(value);
+
+export const compact = <T>(array: (T | null | undefined)[]): T[] =>
+  array.filter(isNotNullish);
+
+/**
+ * The keys of `all` that no listed item carries. The second argument list is
+ * curried so a caller reads "these keys, not covered by that list".
+ */
+export const notCoveredBy =
+  <T, K>(keyOf: (item: T) => K, knowns: readonly T[]) =>
+  (all: readonly K[]): K[] => {
+    const carried = new Set(knowns.map(keyOf));
+    return all.filter((key) => !carried.has(key));
+  };
+
+/**
+ * Alternative combinator: try a sequence of producers in order and return the
+ * first that yields a defined value, or undefined if every one declines.
+ *
+ * Producers run lazily and may be async (each is awaited before the next is
+ * tried), so later, more expensive lookups are skipped once one claims the
+ * input. Use it to fold an ordered set of fallible parsers/handlers into a
+ * single "first match wins" lookup instead of an `if … else if …` ladder. A
+ * `null` result counts as a match (the producer claimed the input but found it
+ * invalid), distinct from `undefined` ("not mine — try the next").
+ */
+export const firstMatch = async <T>(
+  producers: ReadonlyArray<() => T | undefined | Promise<T | undefined>>,
+): Promise<T | undefined> => {
+  for (const produce of producers) {
+    const value = await produce();
+    if (value !== undefined) return value;
+  }
+  return;
+};
+
+/**
+ * Lazy evaluation - compute once on first call, cache forever.
+ * Use instead of `let x = null; const getX = () => x ??= compute();`
+ */
+export const once = <T>(fn: () => T): (() => T) => {
+  let computed = false;
+  let value: T;
+  return (): T => {
+    if (!computed) {
+      value = fn();
+      computed = true;
+    }
+    return value;
+  };
+};
+
+/**
+ * Resettable lazy reference - like once() but can be reset for testing.
+ * Returns [get, set] tuple where set(null) resets to uncomputed state.
+ */
+export const lazyRef = <T>(
+  fn: () => T,
+): [get: () => T, set: (value: T | null) => void] => {
+  let computed = false;
+  let value: T;
+  const get = (): T => {
+    if (!computed) {
+      value = fn();
+      computed = true;
+    }
+    return value;
+  };
+  const set = (newValue: T | null): void => {
+    if (newValue === null) {
+      computed = false;
+    } else {
+      value = newValue;
+      computed = true;
+    }
+  };
+  return [get, set];
+};
+
+/**
+ * Resource management pattern (like Haskell's bracket or try-with-resources).
+ * Ensures cleanup happens even if the operation throws.
+ *
+ * @example
+ * const withConnection = bracket(
+ *   () => openConnection(),
+ *   (conn) => conn.close()
+ * );
+ * const result = await withConnection(async (conn) => conn.query('SELECT 1'));
+ */
+export const bracket =
+  <R>(acquire: () => R | Promise<R>, release: (r: R) => void | Promise<void>) =>
+  async <T>(use: (r: R) => T | Promise<T>): Promise<T> => {
+    const resource = await acquire();
+    try {
+      return await use(resource);
+    } finally {
+      await release(resource);
+    }
+  };
+
+/**
+ * Narrow an unknown value to string, defaulting to "" if not a string.
+ * Replaces `typeof x === "string" ? x : ""` at type boundaries.
+ */
+export const asString = (value: unknown): string =>
+  typeof value === "string" ? value : "";
+
+/**
+ * Join an array of strings into a single string (curried reduce shorthand).
+ * Replaces the common pattern: reduce((acc: string, s: string) => acc + s, "")
+ */
+export const joinStrings = reduce((acc: string, s: string) => acc + s, "");
+
+/**
+ * Curried sum-by-selector. Adds up the numbers produced by `selector` for each
+ * item. Curried adapter over `@std/collections.sumOf`.
+ * Replaces the common pattern: reduce((acc, x) => acc + selector(x), 0)
+ */
+export const sumOf =
+  <T>(selector: (item: T) => number) =>
+  (array: Iterable<T>): number =>
+    stdSumOf(array, selector);
+
+/**
+ * Sum an array of numbers (identity selector shorthand for sumOf).
+ * Replaces the common pattern: reduce((acc, n) => acc + n, 0)
+ */
+export const sum = sumOf((n: number) => n);
+
+/**
+ * Curried group-and-sum: accumulate `valueOf(item)` into a `Map` keyed by
+ * `keyOf(item)`. Replaces the common pattern:
+ *   const m = new Map(); for (const x of xs) m.set(k(x), (m.get(k(x)) ?? 0) + v(x))
+ */
+export const sumByKey =
+  <T, K>(keyOf: (item: T) => K, amountOf: (item: T) => number) =>
+  (items: Iterable<T>): Map<K, number> => {
+    const totals = new Map<K, number>();
+    for (const item of items) {
+      const key = keyOf(item);
+      totals.set(key, (totals.get(key) ?? 0) + amountOf(item));
+    }
+    return totals;
+  };
+
+/** Return a value unchanged. */
+export const identity = <T>(value: T): T => value;
+
+/** Index items by one field and chosen value. Keys keep first-occurrence order,
+ * while later matching items replace the stored value. */
+export const mapBy =
+  <T, Key extends keyof T, V>(key: Key, valueFrom: (item: T) => V) =>
+  (items: Iterable<T>): Map<T[Key], V> => {
+    const result = new Map<T[Key], V>();
+    for (const item of items) result.set(item[key], valueFrom(item));
+    return result;
+  };
+
+/** Index items by `id` and a chosen value. */
+export const mapById = <T extends { id: unknown }, V>(
+  valueFrom: (item: T) => V,
+): ((items: Iterable<T>) => Map<T["id"], V>) => mapBy("id", valueFrom);
+
+/** Index one field from each item by its `id`. */
+export const fieldById =
+  <Field extends PropertyKey>(field: Field) =>
+  <T extends { id: unknown } & Record<Field, unknown>>(
+    items: Iterable<T>,
+  ): Map<T["id"], T[Field]> =>
+    mapById((item: T) => item[field])(items);
+
+/**
+ * A copy of `base` with `extra` entries merged on top (an `extra` key wins over
+ * the same key in `base`). Curried so a constant overlay (a fixed content type,
+ * a default set) can extend whatever record it is given.
+ */
+export const extendedBy =
+  <V>(extra: Record<string, V>) =>
+  (base: Record<string, V>): Record<string, V> => ({ ...base, ...extra });
+
+/**
+ * Split an array into chunks of a given size.
+ * Curried adapter over `@std/collections.chunk` (which throws for size < 1).
+ */
+export const chunk =
+  (size: number) =>
+  <T>(array: T[]): T[][] =>
+    stdChunk(array, size);
+
+/**
+ * Whole numbers counting up from `start`, stopping before `end` ([] when `end`
+ * is not past `start`). Hand-rolled because `@std/collections` has no numeric
+ * range helper. Iterating this bounded array replaces hand-counted loops,
+ * which a single slip in their step can make endless.
+ */
+export const range = (start: number, end: number): number[] =>
+  Array.from({ length: Math.max(0, end - start) }, (_, i) => start + i);
+
+/**
+ * Map over a promise-returning function in parallel (Promise.all)
+ */
+export const mapParallel =
+  <T, U>(fn: (item: T) => Promise<U>) =>
+  (array: readonly T[]): Promise<U[]> =>
+    Promise.all(array.map(fn));
+
+/** Collection cache returned by collectionCache() */
+export type CollectionCache<T> = {
+  getAll: () => Promise<T[]>;
+  invalidate: () => void;
+  size: () => number;
+};
+
+/**
+ * Create an in-memory collection cache with TTL.
+ * Loads all items via fetchAll on first access or after invalidation/expiry,
+ * then serves from memory until the TTL expires or invalidate() is called.
+ * Takes the clock as an argument: pass nowMs, or a fake clock in a test.
+ *
+ * Uses a generation counter to prevent a race condition where a concurrent
+ * fetchAll() that started before an invalidation could overwrite the cache
+ * with stale data.
+ */
+export const collectionCache = <T>(
+  fetchAll: () => Promise<T[]>,
+  ttlMs: number,
+  now: () => number,
+): CollectionCache<T> => {
+  const [getState, setState] = lazyRef<{ items: T[] | null; time: number }>(
+    () => ({ items: null, time: 0 }),
+  );
+  let generation = 0;
+  return {
+    getAll: async (): Promise<T[]> => {
+      const state = getState();
+      if (state.items !== null && now() - state.time <= ttlMs) {
+        return state.items;
+      }
+      const gen = generation;
+      const items = await fetchAll();
+      if (gen === generation) {
+        setState({ items, time: now() });
+      }
+      return items;
+    },
+    invalidate: (): void => {
+      generation++;
+      setState(null);
+    },
+    size: (): number => getState().items?.length ?? 0,
+  };
+};
+
+/** TTL cache returned by ttlCache() */
+export type TtlCache<K, V> = {
+  get: (key: K) => V | undefined;
+  set: (key: K, value: V) => void;
+  clear: () => void;
+  size: () => number;
+};
+
+/**
+ * Create a TTL (Time-To-Live) cache.
+ * Entries expire after ttlMs milliseconds.
+ * Takes the clock as an argument: pass nowMs, or a fake clock in a test.
+ * Give maxEntries a value to bound the cache: storing a new key at the cap
+ * drops the oldest-stored entry first. Bound any cache whose keys can be
+ * chosen from outside (e.g. unknown session cookies), so a flood of unique
+ * keys cannot grow it without limit. Leave it unset for caches whose keyspace
+ * our own data already bounds — the keyed entity caches rely on holding every
+ * row of their table.
+ */
+export const ttlCache = <K, V>(
+  ttlMs: number,
+  now: () => number,
+  maxEntries?: number,
+): TtlCache<K, V> => {
+  const cache = new Map<K, { value: V; cachedAt: number }>();
+  return {
+    clear: (): void => {
+      cache.clear();
+    },
+    get: (key: K): V | undefined => {
+      const entry = cache.get(key);
+      if (!entry) return;
+      if (now() - entry.cachedAt > ttlMs) {
+        cache.delete(key);
+        return;
+      }
+      return entry.value;
+    },
+    set: (key: K, value: V): void => {
+      // Deleting first re-inserts a refreshed key at the newest position, so
+      // the Map's first key is always the oldest-stored entry.
+      cache.delete(key);
+      if (maxEntries !== undefined && cache.size >= maxEntries) {
+        const oldest = cache.keys().next();
+        if (!oldest.done) cache.delete(oldest.value);
+      }
+      cache.set(key, { cachedAt: now(), value });
+    },
+    size: (): number => cache.size,
+  };
+};

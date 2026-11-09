@@ -1,0 +1,79 @@
+/**
+ * Admin templates for Site → News: the newest-first list, the create form, the
+ * Edit-tab panel (the pre-filled fields form, posting to the update route), and
+ * the delete confirmation. The edit page itself is the shared tabbed entity page
+ * (Edit / Images / Actions) built in `#routes/admin/news-page.ts`; this file
+ * only supplies the Edit tab's form.
+ */
+
+import { t } from "#i18n";
+import {
+  newsPostEditForm,
+  newsPostForm,
+  newsPostToValues,
+} from "#routes/admin/news-form.ts";
+import { formatDatetimeShort } from "#shared/dates.ts";
+import { defineTable } from "#shared/tables/definition.ts";
+import { prefixedDeletePage } from "#templates/admin/confirm-page.tsx";
+import { rowDeleteLink } from "#templates/admin/delete-link.tsx";
+import {
+  collectionPage,
+  contentEntityEditPanel,
+  contentNewPage,
+} from "#templates/admin/site-content.tsx";
+import { WritableLink } from "#templates/admin/writable-only.tsx";
+import { renderTable } from "#templates/components/table.tsx";
+import type { AdminSession, NewsPost, NewsPostSummary } from "#types";
+
+const LIST = "/admin/site/news";
+const DeleteLink = rowDeleteLink(LIST);
+
+const newsTable = defineTable<NewsPostSummary>([
+  {
+    cell: (post) => (
+      <WritableLink href={`${LIST}/${post.id}/edit`}>{post.name}</WritableLink>
+    ),
+    header: () => t("news.name_column"),
+    key: "name",
+  },
+  {
+    cell: (post) => formatDatetimeShort(post.created),
+    header: () => t("news.created_column"),
+    key: "created",
+  },
+  {
+    cell: (post) => <DeleteLink id={post.id} />,
+    header: "",
+    key: "delete",
+  },
+]);
+
+export const adminNewsListPage = (
+  posts: NewsPostSummary[],
+  session: AdminSession,
+  successMessage?: string,
+): string =>
+  collectionPage("news", LIST)(
+    session,
+    successMessage,
+    posts.length === 0 ? (
+      <p>
+        <em>{t("news.none")}</em>
+      </p>
+    ) : (
+      renderTable(newsTable, posts)
+    ),
+  );
+
+export const adminNewsNewPage = contentNewPage(LIST, "news", newsPostForm);
+
+/** The Edit tab's panel: the pre-filled fields form (name, the editable slug
+ * with its public link, SEO meta, snippet, markdown body) posting to the update
+ * route. */
+export const newsEditPanel = contentEntityEditPanel(
+  LIST,
+  newsPostEditForm,
+  (post: NewsPost) => newsPostToValues(post),
+);
+
+export const adminNewsDeletePage = prefixedDeletePage("news", LIST);

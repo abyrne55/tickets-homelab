@@ -1,0 +1,56 @@
+/**
+ * SSRF guard for admin-supplied URLs that the server fetches itself.
+ *
+ * Safe URLs must be absolute https:// URLs with a real domain name. IP
+ * literals, localhost-style names, and internal/private hostnames are all
+ * rejected. This is hostname-based and best-effort. It does not resolve DNS,
+ * so it does not defend against DNS rebinding. It blocks the obvious "fetch
+ * an internal service" cases and forces TLS.
+ */
+
+import { endsWithAny } from "#fp-strings";
+
+/** Internal hostname suffixes/names that must never be fetched server-side. */
+const isInternalHostname = (h: string): boolean =>
+  h === "localhost" ||
+  h === "local" ||
+  endsWithAny([".localhost", ".local", ".internal"])(h);
+
+/** True when the host is an IPv4 or IPv6 literal rather than a real domain. */
+const isIpLiteral = (host: string): boolean => {
+  const h =
+    host.startsWith("[") && host.endsWith("]") ? host.slice(1, -1) : host;
+  if (h.includes(":")) return true;
+  return /^(\d{1,3}\.){3}\d{1,3}$/.test(h);
+};
+
+/** True when a hostname is a public-looking domain name. */
+const isDomainHostname = (host: string): boolean =>
+  host.includes(".") && !host.endsWith(".");
+
+/**
+ * True when `raw` is a safe URL for the server to fetch. It must be a
+ * syntactically valid https:// URL whose host is a real domain name and not
+ * internal/private.
+ */
+export const isSafeServerFetchUrl = (raw: string): boolean => {
+  if (!URL.canParse(raw)) return false;
+
+  const url = new URL(raw);
+  const host = url.hostname.toLowerCase();
+  return (
+    url.protocol === "https:" &&
+    !isInternalHostname(host) &&
+    !isIpLiteral(host) &&
+    isDomainHostname(host)
+  );
+};
+
+/**
+ * Validate a user-supplied URL and return the provided message when it is not
+ * safe for server-side fetching.
+ */
+export const validateSafeServerFetchUrl = (
+  raw: string | undefined,
+  message: string,
+): string | null => (raw && !isSafeServerFetchUrl(raw) ? message : null);

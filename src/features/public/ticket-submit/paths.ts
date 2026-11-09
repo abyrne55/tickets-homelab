@@ -1,0 +1,179 @@
+/**
+ * The two ways a validated, priced order completes: through the payment
+ * provider (paid) or straight to a stored reservation (free / zero-total /
+ * payments-disabled). Both take the same parsed order facts; the caller
+ * decides which path the priced total demands.
+ */
+
+import type { OrderSpan } from "#booking/order-span.ts";
+import { hmacHash } from "#crypto/hashing.ts";
+import { requirePublicDefaultStatus } from "#db/attendee-statuses.ts";
+import type { ChildAllocation } from "#db/attendee-types.ts";
+import { createFreeReservation } from "#routes/public/free-reservation.ts";
+import {
+  type AnswerInfo,
+  type extractContact,
+  listingAnswerMaps,
+  ticketFormErrorResponse,
+} from "#routes/public/ticket-form.ts";
+import {
+  checkAvailability,
+  handlePaymentFlow,
+} from "#routes/public/ticket-payment.ts";
+import type { TicketCtx } from "#routes/public/types.ts";
+import { redirectResponse } from "#routes/response.ts";
+import type {
+  ModifierApplication,
+  PricedOrder,
+  TicketPaymentBreakdown,
+} from "#shared/checkout-pricing.ts";
+import type { CheckoutIntent, CheckoutItem } from "#shared/payments.ts";
+import { queueRegistrationSends } from "#shared/webhook/delivery.ts";
+import { computeListingTextAnswerIdMap } from "./parse.ts";
+
+export type PathParams = OrderSpan & {
+  ctx: TicketCtx;
+  contact: ReturnType<typeof extractContact>;
+  info: AnswerInfo;
+};
+
+export type PaymentPathParams = Pick<
+  PathParams,
+  "ctx" | "date" | "dayCount" | "quantities" | "info"
+> & { intent: CheckoutIntent };
+
+/** Shown when a cart's tickets sell out between page load and submission. */
+export const TICKETS_UNAVAILABLE_MESSAGE =
+  "Sorry, some tickets are no longer available";
+
+/** Handle the paid registration path */
+export const handlePaidPath = async (
+  request: Request,
+  params: PaymentPathParams,
+): Promise<Response> => {
+  const { ctx, quantities, date, dayCount, info, intent } = params;
+  const available = await checkAvailability(
+    ctx.listings,
+    quantities,
+    date,
+    dayCount,
+  );
+  if (!available) {
+    return ticketFormErrorResponse(ctx)(TICKETS_UNAVAILABLE_MESSAGE);
+  }
+  // Create the encrypted free-text strings only once availability is confirmed,
+  // so a rejected over-capacity submission never leaves orphaned plaintext rows.
+  const listingTextAnswerIds = await computeListingTextAnswerIdMap(ctx, info);
+  if (listingTextAnswerIds !== undefined) {
+    intent.listingTextAnswerIds = listingTextAnswerIds;
+    intent.textAnswers = Object.fromEntries(
+      info.textAnswers.map(({ questionId, text }) => [
+        String(questionId),
+        text,
+      ]),
+    );
+  }
+  return handlePaymentFlow(request, intent, ctx);
+};
+
+/**
+ * The reservation-amount the public-default status charges as a deposit, or
+ * undefined when public bookings are paid in full. Drives the deposit pricing
+ * on the paid path: items keep their full prices (so the booking fee stays on
+ * the full order) and each line is charged only this fraction up front.
+ */
+export const publicReservationAmount = async (): Promise<
+  string | undefined
+> => {
+  const status = await requirePublicDefaultStatus();
+  return status.is_reservation && status.reservation_amount
+    ? status.reservation_amount
+    : undefined;
+};
+
+/**
+ * Complete a reservation without a payment provider. A sold-out race rolls the
+ * whole order back.
+ *
+ * Reached for every zero-total cart, and for every cart when payments are
+ * disabled. Either way the resolved modifiers are persisted and their stock
+ * consumed, so a stock-limited answer tier stays capped across free bookings,
+ * not only paid ones.
+ */
+export const handleFreePath = async (
+  params: PathParams & {
+    items: CheckoutItem[];
+    modifierUsages: ModifierApplication[];
+    paymentBreakdown?: TicketPaymentBreakdown;
+    /** Pre-fold single-parent thank-you URL, kept across the fold so a parent +
+     * its folded children still redirects to the parent's configured URL. */
+    thankYouUrl?: string | null;
+    ledgerOrder: PricedOrder | null;
+    allocations?: ChildAllocation[];
+  },
+): Promise<Response> => {
+  const {
+    ctx,
+    items,
+    date,
+    dayCount,
+    contact,
+    info,
+    modifierUsages,
+    paymentBreakdown,
+    thankYouUrl,
+    ledgerOrder,
+    allocations,
+  } = params;
+  const result = await createFreeReservation({
+    allocations,
+    contact,
+    date,
+    dayCount,
+    // One booking row per checkout line — a listing booked through two paths
+    // (overlapping packages, or a package plus standalone) keeps one row per
+    // path, each carrying its own package id and charged amount.
+    items,
+    // The caller decides whether this booking dual-writes the ledger: an enabled,
+    // zero-total checkout posts the same gross-sale / discount / owed legs a paid
+    // one would; a provider-less booking passes null and records nothing here
+    // (stock is consumed in the create transaction either way).
+    ledgerOrder,
+    // The answers commit in the same atomic boundary as the booking, so a
+    // failing answers write rolls the reservation back instead of leaving a
+    // booked order with no answers.
+    listingAnswers: listingAnswerMaps(info, ctx.questionListingMap),
+    listings: ctx.listings,
+    modifierUsages,
+    paidByItem: paymentBreakdown?.paidByItem,
+    remainingBalance: paymentBreakdown?.remainingBalance,
+  });
+  if (!result.success) return ticketFormErrorResponse(ctx)(result.error);
+
+  // Notify only after stock is committed; a rolled-back order should not
+  // trigger a registration notification. The registration activity lines
+  // rode the batch itself, so this is a send-only queue: no second
+  // registration log write happens here. The hash before passing on so the
+  // renewal lookup uses the same blind index the paid path would carry
+  // through Stripe session metadata.
+  const siteTokenIndex = ctx.siteToken
+    ? await hmacHash(ctx.siteToken)
+    : undefined;
+  // The typed free text travels with the notification, because the
+  // strings table seals it to the owner key, which no notification can spend.
+  const freeTexts = new Map(
+    info.textAnswers.map(({ questionId, text }) => [questionId, text]),
+  );
+  await queueRegistrationSends(result.entries, {
+    freeTexts,
+    siteTokenIndex,
+    source: "public",
+  });
+
+  // The caller resolves the redirect from the pre-fold listing set (a single
+  // listing's — or a single parent + its folded children's — thank-you URL), so
+  // folding a child never drops it.
+  if (thankYouUrl) return redirectResponse(thankYouUrl);
+  const token = encodeURIComponent(result.token);
+  return redirectResponse(`/ticket/reserved?tokens=${token}`);
+};

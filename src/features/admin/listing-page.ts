@@ -1,0 +1,267 @@
+/**
+ * The tabbed /admin/listing/:id entity page (edit-pages.md, slice 2). The
+ * banner holds the deactivated alert and the listing's notes, so neither
+ * hides behind one tab. Sub-action POST handlers keep their own routes, so
+ * this file owns only the GET surface.
+ */
+
+import { settings } from "#db/settings.ts";
+import { t } from "#i18n";
+import {
+  type ActionDef,
+  defineEntityPage,
+  type EntityPage,
+  overviewTab,
+  prepareOwnerFields,
+  type SlotLoader,
+  type TabDef,
+} from "#routes/admin/entity-pages.ts";
+import { panelTab, writeFormTab } from "#routes/admin/entity-write-tab.ts";
+import type { AuthSession } from "#routes/auth.ts";
+import type { AdminFeatureKey } from "#shared/admin-features.ts";
+import { adminPattern } from "#shared/admin-surface.ts";
+import { targetQuery } from "#shared/bulk-email-targets/registry.ts";
+import { isStorageEnabled } from "#shared/storage.ts";
+import { ListingBanner } from "#templates/admin/listings/overview.tsx";
+import {
+  CONTENT_ADMIN_LEVELS,
+  isContentRole,
+  isOwnerRole,
+  isPaidListing,
+  isStaffRole,
+} from "#types";
+import { listingNoteFeature } from "./catalog-notes.ts";
+import {
+  type LoadedListing,
+  listingHasEmailableAttendees,
+  loadListingActivity,
+  loadListingActivityPreview,
+  loadListingForPage,
+  loadListingOverviewPanel,
+  loadListingRosterPanel,
+} from "./listing-page-data.ts";
+import {
+  loadListingAttributesPanel,
+  loadListingEditPanel,
+  loadListingImagesPanel,
+  loadListingQrPanel,
+  loadListingQuestionsPanel,
+} from "./listing-page-management-panels.ts";
+
+/** Tab visibility for staff-only surfaces such as roster and money. Content
+ * editors can use Edit, Images, and the safe entries on Actions. */
+const staffOnly = (_entity: unknown, session: AuthSession): boolean =>
+  isStaffRole(session.adminLevel);
+
+/** Staff-only, and only when the listing also passes an extra check: for
+ * example it is still active, or its public page serves. */
+const staffAnd =
+  (alsoAllowed: (entity: LoadedListing) => boolean) =>
+  (entity: LoadedListing, session: AuthSession): boolean =>
+    staffOnly(entity, session) && alsoAllowed(entity);
+
+/** The Actions tab entries. Each destination's declaration gives the action
+ * its audience and its address. A route that narrows also hides its link.
+ * The tab is open to content roles. Duplicate and Export are safe for an
+ * editor, and the rest stay staff or owner-only. `visible` keeps only the
+ * data-dependent gates the declaration cannot express. */
+const LISTING_ACTIONS: readonly ActionDef<LoadedListing>[] = [
+  {
+    destination: "listingDuplicate",
+    icon: "plus",
+    labelKey: "listings_table.duplicate",
+  },
+  {
+    // A JSON export download (see catalog-transfer). Content-gated like the tab,
+    // and a read, so — unlike duplicate — it stays available in read-only mode.
+    destination: "listingExportJson",
+    icon: "save",
+    labelKey: "catalog_transfer.export_link",
+  },
+  {
+    // The compose page 404s for a listing target with zero recipients, so a
+    // link without emailable attendees is a dead link (AGENTS.md: never render
+    // one). The route itself is owner-only, which the destination keeps.
+    destination: "emails",
+    href: ({ listing }) =>
+      `/admin/emails${targetQuery({ kind: "listing", listingId: listing.id })}`,
+    icon: "arrow-right",
+    labelKey: "common.email",
+    visible: (entity) => entity.hasEmailableAttendees,
+  },
+  {
+    danger: true,
+    destination: "listingRefundAll",
+    icon: "credit-card",
+    labelKey: "listings_table.refund_all",
+    // Moving money only applies to a paid listing.
+    visible: (entity) => isPaidListing(entity.listing),
+  },
+  {
+    danger: true,
+    destination: "listingDeactivate",
+    icon: "x",
+    labelKey: "listings_table.deactivate",
+    visible: (entity) => entity.listing.active,
+  },
+  {
+    destination: "listingReactivate",
+    icon: "rotate-ccw",
+    labelKey: "listings_table.reactivate",
+    visible: (entity) => !entity.listing.active,
+  },
+  {
+    danger: true,
+    destination: "listingDelete",
+    icon: "trash-2",
+    labelKey: "common.delete",
+  },
+];
+
+/** The Overview tab: the details panel plus a short activity preview.
+ *  Info + money: staff only (the old detail page was staff-only). */
+const overview = {
+  ...overviewTab<LoadedListing>([
+    {
+      kind: "custom",
+      load: (entity, ctx) =>
+        loadListingOverviewPanel(entity, isOwnerRole(ctx.session.adminLevel)),
+    },
+    {
+      kind: "activity",
+      load: (entity) => loadListingActivityPreview(entity),
+      viewAllTab: "activity",
+    },
+  ]),
+  visible: staffOnly,
+};
+
+const ownerFeatureWriteTab = (
+  feature: AdminFeatureKey,
+  slug: string,
+  labelKey: string,
+  load: (entity: LoadedListing) => Promise<JSX.Element>,
+): TabDef<LoadedListing> =>
+  writeFormTab(
+    slug,
+    labelKey,
+    load,
+    (_entity, session) =>
+      isOwnerRole(session.adminLevel) && settings.features[feature],
+  );
+
+/** The listing's banner wiring comes from its note feature. The loader below
+ * composes the deactivated alert above the shared notes section, so it cannot
+ * use the feature's whole-banner helper. */
+const loadBanner: SlotLoader<LoadedListing> = async ({ listing }, ctx) => {
+  const notes = await listingNoteFeature.page.notesFor(listing, ctx.session);
+  return ListingBanner({
+    active: listing.active,
+    deleteHref: listingNoteFeature.page.noteDeleteUrl,
+    isOwner: isOwnerRole(ctx.session.adminLevel),
+    notes,
+  });
+};
+
+/** The tabbed listing page. */
+export const listingPage: EntityPage<LoadedListing> = defineEntityPage({
+  audience: CONTENT_ADMIN_LEVELS,
+  banner: loadBanner,
+  destination: "listing",
+  load: (id) => loadListingForPage(id),
+  // A single listing is a page *within* the Listings section: `{ section }`
+  // highlights that top link and leaves the "Add"/"Import" sub-nav out.
+  navActive: { section: adminPattern("listings") },
+  proseExtra: ({ listing }, ctx) =>
+    listingNoteFeature.page.proseExtra(listing, ctx),
+  recordId: ({ listing }) => listing.id,
+  tabs: [
+    overview,
+    panelTab(
+      "attendees",
+      "entity.tab.attendees",
+      loadListingRosterPanel,
+      staffOnly,
+    ),
+    {
+      // The scanner is served by its own route (GET /admin/listing/:id/scanner,
+      // scanner.ts) rather than this tab framework's section loaders. The
+      // router tries literal paths before this page's /:tab wildcard. So that
+      // route always wins, and this tab renders no content of its own. Its
+      // entry here exists only to promote the link into the top-level
+      // tab strip (out of the Actions tab's action list). Same slug and same
+      // check-in gate the standalone route's link always used.
+      labelKey: "listings_table.scanner",
+      sections: [],
+      slug: "scanner",
+      visible: staffAnd((entity) => !entity.listing.purchase_only),
+    },
+    // Editors and above can edit, but not in read-only mode. In that mode the
+    // global guard redirects the edit route to /read-only. Hide the tab then
+    // rather than render a link that immediately bounces. Then an editor's
+    // bare-URL default cannot resolve onto an un-editable form.
+    writeFormTab("edit", "entity.tab.edit", (entity, ctx) =>
+      loadListingEditPanel(entity, ctx),
+    ),
+    writeFormTab("images", "entity.tab.images", loadListingImagesPanel, () =>
+      isStorageEnabled(),
+    ),
+    ownerFeatureWriteTab(
+      "attributes",
+      "attributes",
+      "entity.tab.attributes",
+      loadListingAttributesPanel,
+    ),
+    ownerFeatureWriteTab(
+      "questions",
+      "questions",
+      "entity.tab.questions",
+      loadListingQuestionsPanel,
+    ),
+    // Staff-only, and only while the listing's public page serves. A child
+    // has no standalone page at all, and an inactive listing's page is off.
+    // Either tab links straight to a 404. Hidden in read-only mode too: the
+    // QR form posts to POST /admin/listing/:id/qr, which the read-only
+    // guard default-denies. A followable tab then carries an unsubmittable
+    // form.
+    writeFormTab(
+      "qr",
+      "entity.tab.qr",
+      (entity) => loadListingQrPanel(entity),
+      staffAnd((entity) => entity.publicPage === "available"),
+    ),
+    {
+      labelKey: "entity.tab.activity",
+      sections: [{ kind: "activity", load: loadListingActivity }],
+      slug: "activity",
+      visible: staffOnly,
+    },
+    {
+      labelKey: "entity.tab.actions",
+      sections: [
+        {
+          actions: LISTING_ACTIONS,
+          kind: "actions",
+          // The Email action is the only one gating on hasEmailableAttendees,
+          // and its recipient check decrypts PII. So resolve it here, when the
+          // Actions tab renders, instead of on every tab's page load.
+          // Owner-only (the sole role that sees Email). Other staff skip the
+          // decrypt.
+          prepare: prepareOwnerFields<LoadedListing>(async (entity) => ({
+            hasEmailableAttendees: await listingHasEmailableAttendees(
+              entity.listing.id,
+            ),
+          })),
+          titleKey: "entity.tab.actions",
+        },
+      ],
+      slug: "actions",
+      // Open to editors too (unlike the other staff-only tabs). They can
+      // still only use Duplicate and Export, since every other action above
+      // carries its own `staffOnly` check.
+      visible: (_entity, session) => isContentRole(session.adminLevel),
+    },
+  ],
+  titleOf: ({ listing }) =>
+    t("listings_table.detail_title", { name: listing.name }),
+});

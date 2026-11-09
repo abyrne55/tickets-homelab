@@ -1,0 +1,179 @@
+/**
+ * Join routes - public invite acceptance flow
+ */
+
+import {
+  acceptInvite,
+  activateKeylessUser,
+  decryptAdminLevel,
+  decryptUsername,
+  getUserByInviteCode,
+  isInviteValid,
+} from "#db/users.ts";
+import { t } from "#i18n";
+import {
+  errorRedirect,
+  publicPageResponse,
+  redirect,
+} from "#routes/response.ts";
+import { createRouter, defineRoutes } from "#routes/router.ts";
+import { createFormRoute, publicFormPage } from "#shared/app-forms.ts";
+import { defineForm } from "#shared/forms/definition.ts";
+import { MAX_INPUT_LENGTH } from "#shared/limits.ts";
+import type { ResponseHandler } from "#shared/response-steps.ts";
+import { joinCompletePage, joinErrorPage, joinPage } from "#templates/join.tsx";
+import type { User } from "#types";
+
+export const joinForm = defineForm({
+  fields: [
+    {
+      autocomplete: "new-password" as const,
+      hint: t("join.set_password.min_chars"),
+      label: t("join.set_password.password"),
+      maxlength: MAX_INPUT_LENGTH,
+      minlength: 8,
+      name: "password" as const,
+      required: true,
+      type: "password" as const,
+      validate: (v: string) => (v.length < 8 ? t("error.password_min") : null),
+    },
+    {
+      autocomplete: "new-password" as const,
+      label: t("join.set_password.confirm_password"),
+      maxlength: MAX_INPUT_LENGTH,
+      minlength: 8,
+      name: "password_confirm" as const,
+      required: true,
+      type: "password" as const,
+    },
+  ] as const,
+});
+
+/** The page an invite that names nobody usable answers with. */
+const invalidInviteResponse = (): Promise<Response> =>
+  publicPageResponse(() => joinErrorPage(t("error.invite_invalid")), 404);
+
+/** Validate invite code and return user, or an error response */
+const validateInvite = async (
+  code: string,
+): Promise<{ user: User; username: string } | Response> => {
+  const user = await getUserByInviteCode(code);
+  if (!user) {
+    return invalidInviteResponse();
+  }
+
+  const valid = await isInviteValid(user);
+  if (!valid) {
+    return publicPageResponse(
+      () => joinErrorPage(t("error.invite_expired")),
+      410,
+    );
+  }
+
+  // Editors hold no DATA_KEY, so their invite deliberately carries no handoff —
+  // they activate keyless. Every other role self-activates by unwrapping the
+  // DATA_KEY handoff wrapped under this invite code; an invite missing that
+  // handoff (e.g. created before self-activation existed) can't be completed and
+  // the owner re-invites (such invites expire within a week anyway).
+  const adminLevel = await decryptAdminLevel(user);
+  if (adminLevel !== "editor" && !user.invite_wrapped_data_key) {
+    return invalidInviteResponse();
+  }
+
+  return { user, username: await decryptUsername(user) };
+};
+
+// Runs once an invite code has been checked, with the code, the invited user,
+// and their decrypted username.
+type InviteHandler = ResponseHandler<
+  [code: string, user: User, username: string]
+>;
+
+// The same, for a route: the incoming request comes first, then the checked
+// invite details.
+type RequestInviteHandler = ResponseHandler<
+  [request: Request, ...invite: Parameters<InviteHandler>]
+>;
+
+/** Run handler with validated invite, returning error response if invalid */
+const withValidInvite = async (
+  code: string,
+  handler: InviteHandler,
+): Promise<Response> => {
+  const result = await validateInvite(code);
+  return result instanceof Response
+    ? result
+    : handler(code, result.user, result.username);
+};
+
+/** Route params for invite code routes */
+type InviteCodeParams = { code: string };
+
+/** Create a join route handler that validates the invite code before running the callback */
+const joinRoute =
+  (handler: RequestInviteHandler) =>
+  (request: Request, { code }: InviteCodeParams): Promise<Response> =>
+    withValidInvite(code, (code, user, username) =>
+      handler(request, code, user, username),
+    );
+
+/**
+ * Handle GET /join/:code
+ */
+const handleJoinGet = joinRoute((request, code, _user, username) =>
+  publicFormPage(request, (flash) =>
+    joinPage(code, username, joinForm.render(), flash.error),
+  ),
+);
+
+const setPasswordRoute = (code: string, user: User) =>
+  createFormRoute({
+    form: joinForm,
+    onInvalid: ({ error }) => errorRedirect(`/join/${code}`, error),
+    onValid: async ({ values }) => {
+      if (values.password !== values.password_confirm) {
+        return errorRedirect(`/join/${code}`, t("error.passwords_mismatch"));
+      }
+      // Editors activate keyless (no DATA_KEY to unwrap); every other role
+      // unwraps the handoff with this invite code and re-wraps it under the new
+      // password's KEK. validateInvite guaranteed a handoff for non-editors.
+      const accepted = user.invite_wrapped_data_key
+        ? await acceptInvite(
+            user.id,
+            user.invite_wrapped_data_key,
+            code,
+            values.password,
+          )
+        : await activateKeylessUser(user.id, values.password);
+      // The accept is a guarded single-use UPDATE. If a concurrent or replayed
+      // submit already consumed this invite, no row changed — don't tell the
+      // user their password was set, because the account is bound to the first
+      // submit's password, not this one.
+      if (!accepted) {
+        return errorRedirect(`/join/${code}`, t("error.invite_invalid"));
+      }
+      return redirect("/join/complete", t("success.password_set"), true);
+    },
+  });
+
+/**
+ * Handle POST /join/:code
+ */
+const handleJoinPost = joinRoute((request, code, user) =>
+  setPasswordRoute(code, user)(request, {}),
+);
+
+/**
+ * Handle GET /join/complete - password set confirmation page
+ */
+const handleJoinComplete = (): Promise<Response> =>
+  publicPageResponse(joinCompletePage);
+
+/** Join routes */
+const joinRoutes = defineRoutes({
+  "GET /join/:code": handleJoinGet,
+  "GET /join/complete": handleJoinComplete,
+  "POST /join/:code": handleJoinPost,
+});
+
+export const routeJoin = createRouter(joinRoutes);

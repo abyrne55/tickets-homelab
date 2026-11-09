@@ -1,0 +1,402 @@
+import { buildBookingTree } from "#booking/build-tree.ts";
+import { bookingError } from "#booking/form.ts";
+import {
+  packageBundleMembers,
+  packageBundleMinError,
+} from "#booking/min-refusal.ts";
+import { bookableChildIds, pageDayCounts } from "#booking/model.ts";
+import { nodeQuantitiesFor } from "#booking/order-lines.ts";
+import {
+  packageBundleLimit,
+  packageLimitInfo,
+  treePackageBundleMinimum,
+} from "#booking/package-cap.ts";
+import { packageBundleTotal } from "#booking/price-tree.ts";
+import { type BookingTree, fixedQuantitiesByListingId } from "#booking/tree.ts";
+import { getActiveHolidays } from "#db/holidays.ts";
+import { byId, requiredMapValue } from "#fp";
+import { apiError, apiResponse } from "#routes/api/cors.ts";
+import {
+  applyChildSelectionsToForm,
+  finishFoldedBooking,
+  foldAndBuildOrderLines,
+  parseApiChildSelections,
+} from "#routes/api/folded-booking.ts";
+import {
+  checkBookingRateLimit,
+  resolvePositiveQuantity,
+  type SlugRouteHandler,
+  toFormParams,
+  withApiBody,
+  withSlugLoaded,
+} from "#routes/api/helpers.ts";
+import { resolvedToPublicListing } from "#routes/api/public-listing.ts";
+import {
+  type ApiChildSelection,
+  PackageChildrenSchema,
+} from "#routes/api/request-schemas.ts";
+import { resolveDayCount } from "#routes/public/booking-dates.ts";
+import { loadBookablePackageBySlug } from "#routes/public/groups.ts";
+import {
+  listingsWithQuantity,
+  resolvePageDate,
+} from "#routes/public/ticket-form.ts";
+import { buildTicketListingsWithGroupCapacity } from "#routes/public/ticket-listings.ts";
+import {
+  ctxToBuildTreeInput,
+  getTicketContext,
+} from "#routes/public/ticket-payment.ts";
+import type { TicketCtx } from "#routes/public/types.ts";
+import { getAvailableDates } from "#shared/dates.ts";
+import type { FormParams } from "#shared/form-data.ts";
+import { mergeListingFields } from "#shared/listing-fields.ts";
+import {
+  concealLineNames,
+  ctxStandInNames,
+  standInNameFor,
+} from "#shared/package-privacy.ts";
+import type { Group } from "#types";
+
+const PACKAGE_NOT_FOUND = "Package not found";
+
+/** The ctx, group, limit, and tree a package endpoint needs once its slug
+ * resolves to a bookable bundle. The loaded shape {@link withPackageContext}
+ * hands to both the GET (detail) and POST (book) handlers. */
+type PackageContext = {
+  ctx: TicketCtx;
+  group: Group;
+  limit: number;
+  /** The members' minimums' whole-bundle floor. The bookability gate keeps it
+   *  at or under {@link limit}, so the GET always shows a valid range. */
+  minimum: number;
+  tree: BookingTree;
+};
+
+/** Loads a package only when at least one whole package can still be booked. */
+const loadPackageContext = async (
+  slug: string,
+): Promise<PackageContext | null> => {
+  const loaded = await loadBookablePackageBySlug(slug);
+  if (!loaded) return null;
+  const ticketListings = await buildTicketListingsWithGroupCapacity(
+    loaded.listings,
+  );
+  const sharedCtx = await getTicketContext(ticketListings, loaded.group);
+  const ctx: TicketCtx = {
+    ...sharedCtx,
+    listings: ticketListings,
+    slugs: [slug],
+  };
+  const tree = buildBookingTree(ctxToBuildTreeInput(ctx));
+  const limit = packageBundleLimit(
+    tree,
+    packageLimitInfo(
+      ticketListings,
+      ctx.childrenByParentId,
+      ctx.packageGroupRemainingByGroupId,
+      ctx.packageMemberGroupIds,
+    ),
+  );
+  return {
+    ctx,
+    group: loaded.group,
+    limit,
+    minimum: treePackageBundleMinimum(tree, ctx.listings),
+    tree,
+  };
+};
+
+/** Load a bookable package context by slug, or respond with the
+ * package-not-found 404. Used by the GET detail handler via
+ * {@link withPackageContext}. The POST book handler loads directly so it can
+ * rate-limit BEFORE the expensive package load. The unauthenticated flood
+ * guard must reject a limited IP without building a package tree. */
+const loadPackageContextOr404 = async (
+  slug: string,
+): Promise<PackageContext | Response> => {
+  const loaded = await loadPackageContext(slug);
+  return loaded === null ? apiError(PACKAGE_NOT_FOUND, 404) : loaded;
+};
+
+/** Load a bookable package by slug, or respond with the package-not-found
+ * 404. Shared by the GET and POST package endpoints via
+ * {@link withSlugLoaded} so the load-or-404 block never drifts between them. */
+const withPackageContext = withSlugLoaded<PackageContext>(
+  loadPackageContextOr404,
+);
+
+const packageChildren = (ctx: TicketCtx, memberId: number) => {
+  const children = ctx.childrenByParentId.get(memberId);
+  return children === undefined ? [] : children;
+};
+
+/** The contact-field requirement a package booking can validate against: the
+ * members' settings merged with their children's (a chosen add-on can add a
+ * field). Published as one package-level value, so a client knows what the
+ * package booking requires before it posts. */
+const packageMergedFields = (ctx: TicketCtx): string =>
+  mergeListingFields(
+    ctx.listings.flatMap((e) => [
+      e.listing.fields,
+      ...packageChildren(ctx, e.listing.id).map((c) => c.listing.fields),
+    ]),
+  );
+
+/** GET /api/packages/:slug — package bundle detail. A fixed-price bundle
+ * reports one `priceMinor`. A customisable one reports each offered day count
+ * with its whole-bundle total, counting only every member's required-child
+ * mix can serve. An empty list means no span is currently bookable. A HIDDEN
+ * package omits its members entirely. */
+export const handleGetPackage = withPackageContext(
+  async (_request, { ctx, group, limit, minimum, tree }) => {
+    const customisable = ctx.listings.some((e) => e.listing.customisable_days);
+    const dayCounts = customisable
+      ? pageDayCounts(ctx.listings, ctx.childrenByParentId, true)
+      : [];
+    // A hidden package never names its members (or their children) — buyers see
+    // only the bundle. `packageQuantities` covers every member by construction.
+    // Members and their children are already availability-resolved on the ctx
+    // (ONE hydration pass). The response builds without re-querying edges,
+    // holidays, or group remaining per member.
+    const holidays = await getActiveHolidays();
+    const memberQuantities = fixedQuantitiesByListingId(tree);
+    const bookableChildren = bookableChildIds(ctx.childrenByParentId);
+    const members = group.hide_package_listings
+      ? undefined
+      : ctx.listings.map((e) => {
+          const children = packageChildren(ctx, e.listing.id)
+            .filter((child) => child.listing.active)
+            .map((child) =>
+              resolvedToPublicListing(
+                child,
+                child.listing.listing_type === "daily"
+                  ? getAvailableDates(child.listing, holidays)
+                  : undefined,
+              ),
+            );
+          return {
+            name: e.listing.name,
+            quantity: requiredMapValue(
+              memberQuantities,
+              e.listing.id,
+              `Listing ${e.listing.id} missing`,
+            ),
+            slug: e.listing.slug,
+            ...(children.length > 0 ? { children } : {}),
+          };
+        });
+    return apiResponse({
+      package: {
+        description: group.description,
+        fields: packageMergedFields(ctx),
+        maxPurchasable: limit,
+        // The members' joint whole-bundle floor. With maxPurchasable it is
+        // the whole valid range. A concealed package omits its members, so
+        // a client cannot derive the floor itself.
+        minimum,
+        name: group.name,
+        slug: group.slug,
+        ...(ctx.dates.length ? { availableDates: ctx.dates } : {}),
+        ...(customisable
+          ? {
+              dayCounts: dayCounts.map((days) => ({
+                days,
+                priceMinor: packageBundleTotal(tree, days, bookableChildren),
+              })),
+            }
+          : {
+              priceMinor: packageBundleTotal(tree, undefined, bookableChildren),
+            }),
+        ...(members ? { members } : {}),
+      },
+    });
+  },
+);
+
+/** Apply a package booking's child selections (each tagged with its member's
+ * `parent` slug) onto the fold form, member by member. Returns a 400 response
+ * for an unknown member slug or a bad selection, and null when applied
+ * cleanly. */
+const applyPackageChildSelections = (
+  form: FormParams,
+  ctx: TicketCtx,
+  selections: ApiChildSelection[],
+): Response | null => {
+  const byParent = Map.groupBy(selections, (s) => s.parent!);
+  for (const [parentSlug, perParent] of byParent) {
+    const member = ctx.listings.find((e) => e.listing.slug === parentSlug);
+    if (!member) {
+      return apiError(`'${parentSlug}' is not a member of this package.`);
+    }
+    const error = applyChildSelectionsToForm(
+      form,
+      ctx,
+      member.listing.id,
+      perParent,
+    );
+    if (error) return error;
+  }
+  return null;
+};
+
+/** Every failed client refusal on a CONCEALED package reads this one generic
+ * message. A wrong member slug, a wrong child slug, a bad total, or missing
+ * contact fields must be indistinguishable. The errors can otherwise confirm
+ * what is inside the package. Named packages keep their specific responses. */
+const PACKAGE_BOOKING_REFUSED =
+  "This package cannot be booked with those choices.";
+
+/** Re-body a failed client refusal (400 or 409) as the generic refusal.
+ * Successful responses, root 404s, rate limits, and server errors pass
+ * through, and nothing here turns a failure into a success. */
+const concealedPackageRefusal = (response: Response): Response =>
+  response.status === 400 || response.status === 409
+    ? apiError(PACKAGE_BOOKING_REFUSED)
+    : response;
+
+/** Reads a package API booking body and builds the form the booking flow uses. */
+const resolvePackageOrder = async (
+  body: Record<string, unknown>,
+  ctx: TicketCtx,
+  tree: BookingTree,
+  limit: number,
+  standIns: ReadonlyMap<number, string>,
+): Promise<
+  | Response
+  | {
+      date: string | null;
+      dayCount: number;
+      form: FormParams;
+      requestedQty: number;
+      quantities: Map<number, number>;
+    }
+> => {
+  const requestedQty = resolvePositiveQuantity(body);
+  if (requestedQty instanceof Response) return requestedQty;
+  if (requestedQty > limit) {
+    return apiError(bookingError.aboveMaximumQuantity(limit));
+  }
+  // An owner can raise a member's minimum after the package was saved, so
+  // the fold re-reads the stored fact the same way the webhook does.
+  const fixedByListingId = fixedQuantitiesByListingId(tree);
+  const memberMinError = packageBundleMinError(
+    packageBundleMembers(
+      fixedByListingId,
+      byId(ctx.listings.map((info) => info.listing)),
+    ),
+    requestedQty,
+  );
+  if (memberMinError) return apiError(memberMinError);
+  const quantities = new Map(
+    [...fixedByListingId].map(([listingId, fixed]) => [
+      listingId,
+      fixed * requestedQty,
+    ]),
+  );
+
+  const rawDate = body.date;
+  const submittedDate = rawDate === undefined ? null : String(rawDate);
+  const dateResult = resolvePageDate(ctx.dates, submittedDate);
+  if (!dateResult.ok) return apiError(dateResult.error);
+  const date = dateResult.date;
+
+  const form = toFormParams(body);
+  if (body.dayCount !== undefined) {
+    form.set("day_count", String(body.dayCount));
+  }
+  const dayResult = await resolveDayCount(
+    listingsWithQuantity(ctx.listings, quantities),
+    form,
+    date,
+    standIns,
+  );
+  if ("error" in dayResult) {
+    return apiError(dayResult.error);
+  }
+  return { date, dayCount: dayResult.dayCount, form, quantities, requestedQty };
+};
+
+/** POST /api/packages/:slug/book — book whole bundles. The body carries the
+ * contact fields plus `quantity` (the package count — required). `date` for a
+ * dated package, `dayCount` for a customisable one, and `children` — entries
+ * of `{ parent, slug, quantity }` choosing each parent member's add-ons. All
+ * of it drives the same fold and pricing walk the web package page submits
+ * through. A bundle count above the bundle limit reads a 400 refusal: the
+ * form's select never offers one, so only a crafted POST can send it. */
+export const handleBookPackage: SlugRouteHandler = async (
+  request,
+  { slug },
+) => {
+  // Rate-limit BEFORE the package load: the booking endpoints are
+  // unauthenticated, so the flood guard must reject a limited IP without
+  // building a package tree. The standalone listing book path loads the
+  // listing first (its load is a single slug lookup). A package load builds
+  // a full ctx/tree/limit graph, so guarding it behind the limiter matters
+  // more here.
+  const limited = await checkBookingRateLimit();
+  if (limited) return limited;
+  const pkg = await loadPackageContextOr404(slug);
+  if (pkg instanceof Response) return pkg;
+  const { ctx, group, limit, tree } = pkg;
+
+  const bookOrFail = async (
+    body: Record<string, unknown>,
+  ): Promise<Response> => {
+    const standIns = ctxStandInNames(ctx);
+    const order = await resolvePackageOrder(
+      body,
+      ctx,
+      tree,
+      limit,
+      standIns.byListingId,
+    );
+    if (order instanceof Response) return order;
+    const { date, dayCount, form, requestedQty, quantities } = order;
+
+    const selections = parseApiChildSelections(body, PackageChildrenSchema);
+    if (selections === null) {
+      return apiError(
+        "Provide a `children` array of { parent, slug, quantity } choosing each member's add-ons.",
+      );
+    }
+    const selectionError = applyPackageChildSelections(form, ctx, selections);
+    if (selectionError) return selectionError;
+
+    const built = await foldAndBuildOrderLines(
+      ctx,
+      form,
+      {
+        customPrices: new Map(),
+        date,
+        dayCount,
+        hasCustomisable: ctx.listings.some((e) => e.listing.customisable_days),
+        nameFor: standInNameFor(standIns, new Set()),
+        quantities,
+      },
+      tree,
+      nodeQuantitiesFor(tree, new Map(), new Map([[group.id, requestedQty]])),
+    );
+    if (built instanceof Response) return built;
+    const { fold } = built;
+
+    // Per-path lines from the tree: each member line carries its group id and
+    // its override price. A HIDDEN package's member names are concealed before
+    // the lines reach the provider. Paid-ness must come from these lines, not
+    // `isPaidListing`. A package override can make a free member paid (and a
+    // paid member free).
+    const items = concealLineNames(built.items, standIns, new Set());
+    return finishFoldedBooking(
+      request,
+      form,
+      items.some((item) => Boolean(item.unitPrice)),
+      { date, fold, items },
+    );
+  };
+
+  return withApiBody(
+    request,
+    ctx.packages.every((pkg) => pkg.hideListings)
+      ? async (body) => concealedPackageRefusal(await bookOrFail(body))
+      : bookOrFail,
+  );
+};

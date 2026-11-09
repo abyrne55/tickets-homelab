@@ -1,0 +1,142 @@
+/**
+ * The unified add/edit attendee page lives in `attendee-form-routes.ts`. This
+ * module keeps the smaller refresh-payment handler. The handler polls the
+ * payment provider for an updated refund status. When the provider reports a
+ * refund, the handler posts the refund to the transfers ledger. The ledger's
+ * `refund_cash` leg is what the per-row `refunded` projection reads.
+ */
+
+import { getFirstBooking } from "#db/attendees/queries.ts";
+import {
+  getRefundPaymentReferencesForAttendee,
+  type TaggedRefundPaymentReference,
+} from "#db/payment-references.ts";
+import { t } from "#i18n";
+import { formPolicyFor, withAuth } from "#routes/auth.ts";
+import { errorRedirect, htmlResponse, redirect } from "#routes/response.ts";
+import type { TypedRouteHandler } from "#routes/router.ts";
+import { adminDestinationAt } from "#shared/admin-surface.ts";
+import type { FormParams } from "#shared/form-data.ts";
+import { reportRefundNotRecorded } from "#shared/invariant-errors.ts";
+import { requireRequestPrivateKey } from "#shared/session-private-key.ts";
+import type { Attendee } from "#types";
+import { attendeeActions } from "./attendees-route-helpers.ts";
+import { refundReferenceProblemMessage } from "./refunds/readiness-problem.ts";
+import {
+  type RefreshPaymentResult,
+  refreshClaimedPayment,
+} from "./refunds/refresh.ts";
+
+type RefreshPaymentContext = {
+  attendee: Attendee;
+  /** The attendee keeps its original listing id even after listing deletion. */
+  listingId: number;
+};
+
+/** Load the attendee without requiring a surviving booking. */
+const loadRefreshContext = async (
+  attendeeId: number,
+): Promise<RefreshPaymentContext | null> => {
+  const data = await attendeeActions["refresh-payment"].load(attendeeId);
+  if (data === null) return null;
+  const { attendee } = data;
+  const firstBooking = await getFirstBooking(attendee.id);
+  return {
+    attendee,
+    listingId: firstBooking?.listingId ?? attendee.listing_id,
+  };
+};
+
+const loadRefreshState = async (
+  attendeeId: number,
+  form: FormParams,
+): Promise<
+  | Response
+  | {
+      attendee: Attendee;
+      listingId: number;
+      references: readonly TaggedRefundPaymentReference[];
+    }
+> => {
+  const ctx = await loadRefreshContext(attendeeId);
+  if (!ctx) return htmlResponse("", 404);
+  const { attendee, listingId } = ctx;
+  const privateKey = await requireRequestPrivateKey();
+  const referenceSet = await getRefundPaymentReferencesForAttendee(
+    { currentPaymentId: attendee.payment_id, id: attendee.id },
+    privateKey,
+  );
+  if (referenceSet.kind !== "complete") {
+    return redirect(
+      `/admin/attendees/${attendeeId}`,
+      refundReferenceProblemMessage(referenceSet),
+      false,
+      { form },
+    );
+  }
+  const references = referenceSet.references;
+  if (references.length === 0) {
+    return redirect(
+      `/admin/attendees/${attendeeId}`,
+      t("error.no_payment_to_refresh"),
+      false,
+      { form },
+    );
+  }
+  return { attendee, listingId, references };
+};
+
+const refreshPaymentResponse = (
+  attendeeId: number,
+  listingId: number,
+  form: FormParams,
+  result: RefreshPaymentResult,
+): Response => {
+  const attendeeUrl = `/admin/attendees/${attendeeId}`;
+  if (result.kind === "blocked") {
+    return errorRedirect(attendeeUrl, t("error.refund_pending"));
+  }
+  if (result.kind === "not_ready" || result.kind === "needs_review") {
+    return errorRedirect(attendeeUrl, result.message);
+  }
+  if (result.kind === "current") {
+    return redirect(attendeeUrl, t("success.payment_status_current"), true, {
+      form,
+    });
+  }
+  if (!result.posted) {
+    return errorRedirect(
+      attendeeUrl,
+      reportRefundNotRecorded({ attendeeId, listingId }),
+    );
+  }
+  return redirect(
+    attendeeUrl,
+    result.confirmation === "current"
+      ? t("success.payment_status_current")
+      : t("success.payment_status_refunded"),
+    true,
+    { form },
+  );
+};
+
+export const handleRefreshPayment: TypedRouteHandler<
+  "POST /admin/attendees/:attendeeId/refresh-payment"
+> = (request, { attendeeId }) =>
+  withAuth(
+    request,
+    formPolicyFor(
+      adminDestinationAt("/admin/attendees/:attendeeId/refresh-payment"),
+    ),
+    async (_session, _form) => {
+      const form = _form as FormParams;
+      const state = await loadRefreshState(attendeeId, form);
+      if (state instanceof Response) return state;
+      const { attendee, listingId, references } = state;
+      const result = await refreshClaimedPayment(
+        { attendee, references: [...references] },
+        listingId,
+      );
+      return refreshPaymentResponse(attendeeId, listingId, form, result);
+    },
+  );

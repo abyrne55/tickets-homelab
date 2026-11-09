@@ -1,0 +1,76 @@
+import type { PairBookings } from "#booking/ticket-moves.ts";
+import { requiredMapValue } from "#fp";
+import { t } from "#i18n";
+import {
+  attendeeLineRow,
+  withPairBookings,
+} from "#shared/attendee-table-rows.ts";
+import {
+  AttendeeTableBlock,
+  attendeeTableOptions,
+} from "#templates/admin/attendee-table-block.tsx";
+import type { AttendeeQuestionData } from "#templates/attendee-table/types.ts";
+import type {
+  Attendee,
+  AttendeeTableRow,
+  Group,
+  ListingWithCount,
+} from "#types";
+
+/** Keep one row per booking line so each line has its own check-in button. */
+const buildAttendeeRows = (
+  attendees: Attendee[],
+  listings: ListingWithCount[],
+  pairBookings: PairBookings,
+): AttendeeTableRow[] => {
+  const listingMap = new Map(
+    listings.map((listing) => [listing.id, listing] as const),
+  );
+  // These attendees are scoped to this group's loaded listings.
+  return withPairBookings(pairBookings)(
+    attendees.map((attendee) =>
+      attendeeLineRow(
+        attendee,
+        requiredMapValue(
+          listingMap,
+          attendee.listing_id,
+          `Listing ${attendee.listing_id} missing`,
+        ),
+      ),
+    ),
+  );
+};
+
+/** The Attendees tab's booking lines across every listing in the group. */
+export const GroupAttendeesPanel = ({
+  group,
+  listings,
+  attendees,
+  allowedDomain,
+  pairBookings,
+  phonePrefix,
+  questionData,
+}: {
+  group: Group;
+  listings: ListingWithCount[];
+  attendees: Attendee[];
+  allowedDomain: string;
+  pairBookings: PairBookings;
+  phonePrefix?: string;
+  questionData?: AttendeeQuestionData;
+}): JSX.Element => (
+  <article>
+    <h2 id="attendees">{t("terms.attendees")}</h2>
+    <AttendeeTableBlock
+      options={attendeeTableOptions({
+        allowedDomain,
+        phonePrefix,
+        questionData,
+        returnUrl: `/admin/groups/${group.id}/attendees`,
+        rows: buildAttendeeRows(attendees, listings, pairBookings),
+        showDate: listings.some((listing) => listing.listing_type === "daily"),
+        showListing: true,
+      })}
+    />
+  </article>
+);

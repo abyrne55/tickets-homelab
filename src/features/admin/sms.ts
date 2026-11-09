@@ -1,0 +1,181 @@
+import { defineAdminRoutes } from "#routes/admin/route-tables.ts";
+
+/**
+ * Admin SMS page, reached at `/admin/sms?listing=:id&attendee=:id`.
+ *
+ * The attendee's phone number is decrypted transiently under the owner's
+ * session key, re-encrypted under the SMS Gate E2E key, and only that
+ * ciphertext leaves us. Plaintext PII is never persisted. History lives in the
+ * encrypted activity log, and `sms_messages` only maps gateway ids to attendees
+ * for status webhooks.
+ */
+
+import { getAttendeeActivityLog, logActivity } from "#db/activity-log.ts";
+import { setAttendeePhoneIndexIfEmpty } from "#db/attendee-phone-index.ts";
+import { countRows } from "#db/client.ts";
+import { hashPhone, recordContacts } from "#db/contact-preferences.ts";
+import { recordSmsMessage } from "#db/sms-messages.ts";
+import { t } from "#i18n";
+import {
+  type AuthSession,
+  formPolicyFor,
+  pageGuardFor,
+  withAuth,
+} from "#routes/auth.ts";
+import { htmlResponse, redirect } from "#routes/response.ts";
+import { getSearchParam } from "#routes/url.ts";
+import { adminDestinationAt } from "#shared/admin-surface.ts";
+import { getFlash } from "#shared/flash-context.ts";
+import type { FormParams } from "#shared/form-data.ts";
+import { bestEffort } from "#shared/logger.ts";
+import { requireRequestPrivateKey } from "#shared/session-private-key.ts";
+import {
+  buildMessagePayload,
+  getSmsGatewayConfig,
+  sendEncryptedMessage,
+} from "#shared/sms/gateway.ts";
+import { SMS_MESSAGE_MAX_LENGTH } from "#shared/sms/message-limit.ts";
+import { computePhoneIndex } from "#shared/sms/phone-index.ts";
+import { parsePositiveInt as parsePositiveIntId } from "#shared/validation/number.ts";
+import { type SmsHistoryItem, smsPage } from "#templates/admin/sms.tsx";
+import { withAttendee } from "./attendees-route-helpers.ts";
+
+/** SMS-related activity-log entries all start with this. */
+const SMS_LOG_PREFIX = "SMS";
+
+const smsUrl = (listingId: number, attendeeId: number): string =>
+  `/admin/sms?listing=${listingId}&attendee=${attendeeId}`;
+
+/** Conversation history for an attendee, read from the activity log. */
+const historyFor = async (attendeeId: number): Promise<SmsHistoryItem[]> =>
+  (await getAttendeeActivityLog(attendeeId))
+    .filter((e) => e.message.startsWith(SMS_LOG_PREFIX))
+    .map((e) => ({ created: e.created, message: e.message }));
+
+/** GET /admin/sms */
+const handleSmsGet = (request: Request): Promise<Response> =>
+  pageGuardFor(adminDestinationAt("/admin/sms"))(request, async (session) => {
+    const listingId = parsePositiveIntId(getSearchParam(request, "listing"));
+    const attendeeId = parsePositiveIntId(getSearchParam(request, "attendee"));
+    const flash = getFlash();
+    const queueCount = await countRows("sms_messages");
+    const configured = getSmsGatewayConfig() !== null;
+
+    if (listingId === null || attendeeId === null) {
+      return htmlResponse(
+        smsPage(session, { configured, flash, history: [], queueCount }),
+      );
+    }
+
+    return withAttendee(
+      listingId,
+      attendeeId,
+    )(async (data) =>
+      htmlResponse(
+        smsPage(session, {
+          configured,
+          flash,
+          history: await historyFor(attendeeId),
+          queueCount,
+          target: data,
+        }),
+      ),
+    );
+  });
+
+/** Send the composed text to the targeted attendee. */
+const sendSms = (
+  _session: AuthSession,
+  form: FormParams,
+): Promise<Response> => {
+  const listingId = parsePositiveIntId(form.getString("listing"));
+  const attendeeId = parsePositiveIntId(form.getString("attendee"));
+  if (listingId === null || attendeeId === null) {
+    return Promise.resolve(
+      redirect("/admin/sms", t("sms.error.invalid_target"), false),
+    );
+  }
+  const backUrl = smsUrl(listingId, attendeeId);
+
+  return withAttendee(
+    listingId,
+    attendeeId,
+  )(async (data) => {
+    const config = getSmsGatewayConfig();
+    if (!config) {
+      return redirect(backUrl, t("sms.error.gateway_not_configured"), false);
+    }
+
+    const message = form.getString("message").trim();
+    if (!message) {
+      return redirect(backUrl, t("sms.error.message_empty"), false);
+    }
+    if (message.length > SMS_MESSAGE_MAX_LENGTH) {
+      return redirect(
+        backUrl,
+        t("sms.error.message_too_long", { max: SMS_MESSAGE_MAX_LENGTH }),
+        false,
+      );
+    }
+
+    const phone = data.attendee.phone.trim();
+    if (!phone) {
+      return redirect(backUrl, t("sms.error.no_phone_number"), false);
+    }
+
+    // Record a blind-index of the number so inbound replies can be matched
+    // back to this attendee (lazy, set once).
+    await setAttendeePhoneIndexIfEmpty(
+      attendeeId,
+      await computePhoneIndex(phone),
+    );
+
+    const payload = await buildMessagePayload(
+      phone,
+      message,
+      config.passphrase,
+    );
+
+    try {
+      const { providerId } = await sendEncryptedMessage(config, payload);
+      await recordSmsMessage({ attendeeId, listingId, providerId });
+      // Count the text against this phone contact so the history panel's
+      // "Total phone messages" reflects SMS, not just bulk email. Best-effort:
+      // the message is already sent, so a contact-history write failure (for
+      // example an undecryptable stats_blob) must not report the send as
+      // failed. A failure prompt sends the operator to retry, and the retry
+      // delivers a duplicate text.
+      await bestEffort("SMS contact-history update", async () =>
+        recordContacts(
+          [await hashPhone(phone)],
+          message,
+          await requireRequestPrivateKey(),
+        ),
+      );
+      await logActivity(
+        `${SMS_LOG_PREFIX} queued for ${data.attendee.name}: ${message}`,
+        listingId,
+        attendeeId,
+      );
+      return redirect(backUrl, t("sms.success.queued"), true);
+    } catch (e) {
+      await logActivity(
+        `${SMS_LOG_PREFIX} to ${data.attendee.name} could not be queued: ${String(
+          e,
+        )}`,
+        listingId,
+        attendeeId,
+      );
+      return redirect(backUrl, t("sms.error.queue_failed"), false);
+    }
+  });
+};
+
+/** POST /admin/sms */
+const handleSmsPost = (request: Request): Promise<Response> =>
+  withAuth(request, formPolicyFor(adminDestinationAt("/admin/sms")), sendSms);
+
+export const adminHandlers = defineAdminRoutes({
+  "GET /admin/sms": handleSmsGet,
+  "POST /admin/sms": handleSmsPost,
+});

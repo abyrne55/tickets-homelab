@@ -1,0 +1,117 @@
+import { askProvider } from "#payment/provider-call.ts";
+import { withExactRefundMoney } from "#payment/provider-failures.ts";
+import type { ProviderRead } from "#payment/provider-read.ts";
+import { judgedBy, refuseUnless } from "#payment/provider-resource-read.ts";
+import {
+  REFUND_NOT_SENT,
+  type RefundAttemptResult,
+  type RefundRequest,
+} from "#payment/refund-attempt.ts";
+import type { AuthorizedRefundRequest } from "#payment/refund-provider-authorization.ts";
+import { ErrorCode, logError } from "#shared/logger.ts";
+import type { SquareClient } from "#shared/square/client.ts";
+import {
+  namedSquareRefund,
+  readSquareResource,
+  squareRefundFailure,
+} from "#shared/square/outcomes.ts";
+import type { SquarePayment, SquareRefund } from "#shared/square/wire.ts";
+
+/** The two client methods payment reads and refunds need. */
+export type SquarePaymentClient = Pick<SquareClient, "payments" | "refunds">;
+
+type GetSquarePaymentClient = () => Promise<SquarePaymentClient | null>;
+
+const SQUARE_PAYMENT_STATUSES = [
+  "APPROVED",
+  "PENDING",
+  "COMPLETED",
+  "CANCELED",
+  "FAILED",
+] as const;
+export type SquarePaymentStatus = (typeof SQUARE_PAYMENT_STATUSES)[number];
+
+export const isSquarePaymentStatus = (
+  status: string,
+): status is SquarePaymentStatus =>
+  SQUARE_PAYMENT_STATUSES.some((known) => known === status);
+
+/** Read one Square payment without collapsing absence, outages, and invalid
+ * data into the same answer. */
+export const readSquarePayment = (
+  getClient: GetSquarePaymentClient,
+  paymentId: string,
+): Promise<ProviderRead<SquarePayment>> =>
+  readSquareResource(getClient)(
+    async (square) => (await square.payments.get({ paymentId })).payment,
+    judgedBy([
+      refuseUnless(
+        "mismatched_id",
+        (payment: SquarePayment) => payment.id === paymentId,
+      ),
+      refuseUnless("unsupported_status", (payment: SquarePayment) =>
+        isSquarePaymentStatus(payment.status),
+      ),
+    ]),
+  );
+
+const refundResult = (
+  refund: SquareRefund,
+  request: RefundRequest,
+): RefundAttemptResult =>
+  withExactRefundMoney(
+    request,
+    refund.paymentId,
+    refund.amountMoney.amount,
+    refund.amountMoney.currency,
+    (amount): RefundAttemptResult => {
+      if (refund.status === "COMPLETED" || refund.status === "PENDING") {
+        return {
+          amount,
+          kind: refund.status === "COMPLETED" ? "completed" : "accepted",
+          proof: namedSquareRefund(refund),
+        };
+      }
+      return {
+        kind: "rejected",
+        reason: refund.status === "REJECTED" ? "rejected" : "failed",
+      };
+    },
+  );
+
+/** Record every failed send, whether or not Square owns the failure. */
+const loggedSquareRefundFailure = (
+  error: unknown,
+): RefundAttemptResult | undefined => {
+  const failure = squareRefundFailure(error);
+  logError({
+    code: ErrorCode.SQUARE_REFUND,
+    detail: failure
+      ? `outcome=${failure.kind} reason=${failure.reason}`
+      : "outcome=thrown reason=internal_error",
+    error,
+  });
+  return failure;
+};
+
+/** Send the exact admitted charge and keep Square's evidence as a tagged
+ * result. Unknown internal errors still propagate. */
+export const refundSquareCharge = async (
+  getClient: GetSquarePaymentClient,
+  request: AuthorizedRefundRequest<"square">,
+): Promise<RefundAttemptResult> =>
+  askProvider({
+    account: await getClient(),
+    ask: (client: SquarePaymentClient) =>
+      client.refunds.refundPayment({
+        amountMoney: {
+          amount: BigInt(request.charge.captured.amount),
+          currency: request.charge.captured.currency,
+        },
+        idempotencyKey: request.authorization.idempotencyKey,
+        paymentId: request.paymentReference,
+      }),
+    failure: loggedSquareRefundFailure,
+    judge: (answer) => refundResult(answer.refund, request),
+    unconfigured: REFUND_NOT_SENT,
+  });

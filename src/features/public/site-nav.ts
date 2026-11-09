@@ -1,0 +1,168 @@
+/**
+ * Liveness uses the same gates the rest of the public site does, so the nav
+ * never renders a link that 404s or dead-ends. A listing is live iff it is
+ * active, not a renewal tier, and not a parent projected sold out. It must also
+ * have its OWN standalone booking page. A group is live iff `/ticket/<group>`
+ * serves.
+ *
+ * HIDDEN governs the public index, not bookability, so a hidden but bookable
+ * item keeps its link. Page targets are always live.
+ */
+
+import { fillTogether } from "#db/fill-together.ts";
+import { groups } from "#db/groups.ts";
+import { getListingsWithCountsByIds } from "#db/listings/records.ts";
+import { hasNewsPosts, newsExistenceRead } from "#db/news-posts.ts";
+import { allPageItemsRead } from "#db/site-page-items.ts";
+import { sitePagesNavRead } from "#db/site-pages.ts";
+import { compact, filter, map, pipe, unique } from "#fp";
+import { isQualifyingTierListing } from "#shared/renewal-tier.ts";
+import {
+  buildForest,
+  buildNavModel,
+  navChainPageIds,
+} from "#shared/site-pages/core.ts";
+import { loadPageForest } from "#shared/site-pages/load.ts";
+import { sitePageItemTargets } from "#shared/site-pages/target.ts";
+import type {
+  NavModel,
+  ResolvedTarget,
+  TargetKey,
+  TargetMap,
+} from "#shared/site-pages/types.ts";
+import { navFlags, type PublicNavProps } from "#templates/public/shared.tsx";
+import type { SitePageItem, SitePageItemType } from "#types";
+import { classifyForDiscovery } from "./discovery.ts";
+import { loadBookableGroupIds } from "./group-liveness.ts";
+
+/** The distinct item ids of one leaf type among the loaded edges. */
+const leafIds = (
+  items: readonly SitePageItem[],
+  type: SitePageItemType,
+): number[] =>
+  pipe(
+    filter((i: SitePageItem) => i.item_type === type),
+    map((i: SitePageItem) => i.item_id),
+    unique,
+  )([...items]);
+
+/** Resolve every referenced listing/group to its presentation + liveness. */
+const resolveTargets = async (
+  items: readonly SitePageItem[],
+): Promise<TargetMap> => {
+  const listingIds = leafIds(items, "listing");
+  const groupIds = leafIds(items, "group");
+  const [referencedRows, allGroups] = await Promise.all([
+    getListingsWithCountsByIds(listingIds),
+    // No group leaf renders, no group row is read: the all-groups read exists
+    // only to answer the group leaves' liveness.
+    groupIds.length > 0 ? groups.cache.getAll() : Promise.resolve([]),
+  ]);
+  const referenced = compact(referencedRows);
+  const referencedGroups = allGroups.filter((group) =>
+    groupIds.includes(group.id),
+  );
+  const targets = new Map<TargetKey, ResolvedTarget>();
+  const setLeaf = (
+    type: SitePageItemType,
+    row: { id: number; name: string; slug: string },
+    live: boolean,
+  ): void => {
+    targets.set(sitePageItemTargets.key(sitePageItemTargets.of(type)(row.id)), {
+      href: `/ticket/${row.slug}`,
+      label: row.name,
+      live,
+    });
+  };
+  // A referenced listing is live iff its own booking page would serve: it is
+  // active and not a renewal tier, has a standalone public page, and is not a
+  // parent the classifier projects sold out. One
+  // classification over the referenced listings serves the whole set; it loads
+  // each parent's children itself, so the sold-out projection is complete.
+  const { nonStandaloneChildIds, soldOutParentIds } =
+    referenced.length > 0
+      ? await classifyForDiscovery(referenced)
+      : {
+          nonStandaloneChildIds: new Set<number>(),
+          soldOutParentIds: new Set<number>(),
+        };
+  const bookableLeaf = (listing: { id: number }): boolean =>
+    !nonStandaloneChildIds.has(listing.id) && !soldOutParentIds.has(listing.id);
+  for (const listing of referenced) {
+    setLeaf(
+      "listing",
+      listing,
+      listing.active &&
+        !isQualifyingTierListing(listing) &&
+        bookableLeaf(listing),
+    );
+  }
+  // A group is live iff its /ticket/<group> page would serve — the shared
+  // groupBookable gate: a regular group needs one standalone-bookable visible
+  // member, a package needs the whole bundle to fit. Matches what the /listings
+  // group card and the group QR advertise, so the nav can't link to a dead page.
+  // Members and package booking facts are loaded in batches, so a page with
+  // many group leaves does not add one query for each group.
+  const bookableGroupIds = await loadBookableGroupIds(referencedGroups);
+  for (const group of referencedGroups) {
+    setLeaf("group", group, bookableGroupIds.has(group.id));
+  }
+  return targets;
+};
+
+/** Build the public nav view model for the current target (`null` on the fixed
+ * pages — home, listings, order, terms, contact — which show just the root
+ * row). With no current target there is no active chain, so no submenu level
+ * can render a leaf: skip the leaf resolution entirely and keep the hot fixed
+ * pages to the two cached reads. With a target, only the chain pages' leaves
+ * render: each level lists one chain page's items. The resolution stops at
+ * them, so it never pays for leaves the model will not show. */
+export const publicNavModel = async (
+  current: TargetKey | null,
+): Promise<NavModel> => {
+  const { items, navRows } = await loadPageForest();
+  // Hidden pages leave the menus. The forest ignores a parent edge whose
+  // row is gone. A visible child of a hidden page therefore sits at the top
+  // level instead of stranding under an invisible parent. The pageNode
+  // builder renders nothing for a hidden child row.
+  const visibleRows = navRows.filter((row) => !row.hidden);
+  const forest = buildForest(visibleRows, items);
+  if (current === null) return buildNavModel(forest, new Map(), current);
+  const chainPages = new Set(navChainPageIds(forest, current));
+  const renderedLeaves = items.filter(
+    (item) => item.item_type !== "page" && chainPages.has(item.page_id),
+  );
+  return buildNavModel(forest, await resolveTargets(renderedLeaves), current);
+};
+
+/** The three small reads behind every public page's nav: is there any news, the
+ * pages, and what sits on them. None depends on the others, so one round trip
+ * answers all three — which on a cold edge server is one wait instead of
+ * three. Each read still fills its own request cache, so anything else on the
+ * page that wants the same rows reads them from there. */
+const fillNavReads = (): Promise<void> =>
+  fillTogether([newsExistenceRead, sitePagesNavRead, allPageItemsRead]);
+
+/** The nav key for a booking page's header entity: the group on a group page,
+ * the sole listing on a single-listing page. Null — a multi-item combo —
+ * keeps the fixed-page fast path: a combo highlights nothing. */
+export const bookingNavKey = (
+  target: { type: "group" | "listing"; id: number } | null,
+): TargetKey | null =>
+  target === null
+    ? null
+    : sitePageItemTargets.key(sitePageItemTargets.of(target.type)(target.id));
+
+/** The full prop set {@link PublicNav} renders: the settings-driven page
+ * flags, the news flag (see {@link hasNewsPosts}), and the site-pages tree —
+ * built once per request by each public handler. */
+export const publicNavProps = async (
+  current: TargetKey | null,
+): Promise<PublicNavProps> => {
+  await fillNavReads();
+  return {
+    ...navFlags(),
+    hasNews: await hasNewsPosts(),
+    pages: await publicNavModel(current),
+  };
+};

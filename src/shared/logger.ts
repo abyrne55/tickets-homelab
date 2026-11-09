@@ -1,0 +1,411 @@
+/**
+ * Privacy-safe logging utilities
+ *
+ * - Request logging: logs method, path (slugs redacted), status, duration
+ * - Error logging: logs classified error codes without PII
+ * - Ntfy notifications: optional error pings to a configured ntfy URL
+ * - Request IDs: each request gets a 4-char random ID prefix for log correlation
+ */
+
+import { errorMessage } from "#shared/error-message.ts";
+import {
+  makeSuppressibleLogFlag,
+  shouldSuppressDebugLogs,
+} from "#shared/log-settings.ts";
+import { addPendingWork, hasPendingWorkScope } from "#shared/pending-work.ts";
+import { redactPath } from "#shared/redact-path.ts";
+import { getRequestId as requestIdOfCurrentRequest } from "#shared/request-context.ts";
+import { createScope, type ScopeRunner } from "#shared/request-scoped.ts";
+
+/** Error fan-out held until a critical command has completely unwound. */
+const deferredErrorReports = createScope<ErrorContext[]>();
+
+/**
+ * Module-level override for request log suppression.
+ * Bypasses Deno.env to avoid races between parallel test workers.
+ * When true/false, uses override; when null, reads from env.
+ */
+const requestLogFlag = makeSuppressibleLogFlag("TEST_SUPPRESS_REQUEST_LOGS");
+
+/** Set module-level request log suppression (avoids env race in parallel tests). */
+export const setSuppressRequestLogs = (value: boolean | null): void => {
+  requestLogFlag.setOverride(value);
+};
+
+/** Check if request logs should be suppressed */
+const shouldSuppressRequestLogs = (): boolean => requestLogFlag.isSuppressed();
+
+/** The log-line prefix carrying the current request's correlation id. */
+const getLogPrefix = (): string => {
+  const id = requestIdOfCurrentRequest();
+  return id ? `[${id}] ` : "";
+};
+
+/**
+ * Error code definitions: each key maps to [wire code, human-readable label].
+ * Single source of truth — ErrorCode and errorCodeLabel are derived from this.
+ */
+const ERROR_DEFS = {
+  // Address lookup provider errors
+  ADDRESS_LOOKUP: ["E_ADDRESS_LOOKUP", "Address lookup failed"],
+  AUTH_CSRF_MISMATCH: ["E_AUTH_CSRF_MISMATCH", "CSRF mismatch"],
+  AUTH_EXPIRED: ["E_AUTH_EXPIRED", "Session expired"],
+
+  // Authentication errors
+  AUTH_INVALID_SESSION: ["E_AUTH_INVALID_SESSION", "Invalid session"],
+  AUTH_RATE_LIMITED: ["E_AUTH_RATE_LIMITED", "Rate limited"],
+
+  // Botpoison spam-protection errors
+  BOTPOISON_VERIFY: ["E_BOTPOISON_VERIFY", "Botpoison verification failed"],
+
+  // Capacity/availability errors
+  CAPACITY_EXCEEDED: ["E_CAPACITY_EXCEEDED", "Capacity exceeded"],
+
+  // CDN/network errors (transient edge failures)
+  CDN_REQUEST: ["E_CDN_REQUEST", "CDN request failed"],
+
+  // Configuration errors
+  CONFIG_MISSING: ["E_CONFIG_MISSING", "Configuration missing"],
+  DATA_INVALID: ["E_DATA_INVALID", "Invalid data"],
+  // Database errors
+  DB_BUSY: ["E_DB_BUSY", "Database busy"],
+  DB_CONNECTION: ["E_DB_CONNECTION", "Database connection failed"],
+  DB_QUERY: ["E_DB_QUERY", "Database query failed"],
+
+  // Encryption/decryption errors
+  DECRYPT_FAILED: ["E_DECRYPT_FAILED", "Decryption failed"],
+
+  // Domain validation errors
+  DOMAIN_REJECTED: ["E_DOMAIN_REJECTED", "Domain rejected"],
+
+  // Email errors
+  EMAIL_SEND: ["E_EMAIL_SEND", "Email send failed"],
+  // Broken image records/files (fallback red pixel served instead)
+  IMAGE_BROKEN: ["E_IMAGE_BROKEN", "Broken image"],
+
+  // A promise our own system makes was broken and an operator was told to
+  // repair the data by hand (see #shared/invariant-errors.ts)
+  INVARIANT_REPORTED: ["E_INVARIANT_REPORTED", "System invariant broken"],
+  KEY_DERIVATION: ["E_KEY_DERIVATION", "Key derivation failed"],
+  // Ledger errors
+  LEDGER_POST: ["E_LEDGER_POST", "Ledger post failed"],
+  NOT_FOUND_ATTENDEE: ["E_NOT_FOUND_ATTENDEE", "Attendee not found"],
+
+  // Not found
+  NOT_FOUND_LISTING: ["E_NOT_FOUND_LISTING", "Listing not found"],
+  PAYMENT_CHECKOUT: ["E_PAYMENT_CHECKOUT", "Payment checkout failed"],
+  PAYMENT_REFUND: ["E_PAYMENT_REFUND", "Payment refund failed"],
+  PAYMENT_SESSION: ["E_PAYMENT_SESSION", "Payment session error"],
+
+  // Payment provider errors (provider-agnostic)
+  PAYMENT_SIGNATURE: [
+    "E_PAYMENT_SIGNATURE",
+    "Payment signature verification failed",
+  ],
+  PAYMENT_WEBHOOK_SETUP: [
+    "E_PAYMENT_WEBHOOK_SETUP",
+    "Payment webhook setup failed",
+  ],
+  REGISTRATION_DELIVERY: [
+    "E_REGISTRATION_DELIVERY",
+    "Registration notification delivery failed",
+  ],
+  SITE_ASSIGNMENT: ["E_SITE_ASSIGNMENT", "Site assignment failed"],
+  SQUARE_CHECKOUT: ["E_SQUARE_CHECKOUT", "Square checkout failed"],
+  SQUARE_ORDER: ["E_SQUARE_ORDER", "Square order validation failed"],
+  SQUARE_REFUND: ["E_SQUARE_REFUND", "Square refund failed"],
+  SQUARE_SESSION: ["E_SQUARE_SESSION", "Square session retrieval failed"],
+
+  // Square-specific errors (used by square.ts internals)
+  SQUARE_SIGNATURE: [
+    "E_SQUARE_SIGNATURE",
+    "Square signature verification failed",
+  ],
+
+  // Storage errors
+  STORAGE_DELETE: ["E_STORAGE_DELETE", "Storage delete failed"],
+  STORAGE_UPLOAD: ["E_STORAGE_UPLOAD", "Storage upload failed"],
+  STRIPE_CHECKOUT: ["E_STRIPE_CHECKOUT", "Stripe checkout failed"],
+  STRIPE_REFUND: ["E_STRIPE_REFUND", "Stripe refund failed"],
+  STRIPE_SESSION: ["E_STRIPE_SESSION", "Stripe session retrieval failed"],
+
+  // Stripe-specific errors (used by stripe.ts internals)
+  STRIPE_SIGNATURE: [
+    "E_STRIPE_SIGNATURE",
+    "Stripe signature verification failed",
+  ],
+  STRIPE_WEBHOOK_SETUP: [
+    "E_STRIPE_WEBHOOK_SETUP",
+    "Stripe webhook setup failed",
+  ],
+
+  // SumUp does not sign its callbacks, so an unreadable body is all its door
+  // can refuse.
+  SUMUP_WEBHOOK: ["E_SUMUP_WEBHOOK", "SumUp webhook could not be read"],
+  VALIDATION_CONTENT_TYPE: [
+    "E_VALIDATION_CONTENT_TYPE",
+    "Invalid content type",
+  ],
+
+  // Validation errors
+  VALIDATION_FORM: ["E_VALIDATION_FORM", "Form validation error"],
+
+  // Webhook errors
+  WEBHOOK_PRICE_SIGNATURE: [
+    "E_WEBHOOK_PRICE_SIGNATURE",
+    "Webhook price signature invalid, missing, or charge differs from it",
+  ],
+} as const;
+
+type ErrorDefs = typeof ERROR_DEFS;
+
+/** Error code strings for use in logError calls */
+export const ErrorCode: { [K in keyof ErrorDefs]: ErrorDefs[K][0] } =
+  Object.fromEntries(
+    Object.entries(ERROR_DEFS).map(([k, [code]]) => [k, code]),
+  ) as { [K in keyof ErrorDefs]: ErrorDefs[K][0] };
+
+export type ErrorCodeType = (typeof ErrorCode)[keyof typeof ErrorCode];
+
+/** Human-readable labels for error codes (shown in admin activity log) */
+export const errorCodeLabel: Record<ErrorCodeType, string> = Object.fromEntries(
+  Object.values(ERROR_DEFS).map(([code, label]) => [code, label]),
+) as Record<ErrorCodeType, string>;
+
+/**
+ * Request log entry (privacy-safe)
+ */
+type RequestLogEntry = {
+  method: string;
+  path: string;
+  status: number;
+  durationMs: number;
+};
+
+/** Log a completed request to console.debug, with the path redacted. */
+export const logRequest = (entry: RequestLogEntry): void => {
+  if (shouldSuppressRequestLogs()) return;
+  const redactedPath = redactPath(entry.path);
+
+  console.debug(
+    `${getLogPrefix()}[Request] ${entry.method} ${redactedPath} ${entry.status} ${entry.durationMs}ms`,
+  );
+};
+
+/**
+ * Error facts routed to the applicable sinks.
+ */
+export type ErrorContext = {
+  /** Error code for classification */
+  code: ErrorCodeType;
+  /** Optional: listing ID (not slug) */
+  listingId?: number | undefined;
+  /** Optional: attendee ID */
+  attendeeId?: number | undefined;
+  /** Optional context that is safe for every error sink. */
+  detail?: string | undefined;
+  /** Activity-log context. It can contain personal data and must not reach other sinks. */
+  operatorDetail?: string | undefined;
+  /**
+   * Optional original thrown error. Forwarded to Sentry (never to the console
+   * line, ntfy, or the activity log) so server-side reports carry a real stack
+   * trace. Attach it wherever a `catch` would otherwise stringify the error
+   * into `detail`.
+   */
+  error?: unknown;
+  /**
+   * Optional grouping override for the Sentry report. A report that carries
+   * an exception groups by its stack. A transport message defeats that
+   * grouping, because it names the connection's IP, port, and database host.
+   * The override pins the group to stable facts instead. Built by
+   * databaseErrorFingerprint in src/shared/db/errors.ts.
+   */
+  fingerprint?: string[] | undefined;
+};
+
+/** Format an error detail string with request context and error message */
+export const formatRequestError = (
+  method: string,
+  path: string,
+  error: unknown,
+): string => {
+  const msg = errorMessage(error);
+  return `${method} ${redactPath(path)}: ${msg}`;
+};
+
+/** Format the safe Sentry message and activity-log base. */
+export const formatErrorMessage = (context: ErrorContext): string => {
+  const label = errorCodeLabel[context.code];
+  return context.detail
+    ? `Error: ${label} (${context.detail})`
+    : `Error: ${label}`;
+};
+
+export const formatOperatorMessage = (context: ErrorContext): string => {
+  const base = formatErrorMessage(context);
+  return context.operatorDetail ? `${base} — ${context.operatorDetail}` : base;
+};
+
+/** Only logging raised by the persistence itself is recursive. Independent
+ * reports each receive their own scope, even when they overlap. */
+const errorPersistence = createScope<Record<never, never>>();
+
+/** Persist error to activity log, swallowing failures to prevent cascading errors */
+const persistErrorToActivityLog = async (
+  context: ErrorContext,
+): Promise<void> => {
+  if (errorPersistence.current() !== undefined) return;
+  await errorPersistence.run({}, async () => {
+    try {
+      // Imported on first error rather than at module load: the logger sits in
+      // every module's import graph (via env.ts), and a static import here would
+      // drag the activity-log table — and the listing helpers it queries with —
+      // into every page's graph.
+      const { logActivity } = await import("#db/activity-log.ts");
+      await logActivity(
+        formatOperatorMessage(context),
+        context.listingId ?? null,
+      );
+    } catch {
+      // An error log cannot recover when its own durable log is unavailable.
+    }
+  });
+};
+
+const writeConsoleError = (
+  context: ErrorContext,
+  showMarker: boolean,
+): void => {
+  const parts = [
+    `[Error] ${context.code}`,
+    context.listingId !== undefined ? `listing=${context.listingId}` : null,
+    context.attendeeId !== undefined ? `attendee=${context.attendeeId}` : null,
+    context.detail ? `detail="${context.detail}"` : null,
+    context.operatorDetail && showMarker
+      ? `operatorDetail="(activity log)"`
+      : null,
+  ].filter(Boolean);
+
+  console.error(`${getLogPrefix()}${parts.join(" ")}`);
+};
+
+/**
+ * Log a classified error to console.error only (no ntfy, no activity log).
+ * Use this where calling logError would cause infinite recursion (e.g. ntfy.ts).
+ */
+export const logErrorLocal = (context: ErrorContext): void =>
+  writeConsoleError(context, false);
+
+/** Deliver a reporter's copy of an error. The reporter modules are imported
+ * on first error, not at module load: each reporter reports its own delivery
+ * failure through `logErrorLocal`, so a static import here would close a
+ * cycle (logger → reporter → logger) with no sound cut point — the same
+ * reason the activity-log persistence defers its import below. */
+const fanOutError = (context: ErrorContext): void => {
+  if (!hasPendingWorkScope()) return;
+  addPendingWork(sendNtfyCopy(context));
+  addPendingWork(persistErrorToActivityLog(context));
+  addPendingWork(sentryCopy(context));
+};
+
+/** Send the ntfy notification for an error, loading the sender on first use. */
+const sendNtfyCopy = async (context: ErrorContext): Promise<void> => {
+  const { sendNtfyError } = await import("#shared/ntfy.ts");
+  await sendNtfyError(context.code);
+};
+
+/** Send the Sentry report for an error, loading the sender on first use. */
+const sentryCopy = async (context: ErrorContext): Promise<void> => {
+  const { captureServerError } = await import("#shared/sentry.ts");
+  await captureServerError(context);
+};
+
+/**
+ * Log a classified error to console.error and persist to the activity log.
+ * Console output uses error codes and safe metadata (never PII).
+ * Activity log entry is encrypted and visible to admins on the log pages.
+ */
+export const logError = (context: ErrorContext): void => {
+  writeConsoleError(context, hasPendingWorkScope());
+  const deferred = deferredErrorReports.current();
+  if (deferred !== undefined) {
+    deferred.push(context);
+    return;
+  }
+  fanOutError(context);
+};
+
+/** Keep non-critical error notifications behind a command's critical work.
+ * Nested callers join the outer queue so only the outermost boundary flushes. */
+export const withDeferredErrorReports: ScopeRunner = (fn) => {
+  if (deferredErrorReports.current() !== undefined) return fn();
+  const reports: ErrorContext[] = [];
+  return deferredErrorReports.run(reports, async () => {
+    try {
+      return await fn();
+    } finally {
+      for (const report of reports) fanOutError(report);
+    }
+  });
+};
+
+/**
+ * Run a non-critical follow-up write, logging any failure (under DB_QUERY) but
+ * never throwing. Use it to isolate a bookkeeping/stats write from a critical
+ * operation that has already succeeded — a sent text, or a charged order being
+ * refunded — so a stats failure can neither report that success as a failure
+ * nor block the refund. The failure is still surfaced to the error log so the
+ * underlying data can be repaired.
+ */
+/** Log a failed database operation under the standard DB_QUERY code. */
+export const logDbError = (detail: string, error: unknown): void => {
+  logError({ code: ErrorCode.DB_QUERY, detail, error });
+};
+
+export const bestEffort = async (
+  detail: string,
+  op: () => Promise<void>,
+): Promise<void> => {
+  try {
+    await op();
+  } catch (error) {
+    logDbError(`${detail}: ${error}`, error);
+  }
+};
+
+/**
+ * Create a request timer for measuring duration
+ */
+export const createRequestTimer = (): (() => number) => {
+  const start = performance.now();
+  return () => Math.round(performance.now() - start);
+};
+
+/**
+ * Log categories for debug logging
+ */
+export type LogCategory =
+  | "Setup"
+  | "SQL"
+  | "Webhook"
+  | "Payment"
+  | "Auth"
+  | "Stripe"
+  | "Square"
+  | "SumUp"
+  | "Domain"
+  | "Email"
+  | "Storage"
+  | "Wallet"
+  | "Migration"
+  | "Prune"
+  | "Backfill";
+
+/**
+ * Log a debug message with category prefix
+ * For detailed debugging during development
+ */
+export const logDebug = (category: LogCategory, message: string): void => {
+  if (shouldSuppressDebugLogs()) return;
+  console.debug(`${getLogPrefix()}[${category}] ${message}`);
+};

@@ -1,0 +1,277 @@
+/**
+ * Admin templates for Site → Pages: the list, the create/edit forms (the edit
+ * page carrying the item manager), and the delete confirmation.
+ */
+
+import { t } from "#i18n";
+import {
+  sitePageEditForm,
+  sitePageForm,
+  sitePageToValues,
+} from "#routes/admin/site-pages-form.ts";
+import type { TableColumn } from "#shared/tables/column.ts";
+import { defineTable } from "#shared/tables/definition.ts";
+import { prefixedDeletePage } from "#templates/admin/confirm-page.tsx";
+import { rowDeleteLink } from "#templates/admin/delete-link.tsx";
+import {
+  collectionPage,
+  contentEntityEditPanel,
+  contentNewPage,
+} from "#templates/admin/site-content.tsx";
+import { WritableLink } from "#templates/admin/writable-only.tsx";
+import { InlineFormButton } from "#templates/components/inline-form-button.tsx";
+import { SaveForm } from "#templates/components/save-form.tsx";
+import { renderTable } from "#templates/components/table.tsx";
+import {
+  translatedTableColumn,
+  translatedTableHeader,
+} from "#templates/components/translated-table-column.ts";
+import type {
+  AdminSession,
+  SitePage,
+  SitePageItemType,
+  SitePageNavRow,
+} from "#types";
+
+const LIST = "/admin/site/pages";
+export type PickerOption = { value: string; label: string };
+export type ResolvedItem = {
+  type: SitePageItemType;
+  id: number;
+  label: string;
+};
+export type ListModel = {
+  roots: SitePageNavRow[];
+  nested: { page: SitePageNavRow; parentName: string }[];
+};
+export type EditModel = {
+  page: SitePage;
+  items: ResolvedItem[];
+  listingOptions: PickerOption[];
+  groupOptions: PickerOption[];
+  pageOptions: PickerOption[];
+};
+
+type NestedPageRow = ListModel["nested"][number];
+
+const DeleteLink = rowDeleteLink(LIST);
+
+/** A page row's name cell: the page name linking through to its edit page.
+ * Shared by the root-page list and the nested-page list. */
+const PageNameLink = ({
+  id,
+  name,
+}: {
+  id: number;
+  name: string;
+}): JSX.Element => (
+  <WritableLink href={`${LIST}/${id}/edit`}>{name}</WritableLink>
+);
+
+const pageReorderTable = <T,>(opts: {
+  base: (row: T) => string;
+  columns: TableColumn<T>[];
+  rows: T[];
+}): JSX.Element =>
+  renderTable(defineTable(opts.columns), opts.rows, {
+    reorder: {
+      action: (row) => (direction) => `${opts.base(row)}/move-${direction}`,
+      header: translatedTableHeader("site.pages.order_column"),
+    },
+  });
+
+const pageColumns = <T,>(
+  pageOf: (row: T) => SitePageNavRow,
+): { actions: TableColumn<T>; name: TableColumn<T> } => ({
+  actions: {
+    cell: (row) => <DeleteLink id={pageOf(row).id} />,
+    header: "",
+    key: "actions",
+  },
+  name: {
+    cell: (row) => {
+      const page = pageOf(row);
+      return <PageNameLink id={page.id} name={page.name} />;
+    },
+    header: translatedTableHeader("site.pages.name_column"),
+    key: "name",
+  },
+});
+
+const ownPage = (page: SitePageNavRow): SitePageNavRow => page;
+const nestedPage = (row: NestedPageRow): SitePageNavRow => row.page;
+const ownPageColumns = pageColumns(ownPage);
+const nestedPageColumns = pageColumns(nestedPage);
+
+const nestedPageTable = defineTable<NestedPageRow>([
+  nestedPageColumns.name,
+  translatedTableColumn(
+    "parent",
+    "site.pages.parent_column",
+    ({ parentName }) => parentName,
+  ),
+  nestedPageColumns.actions,
+]);
+
+export const adminSitePagesListPage = (
+  model: ListModel,
+  session: AdminSession,
+  successMessage?: string,
+): string =>
+  collectionPage("site.pages", LIST)(
+    session,
+    successMessage,
+    model.roots.length === 0 && model.nested.length === 0 ? (
+      <div class="prose">
+        <p>
+          <em>{t("site.pages.none")}</em>
+        </p>
+      </div>
+    ) : (
+      <>
+        {/* A nested page always has a root ancestor, so reaching here (not the
+              all-empty case above) guarantees at least one root to list. */}
+        <h2>{t("site.pages.roots_heading")}</h2>
+        {pageReorderTable({
+          base: (page) => `${LIST}/${page.id}`,
+          columns: [
+            ownPageColumns.name,
+            {
+              cell: (page) => <code>/page/{page.slug}</code>,
+              header: t("common.slug"),
+              key: "slug",
+            },
+            ownPageColumns.actions,
+          ],
+          rows: model.roots,
+        })}
+        {model.nested.length > 0 && (
+          <>
+            <h2>{t("site.pages.nested_heading")}</h2>
+            {renderTable(nestedPageTable, model.nested)}
+          </>
+        )}
+      </>
+    ),
+  );
+
+export const adminSitePageNewPage = contentNewPage(
+  LIST,
+  "site.pages",
+  sitePageForm,
+);
+
+/** A single "add <type>" picker: a select of eligible targets + an Add button.
+ * Renders nothing when there is nothing to add (an empty picker only shows a
+ * confusing "nothing available" line otherwise). */
+const ItemPicker = ({
+  pageId,
+  type,
+  label,
+  options,
+}: {
+  pageId: number;
+  type: SitePageItemType;
+  label: string;
+  options: PickerOption[];
+}): JSX.Element | null =>
+  options.length === 0 ? null : (
+    <SaveForm
+      action={`${LIST}/${pageId}/items`}
+      class="inline-add"
+      submitIcon="plus"
+      submitLabel={t("site.pages.add_item")}
+    >
+      <input name="item_type" type="hidden" value={type} />
+      <label>
+        {label}{" "}
+        <select name="item_id">
+          {options.map((o) => (
+            <option value={o.value}>{o.label}</option>
+          ))}
+        </select>
+      </label>{" "}
+    </SaveForm>
+  );
+
+/** The Edit tab's panel: the page-fields form (name, editable slug + public
+ * link, SEO meta, the Hidden box, markdown body) posting to the update route. */
+export const sitePageEditPanel = contentEntityEditPanel(
+  LIST,
+  sitePageEditForm,
+  sitePageToValues,
+);
+
+/** The Items tab's panel: the page's current contents (reorderable, each
+ * removable) plus the add-item pickers. Pickers with nothing to offer are
+ * hidden, and the whole "Add" section disappears when nothing can be added. */
+export const sitePageItemsPanel = (model: EditModel): JSX.Element => {
+  const { page, items } = model;
+  const itemBase = (item: ResolvedItem): string =>
+    `${LIST}/${page.id}/items/${item.type}/${item.id}`;
+  const anyOptions =
+    model.listingOptions.length > 0 ||
+    model.groupOptions.length > 0 ||
+    model.pageOptions.length > 0;
+  return (
+    <>
+      {items.length === 0 ? (
+        <p>
+          <em>{t("site.pages.no_items")}</em>
+        </p>
+      ) : (
+        pageReorderTable({
+          base: itemBase,
+          columns: [
+            {
+              cell: (item) => t(`site.pages.type.${item.type}`),
+              header: t("site.pages.item_type_column"),
+              key: "type",
+            },
+            {
+              cell: (item) => item.label,
+              header: t("site.pages.name_column"),
+              key: "name",
+            },
+            {
+              cell: (item) => (
+                <InlineFormButton action={`${itemBase(item)}/remove`}>
+                  {t("site.pages.remove")}
+                </InlineFormButton>
+              ),
+              header: "",
+              key: "actions",
+            },
+          ],
+          rows: items,
+        })
+      )}
+
+      {anyOptions && (
+        <>
+          <h3>{t("site.pages.add_item_heading")}</h3>
+          <ItemPicker
+            label={t("site.pages.type.listing")}
+            options={model.listingOptions}
+            pageId={page.id}
+            type="listing"
+          />
+          <ItemPicker
+            label={t("site.pages.type.group")}
+            options={model.groupOptions}
+            pageId={page.id}
+            type="group"
+          />
+          <ItemPicker
+            label={t("site.pages.type.page")}
+            options={model.pageOptions}
+            pageId={page.id}
+            type="page"
+          />
+        </>
+      )}
+    </>
+  );
+};
+
+export const adminSitePageDeletePage = prefixedDeletePage("site.pages", LIST);

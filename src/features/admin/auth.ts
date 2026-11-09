@@ -1,0 +1,205 @@
+import {
+  deriveKEK,
+  deriveKEKFromPassword,
+  unwrapKey,
+  wrapKeyWithToken,
+} from "#crypto/keys.ts";
+import { generateSecureToken } from "#crypto/utils.ts";
+import { clearLoginAttempts, loginLimiter } from "#db/login-attempts.ts";
+import { createSession, deleteSession } from "#db/sessions.ts";
+import {
+  decryptAdminLevel,
+  getUserByUsername,
+  migrateUserToV2Kek,
+  verifyUserPassword,
+} from "#db/users.ts";
+import { t } from "#i18n";
+import { loginResponse } from "#routes/admin/dashboard.ts";
+import {
+  adminLoginPageHref,
+  adminReturnPath,
+  RETURN_URL_PARAM,
+} from "#routes/admin/login-return.ts";
+import { defineAdminRoutes } from "#routes/admin/route-tables.ts";
+import {
+  ANY_USER_FORM,
+  anyUserPage,
+  withAuth,
+  withOptionalSession,
+} from "#routes/auth.ts";
+import { parseFormData } from "#routes/csrf.ts";
+import { redirect } from "#routes/response.ts";
+import { parseCookies } from "#routes/url.ts";
+import { adminLandingPath } from "#shared/admin-pages.ts";
+import {
+  buildSessionCookie,
+  clearSessionCookie,
+  getSessionCookieName,
+} from "#shared/cookies.ts";
+import { verifySignedCsrfToken } from "#shared/csrf.ts";
+import { DAY_MS, nowMs } from "#shared/now.ts";
+import { getRequestClientIp } from "#shared/request-context.ts";
+import { fail, ok } from "#shared/response.ts";
+import { getSkipLoginDelay } from "#shared/test-overrides.ts";
+import { adminLogoutPage } from "#templates/admin/logout.tsx";
+import { getLoginForm } from "#templates/fields/admin.ts";
+import type { AdminLevel } from "#types";
+
+/** Random delay between 100-200ms to prevent timing attacks */
+const randomDelay = (): Promise<void> =>
+  getSkipLoginDelay()
+    ? Promise.resolve()
+    : new Promise((resolve) => setTimeout(resolve, 100 + Math.random() * 100));
+
+/** Create a session and redirect to the page login is returning to, or to the
+ * user's landing page when there is no safe target. Delivery agents go to
+ * their run sheet, editors to listings, staff to the dashboard. When the
+ * user holds a DATA_KEY, the session wraps it under the session token, so the
+ * private key can be derived later. The keyless editor gets a null wrap and so
+ * can never derive the private key. */
+const createLoginSession = async (
+  dataKey: CryptoKey | null,
+  userId: number,
+  adminLevel: AdminLevel,
+  returnPath: string | null,
+): Promise<Response> => {
+  const token = generateSecureToken();
+  const csrfToken = generateSecureToken();
+  const expires = nowMs() + DAY_MS;
+  const wrappedDataKey = dataKey
+    ? await wrapKeyWithToken(dataKey, token)
+    : null;
+
+  await createSession(token, csrfToken, expires, wrappedDataKey, userId);
+
+  return redirect(
+    returnPath ?? adminLandingPath(adminLevel),
+    t("success.logged_in"),
+    true,
+    {
+      cookie: buildSessionCookie(token),
+    },
+  );
+};
+
+/**
+ * Handle POST /admin/login
+ */
+const handleAdminLogin = async (
+  request: Request,
+  _params: Record<string, never>,
+): Promise<Response> => {
+  await randomDelay();
+
+  const form = await parseFormData(request);
+
+  // Where a successful login sends the user: the page the login form named,
+  // or the role's landing page. The validator refuses every off-site shape.
+  const returnPath = adminReturnPath(form.getString(RETURN_URL_PARAM));
+
+  // Validate login CSRF token (signed token pattern)
+  const csrfForm = form.getString("csrf_token");
+  if (!csrfForm || !(await verifySignedCsrfToken(csrfForm))) {
+    return fail(adminLoginPageHref(returnPath), t("error.csrf_invalid"));
+  }
+
+  const clientIp = getRequestClientIp();
+
+  if (await loginLimiter.isLimited(clientIp)) {
+    return fail(adminLoginPageHref(returnPath), t("error.too_many_attempts"));
+  }
+
+  // A failed credential check also logs the user out of any existing
+  // session, so the redirect lands on the login page (not the dashboard).
+  const existingToken = parseCookies(request).get(getSessionCookieName());
+  const failedCredentialsRedirect = async (): Promise<Response> => {
+    await loginLimiter.record(clientIp);
+    if (existingToken) await deleteSession(existingToken);
+    return fail(adminLoginPageHref(returnPath), t("error.login_failed"), {
+      ...(existingToken ? { cookie: clearSessionCookie() } : {}),
+    });
+  };
+
+  const validation = getLoginForm().validate(form);
+
+  if (!validation.valid) {
+    return fail(adminLoginPageHref(returnPath), validation.error);
+  }
+
+  const { username, password } = validation.values;
+
+  const user = await getUserByUsername(username);
+  if (!user) return failedCredentialsRedirect();
+
+  const passwordHash = await verifyUserPassword(user, password);
+  if (!passwordHash) return failedCredentialsRedirect();
+
+  await clearLoginAttempts(clientIp);
+
+  const adminLevel = await decryptAdminLevel(user);
+
+  // Editors are activated without a DATA_KEY, so a missing wrap is normal for
+  // them — give them a keyless session (no private key derivable). For every
+  // other role a missing wrap means the account was never activated. Password
+  // verification has already passed, so an editor reaching here has set a
+  // password and is genuinely active.
+  if (!user.wrapped_data_key) {
+    if (adminLevel === "editor") {
+      return createLoginSession(null, user.id, adminLevel, returnPath);
+    }
+    return fail(
+      adminLoginPageHref(returnPath),
+      t("error.account_not_activated"),
+    );
+  }
+
+  // Unwrap DATA_KEY with the user's KEK scheme. Version 2 derives the KEK
+  // from the raw password, so the wrap cannot be reproduced from a DB dump.
+  // Version 1 (legacy) derives it from the stored hash. A correct password is
+  // the only thing that makes either unwrap succeed.
+  let dataKey: CryptoKey;
+  try {
+    dataKey =
+      user.kek_version >= 2
+        ? await unwrapKey(
+            user.wrapped_data_key,
+            await deriveKEKFromPassword(password, passwordHash),
+          )
+        : await unwrapKey(user.wrapped_data_key, await deriveKEK(passwordHash));
+  } catch {
+    // KEK mismatch. This cannot happen when password verification passed.
+    return failedCredentialsRedirect();
+  }
+
+  // Upgrade a legacy wrap to the password-bound scheme now that we hold the raw
+  // password — closes the DB-dump-recoverable path for this user going forward.
+  if (user.kek_version < 2) {
+    await migrateUserToV2Kek(user.id, dataKey, password, passwordHash);
+  }
+
+  return createLoginSession(dataKey, user.id, adminLevel, returnPath);
+};
+
+const handleAdminLogout = (request: Request): Promise<Response> =>
+  withAuth(request, ANY_USER_FORM, async (session) => {
+    await deleteSession(session.token);
+    return ok("/admin", t("success.logged_out"), {
+      cookie: clearSessionCookie(),
+    });
+  });
+
+const handleLoginGet = (request: Request): Promise<Response> =>
+  withOptionalSession(request, (session) =>
+    session
+      ? ok(adminLandingPath(session.adminLevel), t("success.already_logged_in"))
+      : loginResponse(request),
+  );
+
+const handleLogoutGet = anyUserPage((session) => adminLogoutPage(session));
+
+export const adminHandlers = defineAdminRoutes({
+  "GET /admin/login": handleLoginGet,
+  "GET /admin/logout": handleLogoutGet,
+  "POST /admin/login": handleAdminLogin,
+  "POST /admin/logout": handleAdminLogout,
+});

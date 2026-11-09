@@ -1,0 +1,191 @@
+/**
+ * Global cache stats registry.
+ * Cache modules register stat providers at load time;
+ * the debug footer reads them at render time.
+ */
+
+import { unique } from "#fp";
+
+/** A single cache's stats snapshot */
+export type CacheStat = {
+  readonly name: string;
+  readonly entries: number;
+  readonly capacity?: number;
+};
+
+type CacheStatProvider = () => CacheStat;
+
+const providers = new Set<CacheStatProvider>();
+
+/** Remove one registration from the registry (handed back by the register
+ * functions; production callers register for the process's lifetime and drop
+ * it, tests must call it so their entries never outlive the test). */
+export type Unregister = () => void;
+
+/** Build the "join this set, and here is how to leave it" register function a
+ * set of load-time registrations needs. Both registries below are one. */
+const registrar =
+  <T>(members: Set<T>): ((member: T) => Unregister) =>
+  (member: T): Unregister => {
+    members.add(member);
+    return () => {
+      members.delete(member);
+    };
+  };
+
+/** Register a cache stat provider (called at module load time) */
+export const registerCache = registrar(providers);
+
+/** Collect stats from all registered caches */
+export const getAllCacheStats = (): CacheStat[] =>
+  [...providers].map((p) => p());
+
+/**
+ * A cache declares its own table plus any table a DB trigger writes through to.
+ * The listings cache depends on `listing_attendees` for that reason.
+ *
+ * The db client sniffs every write's target table and fires the registered
+ * invalidators, so no write path has to remember to invalidate by hand. Caches
+ * push their invalidator in at load time, which keeps the client free of static
+ * imports of them.
+ *
+ * INSERT, DELETE and REPLACE ignore a `whenColumns` gate, because a row that
+ * enters or leaves always shifts the aggregates.
+ */
+
+/** What a write narrows to, for column-gated invalidation. */
+export type WriteInfo = {
+  /** Lower-cased columns an UPDATE assigns, or null when the write narrows
+   * nothing: an INSERT, DELETE or REPLACE, or an UPDATE whose SET clause the
+   * parser cannot read. */
+  updatedColumns: ReadonlySet<string> | null;
+};
+
+/** Why cached data was cleared. Only a committed write needs primary refills. */
+export type CacheInvalidation = "manual" | "write";
+
+type Invalidator = (cause: CacheInvalidation) => void;
+type Registration = {
+  invalidate: Invalidator;
+  /** If set, an UPDATE only fires when it assigns at least one of these columns.
+   * INSERT / DELETE / REPLACE always fire. */
+  whenColumns?: ReadonlySet<string> | undefined;
+};
+
+const invalidatorsByTable = new Map<string, Set<Registration>>();
+
+/** Full-clear hooks for caches that no table registration covers (e.g. the
+ * permanent setup-complete shortcut). */
+const resetHooks = new Set<Invalidator>();
+
+/** Register an extra full-clear to run with a write cause when every cache is
+ * reset. Only needed by caches without a table registration;
+ * `resetAllCaches` already fires every table-registered invalidator. */
+export const registerCacheReset = registrar(resetHooks);
+
+/**
+ * Clear every registered cache: each table-registered invalidator once (a
+ * cache registered against several tables still only clears once) plus every
+ * extra reset hook. Runs after operations that bypass the normal write path —
+ * a full reset or a restore — where any warm cache is stale. A lazily-loaded
+ * cache module that never ran is absent from the registry, which is correct:
+ * it has no cache to clear.
+ */
+export const resetAllCaches = (): void => {
+  const registrations = [...invalidatorsByTable.values()].flatMap((set) => [
+    ...set,
+  ]);
+  for (const registration of unique(registrations)) {
+    registration.invalidate("write");
+  }
+  for (const reset of resetHooks) reset("write");
+};
+
+const setsIntersect = (
+  a: ReadonlySet<string>,
+  b: ReadonlySet<string>,
+): boolean => {
+  for (const v of a) if (b.has(v)) return true;
+  return false;
+};
+
+/**
+ * Register `invalidate` to run whenever any of `tables` is written.
+ *
+ * Pass `opts.whenColumns` to gate a dependency on specific UPDATE columns:
+ * the invalidator is skipped for UPDATEs that don't assign any listed column
+ * (INSERT / DELETE / REPLACE still always fire).
+ */
+export const registerTableInvalidation = (
+  tables: readonly string[],
+  invalidate: Invalidator,
+  opts?: { whenColumns?: readonly string[] | undefined },
+): Unregister => {
+  const whenColumns = opts?.whenColumns ? new Set(opts.whenColumns) : undefined;
+  const registration: Registration = { invalidate, whenColumns };
+  for (const table of tables) {
+    const set = invalidatorsByTable.get(table) ?? new Set<Registration>();
+    set.add(registration);
+    invalidatorsByTable.set(table, set);
+  }
+  return () => {
+    for (const table of tables) {
+      invalidatorsByTable.get(table)?.delete(registration);
+    }
+  };
+};
+
+/** Fire registered cache invalidators for `table`, respecting column gates. */
+export const invalidateCachesForWrite = (
+  table: string,
+  info: WriteInfo,
+): void => {
+  const set = invalidatorsByTable.get(table);
+  if (!set) return;
+  for (const reg of set) {
+    if (
+      info.updatedColumns !== null &&
+      reg.whenColumns !== undefined &&
+      !setsIntersect(info.updatedColumns, reg.whenColumns)
+    ) {
+      continue;
+    }
+    reg.invalidate("write");
+  }
+};
+
+/** Fire every cache invalidator registered against `table` (no-op if none).
+ * The write narrows nothing, so column-gated entries fire too. */
+export const invalidateCachesForTable = (table: string): void =>
+  invalidateCachesForWrite(table, { updatedColumns: null });
+
+/** A `dependsOn` entry accepted by `cachedTable` / `cachedEntityTable`. */
+export type DependsOnEntry =
+  | string
+  | { table: string; whenColumns?: readonly string[] };
+
+/**
+ * Register `invalidate` to fire whenever `ownTable` or any `deps` entry is
+ * written. Plain string entries are unconditional; object entries may carry
+ * `whenColumns` to gate on specific UPDATE columns (INSERT/DELETE always fire).
+ * Centralises the registration loop shared by `cachedTable` and `cachedEntityTable`.
+ */
+export const registerDependencies = (
+  ownTable: string,
+  deps: readonly DependsOnEntry[],
+  invalidate: Invalidator,
+): Unregister => {
+  const unregisters = [
+    registerTableInvalidation([ownTable], invalidate),
+    ...deps.map((dep) =>
+      typeof dep === "string"
+        ? registerTableInvalidation([dep], invalidate)
+        : registerTableInvalidation([dep.table], invalidate, {
+            whenColumns: dep.whenColumns,
+          }),
+    ),
+  ];
+  return () => {
+    for (const unregister of unregisters) unregister();
+  };
+};

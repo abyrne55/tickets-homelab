@@ -1,0 +1,167 @@
+/**
+ * SMS Gateway webhook receiver: POST /sms/webhook
+ *
+ * Receives delivery/failure/inbound events from the SMS Gateway app. Requests
+ * are authenticated with an HMAC-SHA256 signature over `rawBody + timestamp`
+ * using the shared webhook secret. Events are recorded in the (encrypted)
+ * activity log against the relevant attendee. Message text and the sender
+ * number arrive end-to-end encrypted and are decrypted with the gateway
+ * passphrase. No message content is persisted outside the activity log.
+ */
+
+import * as v from "valibot";
+import { constantTimeEqual } from "#crypto/utils.ts";
+import { logActivity } from "#db/activity-log.ts";
+import { findAttendeeIdByPhoneIndex } from "#db/attendee-phone-index.ts";
+import {
+  claimProcessedSmsInbound,
+  pruneProcessedSmsInboundBefore,
+} from "#db/processed-sms-inbound.ts";
+import { settings } from "#db/settings.ts";
+import {
+  deleteSmsMessage,
+  getSmsMessageByProviderId,
+  pruneSmsMessagesBefore,
+  type SmsMessageRow,
+} from "#db/sms-messages.ts";
+import { asString } from "#fp";
+import { apiErrorResponse } from "#routes/api/cors.ts";
+import { jsonResponse } from "#routes/response.ts";
+import { createRouter, defineRoutes } from "#routes/router.ts";
+import { DAY_MS, isoBefore, nowSeconds } from "#shared/now.ts";
+import { hmacSha256Hex } from "#shared/payment-crypto.ts";
+import { decryptField } from "#shared/sms/e2e.ts";
+import { computePhoneIndex } from "#shared/sms/phone-index.ts";
+
+/** How long to keep id→attendee rows as a backstop for missed webhooks. */
+const RETENTION_MS = 30 * DAY_MS;
+
+/** Maximum signed webhook age/skew accepted, matching Stripe-style Unix seconds. */
+const SMS_WEBHOOK_TOLERANCE_SECONDS = 300;
+
+const EnvelopeSchema = v.object({
+  event: v.string(),
+  payload: v.record(v.string(), v.unknown()),
+});
+
+/** Parse the signed Unix-seconds timestamp and enforce freshness. */
+const isFreshTimestamp = (timestamp: string): boolean => {
+  if (!/^\d+$/.test(timestamp)) return false;
+  const seconds = Number(timestamp);
+  if (!Number.isSafeInteger(seconds)) return false;
+  return Math.abs(nowSeconds() - seconds) <= SMS_WEBHOOK_TOLERANCE_SECONDS;
+};
+
+/** Verify the X-Signature / X-Timestamp headers against the raw body. */
+const isValidSignature = async (
+  request: Request,
+  rawBody: string,
+  secret: string,
+): Promise<boolean> => {
+  const signature = request.headers.get("x-signature");
+  const timestamp = request.headers.get("x-timestamp");
+  if (!signature || !timestamp || !isFreshTimestamp(timestamp)) return false;
+  const expected = await hmacSha256Hex(rawBody + timestamp, secret);
+  return constantTimeEqual(expected, signature);
+};
+
+/** Decrypt an E2E field, falling back to the raw value if it is not encrypted. */
+const tryDecrypt = async (
+  value: string,
+  passphrase: string,
+): Promise<string> => {
+  try {
+    return await decryptField(value, passphrase);
+  } catch {
+    return value;
+  }
+};
+
+/** Run `fn` with the row a status event refers to, if it exists. */
+const withReferencedRow = async (
+  payload: Record<string, unknown>,
+  fn: (row: SmsMessageRow) => Promise<void>,
+): Promise<void> => {
+  const row = await getSmsMessageByProviderId(
+    asString(payload.messageId) || asString(payload.id),
+  );
+  if (row) await fn(row);
+};
+
+/** Build a status-event handler: logs `note(payload)` against the referenced
+ * message's attendee, then drops the row (its status is settled). The delivered
+ * and failed events share this shape and differ only in the note they log. */
+const handleStatus =
+  (note: (payload: Record<string, unknown>) => string) =>
+  (payload: Record<string, unknown>): Promise<void> =>
+    withReferencedRow(payload, async (row) => {
+      await logActivity(note(payload), row.listing_id, row.attendee_id);
+      await deleteSmsMessage(row.id);
+    });
+
+const inboundWebhookId = (payload: Record<string, unknown>): string =>
+  asString(payload.messageId) || asString(payload.id);
+
+const handleReceived = async (
+  payload: Record<string, unknown>,
+): Promise<void> => {
+  const passphrase = settings.smsGatewayPassphrase;
+  if (!(await claimProcessedSmsInbound(inboundWebhookId(payload)))) return;
+  const message = await tryDecrypt(asString(payload.message), passphrase);
+  const sender = await tryDecrypt(asString(payload.sender), passphrase);
+  const attendeeId = await findAttendeeIdByPhoneIndex(
+    await computePhoneIndex(sender),
+  );
+  await logActivity(`SMS received: ${message}`, null, attendeeId);
+};
+
+/** What to do for each gateway event we track, keyed by the envelope's event
+ * name. An event not in this table is acknowledged without action. The
+ * gateway can send kinds we do not record, so the envelope schema deliberately
+ * keeps `event` an open string rather than a picklist. */
+const smsEventHandlers: Record<
+  string,
+  (payload: Record<string, unknown>) => Promise<void>
+> = {
+  "sms:delivered": handleStatus(() => "SMS delivered"),
+  "sms:failed": handleStatus(
+    (payload) => `SMS failed: ${asString(payload.reason) || "unknown"}`,
+  ),
+  "sms:received": handleReceived,
+};
+
+/** Handle POST /sms/webhook */
+export const handleSmsWebhook = async (request: Request): Promise<Response> => {
+  const secret = settings.smsGatewayWebhookSecret;
+  if (!secret) return apiErrorResponse("Not configured", 404);
+
+  const rawBody = await request.text();
+  if (!(await isValidSignature(request, rawBody, secret))) {
+    return apiErrorResponse("Invalid signature", 401);
+  }
+
+  let body: unknown;
+  try {
+    body = JSON.parse(rawBody);
+  } catch {
+    return apiErrorResponse("Invalid JSON");
+  }
+  const parsed = v.safeParse(EnvelopeSchema, body);
+  if (!parsed.success) return apiErrorResponse("Invalid payload");
+
+  const { event, payload } = parsed.output;
+  await smsEventHandlers[event]?.(payload);
+
+  // Backstop cleanup for rows whose delivery webhook never arrived.
+  const retentionCutoff = isoBefore(RETENTION_MS);
+  await pruneSmsMessagesBefore(retentionCutoff);
+  await pruneProcessedSmsInboundBefore(retentionCutoff);
+
+  return jsonResponse({ ok: true });
+};
+
+export const smsWebhookRoutes = defineRoutes({
+  "POST /sms/webhook": handleSmsWebhook,
+});
+
+export const routeSmsWebhook = createRouter(smsWebhookRoutes);

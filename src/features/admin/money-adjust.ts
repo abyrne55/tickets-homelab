@@ -1,0 +1,54 @@
+/**
+ * Shared owner-only handler for a manual money correction (decision 14). The
+ * difference from the *current* projection posts as a `writeoff` adjustment
+ * leg, never as external cash.
+ *
+ * The SUBMITTED target goes straight to `adjust`, which recomputes the delta
+ * INSIDE its own write transaction. A double-submit is therefore idempotent for
+ * a given target: the second recompute already sees the first's adjustment and
+ * posts a zero-delta no-op.
+ */
+
+import { logActivity } from "#db/activity-log.ts";
+import { t } from "#i18n";
+import { createIdEntityHandler } from "#routes/entity.ts";
+import { errorRedirect, redirect } from "#routes/response.ts";
+import { formGuardAt } from "#routes/route-gates.ts";
+import { parseSignedMinorUnits } from "#shared/validation/money.ts";
+
+/** Configuration for one entity's money-correction handler. */
+type MoneyAdjustConfig<Entity> = {
+  /** The route this handler serves, whose declaration names the audience. */
+  pattern: string;
+  /** Load the entity by id (existence check + log label), or null when missing. */
+  load: (id: number) => Promise<Entity | null>;
+  /** The form field carrying the new value (major units). */
+  field: string;
+  /** Post a `writeoff` adjustment moving the figure to `target`, recomputing the
+   *  delta from the current projection inside its own write transaction. */
+  adjust: (entity: Entity, target: number) => Promise<void>;
+  /** Neutral activity-log message (no raw figures). */
+  logMessage: (entity: Entity) => string;
+  /** Flash message on success. */
+  successMessage: string;
+  /** Edit-page path to redirect back to. */
+  editPath: (id: number) => string;
+};
+
+/** Build one owner-only money-correction handler on the shared entity route. */
+export const makeMoneyAdjustHandler = <Entity>(
+  config: MoneyAdjustConfig<Entity>,
+): ((request: Request, id: number) => Promise<Response>) => {
+  const route = createIdEntityHandler<Entity>(config.load)(
+    formGuardAt(config.pattern),
+  )(async (entity, _session, form, _request, { id }) => {
+    const target = parseSignedMinorUnits(form.getString(config.field));
+    if (target === null) {
+      return errorRedirect(config.editPath(id), t("fields.validation.amount"));
+    }
+    await config.adjust(entity, target);
+    await logActivity(config.logMessage(entity));
+    return redirect(config.editPath(id), config.successMessage, true);
+  });
+  return (request, id) => route(request, { id });
+};

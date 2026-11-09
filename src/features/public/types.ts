@@ -1,0 +1,124 @@
+/**
+ * Shared types, constants, and tiny utilities for public ticket routes
+ */
+
+import type { CartDateItem } from "#booking/cart-conflicts.ts";
+import type { ChildDatesByDayCount, TicketListing } from "#booking/model.ts";
+import type { PagePackage } from "#booking/page-packages.ts";
+import type { ListingAttributesById } from "#db/attributes.ts";
+import type { AddOnOption } from "#db/modifier-resolve.ts";
+import type { QuestionWithAnswers } from "#db/question-types.ts";
+import type { QuestionListingMap } from "#db/questions/queries.ts";
+import { splitParts } from "#shared/split.ts";
+import type {
+  BookingPrefill,
+  GroupAvailability,
+} from "#templates/public/reservations/types.ts";
+import type { PublicNavProps } from "#templates/public/shared.tsx";
+import type { Image, ItemImageColumns, ListingWithCount } from "#types";
+
+/** Parent listing id → its bookable-child candidates, each hydrated to a
+ * {@link TicketListing} so availability (isSoldOut/isClosed/maxPurchasable) is
+ * resolved for the gate/render. Empty when the parents flag is off or the page
+ * has no parents; children are never added to `ctx.listings` (they are not URL
+ * slugs). */
+export type ChildrenByParentId = Map<number, TicketListing[]>;
+
+/** Ticket shared context shape */
+export type TicketSharedContext = {
+  dates: string[];
+  /** Each daily listing's own bookable dates — the facts the render-time cart
+   * conflict rules read (see `#shared/booking/cart-conflicts.ts`). */
+  cartDateItems: CartDateItem[];
+  terms: string;
+  questions: QuestionWithAnswers[];
+  questionListingMap: QuestionListingMap;
+  /** Parent→children relationship for the page's listings (see
+   * {@link ChildrenByParentId}); empty map when the flag is off or none apply. */
+  childrenByParentId: ChildrenByParentId;
+  /** Each DAILY child's holiday-aware serveable start dates, keyed by the
+   * (parent, child) PAIR (`pairKey`) so a child required by two parents
+   * carries each parent's own dates; emitted as `data-child-dates` for
+   * the client compatibility script; empty map when the page has no
+   * daily children. Per selectable parent span ({@link ChildDatesByDayCount}). */
+  childDatesById: Map<string, ChildDatesByDayCount>;
+  groupName?: string;
+  groupDescription?: string;
+  groupImage?: ItemImageColumns;
+  /** The header entity whose image gallery the public page renders (the group
+   * on a group page, or the sole listing on a single-listing page); null for a
+   * multi-listing combo. Just the reference — the images are read lazily on the
+   * render path only ({@link renderCtx}), so submit/quote/API flows pay no
+   * read. The kind is only ever these two, so the nav can highlight the
+   * entity's own chain. */
+  galleryTarget: { type: "group" | "listing"; id: number } | null;
+  /** Whether the page root is hidden. A group is the root, not its members. */
+  pageHidden: boolean;
+  /** The header entity's images, rendered as the shared CSS gallery above the
+   * form. Populated only when the page is actually rendered (renderCtx); it
+   * stays `[]` on the submit/quote/API paths that never show the gallery. */
+  galleryImages: readonly Image[];
+  /** The package bundles sold on this page, in page order — each carrying its
+   * own member ids, per-package quantities, price overrides, and hide flag. A
+   * single-package page is an array of one; a plain listing page is empty. */
+  packages: PagePackage[];
+  /** Every CAPPED group the packages' members OR their required children belong
+   * to → its remaining spots, and each of those listings → its group ids. One
+   * package consumes the SUM of its members' fixed quantities (plus one child
+   * unit per booked parent unit) from each such group, so a package's count is
+   * bounded by `floor(remaining / demand)` per group — the package's own group
+   * AND any other capped pool members or children share. Empty for pages with
+   * no packages or when nothing is capped. Carried on the SHARED context so the
+   * page render, the submit clamp, and the API all use ONE ceiling
+   * ({@link packageBundleLimit}). Always set by {@link getTicketContext}
+   * (empty Maps for a package-less page), so callers read them without a
+   * fallback. */
+  packageGroupRemainingByGroupId: ReadonlyMap<number, number>;
+  packageMemberGroupIds: ReadonlyMap<number, number[]>;
+  actionUrl?: string;
+  siteToken?: string;
+  promoCodesEnabled?: boolean;
+  /** Opt-in add-ons offered for the page's listings (empty when none apply). */
+  addOns: AddOnOption[];
+};
+
+/** Shared rendering context for ticket pages */
+export type TicketCtx = TicketSharedContext &
+  GroupAvailability & {
+    slugs: string[];
+    listings: TicketListing[];
+    /** Selected listing attributes for display. Present on render paths only. */
+    attributesByListing?: ListingAttributesById;
+    baseUrl?: string;
+    prefill?: BookingPrefill | undefined;
+    /** The public site menu, built on the render path only (not on
+     * submit/quote/API) and dropped in iframe mode. */
+    nav?: PublicNavProps;
+  };
+
+/** Shared context provider for ticket pages */
+export type TicketContextProvider = (
+  listings: TicketListing[],
+) => Promise<TicketSharedContext>;
+
+/** Listing with selected quantity */
+export type ListingQty = { listing: ListingWithCount; qty: number };
+
+/** Registration closed message for form submissions */
+export const REGISTRATION_CLOSED_SUBMIT_MESSAGE =
+  "Sorry, registration closed while you were submitting.";
+
+/** Parse slugs from a slug string (may contain + separator for multiple listings) */
+export const parseSlugs: (slug: string) => string[] = splitParts("+");
+
+/** Set noindex signal header on response; middleware converts it to X-Robots-Tag. */
+export const applyNoindex = (response: Response): Response => {
+  response.headers.set("x-robots-noindex", "true");
+  return response;
+};
+
+/** Set noindex signal header on response for hidden listings */
+export const applyHiddenNoindex = (
+  response: Response,
+  hidden: boolean,
+): Response => (hidden ? applyNoindex(response) : response);

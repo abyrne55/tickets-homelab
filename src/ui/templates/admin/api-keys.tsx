@@ -1,0 +1,254 @@
+/**
+ * Admin API keys page template
+ */
+
+import { joinStrings, map, pipe } from "#fp";
+import { t } from "#i18n";
+import { type Child, Raw } from "#jsx/jsx-runtime.ts";
+import { apiKeyForm } from "#routes/admin/api-keys-form.ts";
+import type { EndpointDoc } from "#shared/admin-api-example/endpoint-doc.ts";
+import { formatDateLabel } from "#shared/date-labels.ts";
+import { Flash } from "#shared/forms/flash.tsx";
+import type { TableColumn } from "#shared/tables/column.ts";
+import { defineTable } from "#shared/tables/definition.ts";
+import { renderAdminPage } from "#templates/admin/admin-page.tsx";
+import { entityDeletePage } from "#templates/admin/confirm-page.tsx";
+import type { SummaryRow } from "#templates/admin/entity-pages.tsx";
+import { ExampleCode } from "#templates/admin/guide/components.tsx";
+import { WritableOnly } from "#templates/admin/writable-only.tsx";
+import { GuideFooter } from "#templates/components/actions.tsx";
+import { sectionsRenderer } from "#templates/components/aggregate-sections.tsx";
+import type { ChildProps } from "#templates/components/child-props.ts";
+import { linkCell } from "#templates/components/link-cell.tsx";
+import { PageBlock } from "#templates/components/page-structure.tsx";
+import { SaveForm } from "#templates/components/save-form.tsx";
+import { renderTable } from "#templates/components/table.tsx";
+import { translatedTableColumn } from "#templates/components/translated-table-column.ts";
+import type { AdminSession } from "#types";
+
+export type ApiKeyDisplay = {
+  id: number;
+  name: string;
+  created: string;
+  lastUsed: string;
+};
+
+/** Render a last-used date, or "never" when the key has not been used. */
+const lastUsedCell = (apiKey: ApiKeyDisplay): string =>
+  apiKey.lastUsed
+    ? formatDateLabel(apiKey.lastUsed.slice(0, 10))
+    : t("api_keys.never");
+
+/** Render a created date in the shared display format. */
+const createdCell = (apiKey: ApiKeyDisplay): string =>
+  formatDateLabel(apiKey.created.slice(0, 10));
+
+/** The read-only fields shown on one API key's Overview tab. */
+export const apiKeySummaryRows = (apiKey: ApiKeyDisplay): SummaryRow[] => [
+  { labelKey: "common.created", value: createdCell(apiKey) },
+  { labelKey: "api_keys.col.last_used", value: lastUsedCell(apiKey) },
+];
+
+/** The success/error flash shown at the top of a page, read from its opts. */
+const OptsFlash = ({
+  opts,
+}: {
+  opts: { error?: string | undefined; success?: string | undefined };
+}): JSX.Element => <Flash error={opts.error} success={opts.success} />;
+
+const apiKeyColumns: readonly TableColumn<ApiKeyDisplay>[] = [
+  translatedTableColumn(
+    "name",
+    "common.name",
+    linkCell(
+      (apiKey: ApiKeyDisplay) => `/admin/api-keys/${apiKey.id}`,
+      (apiKey) => apiKey.name,
+    ),
+  ),
+  translatedTableColumn("created", "common.created", createdCell),
+  translatedTableColumn("last_used", "api_keys.col.last_used", lastUsedCell),
+];
+
+const apiKeyTable = defineTable(apiKeyColumns);
+
+/**
+ * Admin API keys page
+ */
+export const adminApiKeysPage = (
+  keys: ApiKeyDisplay[],
+  adminSession: AdminSession,
+  opts: {
+    success?: string | undefined;
+    error?: string | undefined;
+    newKey?: string | undefined;
+  },
+): string =>
+  renderAdminPage(
+    "/admin/api-keys",
+    adminSession,
+    t("api_keys.title"),
+    <>
+      <OptsFlash opts={opts} />
+
+      {opts.newKey && (
+        <div class="warning">
+          <strong>{t("api_keys.copy_notice")}</strong>
+          <pre>
+            <code>{opts.newKey}</code>
+          </pre>
+          <p>
+            <Raw html={t("api_keys.usage_hint")} />
+          </p>
+        </div>
+      )}
+
+      <p>
+        <a href="/admin/api-keys/docs">{t("api_keys.docs_link")}</a>.
+      </p>
+
+      {renderTable(apiKeyTable, keys, {
+        empty: <Raw html={t("api_keys.no_keys")} />,
+      })}
+
+      <br />
+
+      <WritableOnly>
+        <SaveForm
+          action="/admin/api-keys"
+          submitIcon="plus"
+          submitLabel={t("api_keys.create_submit")}
+        >
+          <h2>{t("api_keys.create_legend")}</h2>
+          <Raw html={apiKeyForm.render()} />
+        </SaveForm>
+      </WritableOnly>
+
+      <GuideFooter href="/admin/guide#api">
+        {t("api_keys.guide_link")}
+      </GuideFooter>
+    </>,
+  );
+
+/**
+ * Admin API key delete confirmation page
+ */
+export const adminApiKeyDeletePage = entityDeletePage(
+  (apiKey: { id: number; name: string }) => ({
+    action: `/admin/api-keys/${apiKey.id}/delete`,
+    active: "/admin/api-keys",
+    buttonText: t("api_keys.delete_submit"),
+    children: (
+      <>
+        <p>{t("api_keys.delete_warning")}</p>
+        <p>{t("api_keys.delete_confirm", { name: apiKey.name })}</p>
+      </>
+    ),
+    label: t("api_keys.delete_label"),
+    name: apiKey.name,
+    title: `Delete: ${apiKey.name}`,
+  }),
+);
+
+/** A `<pre><code>…</code></pre>` block — the request/response payload
+ * container shared by every endpoint entry. */
+const CodeBlock = ({ children }: ChildProps): JSX.Element => (
+  <pre>
+    <code>{children}</code>
+  </pre>
+);
+
+const EndpointEntry = ({ endpoint }: { endpoint: EndpointDoc }): string =>
+  String(
+    <details>
+      <summary>
+        <code>
+          {endpoint.method} {endpoint.path}
+        </code>{" "}
+        &mdash; {endpoint.description}
+      </summary>
+      {endpoint.request && (
+        <ExampleCode code={endpoint.request} label="Request:" />
+      )}
+      <ExampleCode code={endpoint.response} label="Response:" />
+    </details>,
+  );
+
+const EndpointList = ({ endpoints }: { endpoints: EndpointDoc[] }): string =>
+  pipe(
+    map((e: EndpointDoc) => EndpointEntry({ endpoint: e })),
+    joinStrings,
+  )(endpoints);
+
+/** A related prose heading, intro, and body. The docs page renders three of
+ * these (authentication, public API, admin API) with the same shell. */
+type DocsSectionProps = {
+  heading: string;
+  intro: Child;
+  children?: Child;
+};
+
+const DocsSection = (props: DocsSectionProps): JSX.Element => (
+  <PageBlock>
+    <div class="prose">
+      <h3>{props.heading}</h3>
+      <p>{props.intro}</p>
+    </div>
+    {props.children}
+  </PageBlock>
+);
+
+/** One endpoint group on the docs page: its heading, intro line, and the
+ * endpoints it documents. Modelled as data so the two groups (public, admin)
+ * render through one shared fold. */
+type EndpointDocsSection = DocsSectionProps & { endpoints: EndpointDoc[] };
+
+/** Render the endpoint groups: each one is a DocsSection holding its
+ * endpoint list. */
+const endpointDocsSections = sectionsRenderer(
+  ({ endpoints, ...section }: EndpointDocsSection) => (
+    <DocsSection {...section}>
+      <Raw html={EndpointList({ endpoints })} />
+    </DocsSection>
+  ),
+);
+
+/**
+ * Admin API documentation page
+ */
+export const adminApiDocsPage = (
+  session: AdminSession,
+  publicEndpoints: EndpointDoc[],
+  adminEndpoints: EndpointDoc[],
+): string =>
+  renderAdminPage(
+    "/admin/api-keys",
+    session,
+    t("api_keys.docs_title"),
+    <>
+      <DocsSection
+        heading={t("api_keys.authentication")}
+        intro={t("api_keys.authentication_intro")}
+      >
+        <CodeBlock>Authorization: Bearer YOUR_API_KEY</CodeBlock>
+        <p>{t("api_keys.public_api_no_auth")}</p>
+      </DocsSection>
+
+      {endpointDocsSections([
+        {
+          endpoints: publicEndpoints,
+          heading: t("api_keys.public_api"),
+          intro: t("api_keys.public_api_note"),
+        },
+        {
+          endpoints: adminEndpoints,
+          heading: t("api_keys.admin_api"),
+          intro: (
+            <>
+              <Raw html={t("api_keys.admin_api_intro")} />{" "}
+              {t("api_keys.role_parity_note")}
+            </>
+          ),
+        },
+      ])}
+    </>,
+  );

@@ -1,0 +1,498 @@
+/**
+ * Users table operations
+ */
+
+import { decrypt, encrypt } from "#crypto/encryption.ts";
+import {
+  hashPassword,
+  hashSessionToken,
+  hmacHash,
+  verifyPassword,
+} from "#crypto/hashing.ts";
+import { unwrapKeyWithToken, wrapDataKeyForPassword } from "#crypto/keys.ts";
+import type {
+  EnvKeyEncrypted,
+  PasswordHash,
+  WrappedKey,
+} from "#crypto/sealed.ts";
+import {
+  deleteByFieldBatch,
+  execute,
+  inPlaceholders,
+  insert,
+  insertedRowId,
+  queryAll,
+} from "#db/client.ts";
+import {
+  createKeyedCache,
+  registerCache,
+  registerTableInvalidation,
+} from "#db/common-schema.ts";
+import { type NumberedSql, numberedStatement } from "#db/numbered-statement.ts";
+import type { CacheInvalidation } from "#shared/cache-registry.ts";
+import { now } from "#shared/now.ts";
+import { type AdminLevel, isAdminLevel, type User } from "#types";
+
+const USER_COLUMNS =
+  "id, username_hash, username_index, password_hash, wrapped_data_key, admin_level, invite_code_hash, invite_expiry, kek_version, invite_wrapped_data_key";
+
+const USER_SELECT = `SELECT ${USER_COLUMNS} FROM users ORDER BY id ASC`;
+
+/** Fetch only the users matching the given blind-index keys, in one query, so a
+ * by-username read never loads the whole table. Powers the cache's targeted
+ * `getByKey`/`getByKeys` path. */
+const fetchUsersByIndex = (keys: string[]): Promise<User[]> =>
+  queryAll<User>(
+    `SELECT ${USER_COLUMNS} FROM users WHERE username_index IN (${inPlaceholders(keys)})`,
+    keys,
+  );
+
+export type UserDisplayFields = Pick<
+  User,
+  "admin_level" | "id" | "username_hash"
+>;
+
+const USER_DISPLAY_SELECT =
+  "SELECT id, username_hash, admin_level FROM users ORDER BY id ASC";
+
+const USER_AUTH_SELECT =
+  "SELECT id, admin_level FROM users WHERE id = ? LIMIT 1";
+
+export type UserAuthFields = Pick<User, "admin_level" | "id">;
+
+/**
+ * Users change rarely and there are few of them, so the cache loads the whole
+ * set and answers by-id / by-username reads from it. The TTL is shorter than
+ * the listings/groups cache (admin changes should propagate quickly across
+ * isolates), but staleness is never authoritative: every user write invalidates
+ * immediately, role is fixed at creation, and auth gates on the session (which
+ * deleteUser also clears), not on this cache.
+ */
+const USERS_CACHE_TTL_MS = 15_000;
+const usersCache = createKeyedCache<User>({
+  fetchAll: () => queryAll<User>(USER_SELECT),
+  fetchByKeys: fetchUsersByIndex,
+  idOf: (u) => u.id,
+  keyOf: (u) => u.username_index,
+  ttlMs: USERS_CACHE_TTL_MS,
+});
+/**
+ * Callbacks fired on every users-cache invalidation, so derived caches (e.g.
+ * the superuser account-state cache) can clear in lockstep with user writes.
+ * Registered once per module at load time, mirroring the cache-stats registry.
+ */
+const usersInvalidationListeners: Array<() => void> = [];
+
+/** Register a callback to run whenever the users cache is invalidated. */
+export const onUsersInvalidated = (listener: () => void): void => {
+  usersInvalidationListeners.push(listener);
+};
+
+export const getAllUsers = (): Promise<User[]> => usersCache.getAll();
+
+registerCache(() => ({ entries: usersCache.size(), name: "users" }));
+
+/** Invalidate the users cache (for testing or after writes). */
+export const invalidateUsersCache = (
+  cause: CacheInvalidation = "manual",
+): void => {
+  usersCache.invalidate(cause);
+  for (const listener of usersInvalidationListeners) listener();
+};
+
+// Any write to the users table clears the cache automatically (db-client layer).
+// Must call invalidateUsersCache() (not just usersCache.invalidate()) so that
+// onUsersInvalidated listeners such as the superuser account-state cache also fire.
+registerTableInvalidation(["users"], invalidateUsersCache);
+
+/** Fields needed to build a users row. */
+type InsertUserOpts = {
+  username: string;
+  adminLevel: AdminLevel;
+  /** "" for an invited user who has not set a password yet. */
+  passwordHash: PasswordHash | "";
+  wrappedDataKey: WrappedKey | null;
+  inviteCodeHash: string | null;
+  inviteExpiry: string | null;
+  kekVersion: number;
+  inviteWrappedDataKey: WrappedKey | null;
+};
+
+/**
+ * Encrypt a user's fields and build the users INSERT without running it,
+ * returning the statement alongside the row values so a caller that executes it
+ * can reconstruct the {@link User}.
+ */
+const buildUserInsert = async (
+  opts: InsertUserOpts,
+): Promise<{
+  statement: ReturnType<typeof insert>;
+  values: Omit<User, "id">;
+}> => {
+  const usernameIndex = await hmacHash(opts.username.toLowerCase());
+  const encryptedUsername = await encrypt(opts.username.toLowerCase());
+  const encryptedAdminLevel = await encrypt(opts.adminLevel);
+  const encryptedPasswordHash: EnvKeyEncrypted<PasswordHash> | "" =
+    opts.passwordHash ? await encrypt(opts.passwordHash) : "";
+  const encryptedInviteCode = opts.inviteCodeHash
+    ? await encrypt(opts.inviteCodeHash)
+    : null;
+  const encryptedInviteExpiry = opts.inviteExpiry
+    ? await encrypt(opts.inviteExpiry)
+    : null;
+
+  const values = {
+    admin_level: encryptedAdminLevel,
+    invite_code_hash: encryptedInviteCode,
+    invite_expiry: encryptedInviteExpiry,
+    invite_wrapped_data_key: opts.inviteWrappedDataKey,
+    kek_version: opts.kekVersion,
+    password_hash: encryptedPasswordHash,
+    username_hash: encryptedUsername,
+    username_index: usernameIndex,
+    wrapped_data_key: opts.wrappedDataKey,
+  };
+  return { statement: insert("users", values, "id"), values };
+};
+
+/** A user INSERT statement plus the row values needed to rebuild the User. */
+type BuiltUserInsert = Awaited<ReturnType<typeof buildUserInsert>>;
+
+/** Execute a built users INSERT and reconstruct the full {@link User}. */
+const runUserInsert = async ({
+  statement,
+  values,
+}: BuiltUserInsert): Promise<User> => {
+  const result = await execute(statement.sql, statement.args);
+  return { id: insertedRowId(result), ...values };
+};
+
+/** Shared user creation logic */
+const insertUser = async (opts: InsertUserOpts): Promise<User> =>
+  runUserInsert(await buildUserInsert(opts));
+
+/** Build the opts for an already-activated user (no invite, password-bound).
+ * `passwordHash` may be "" — the stored not-yet-set sentinel. */
+const activatedUserOpts = (
+  username: string,
+  passwordHash: PasswordHash | "",
+  wrappedDataKey: WrappedKey | null,
+  adminLevel: AdminLevel,
+  kekVersion = 2,
+): InsertUserOpts => ({
+  adminLevel,
+  inviteCodeHash: null,
+  inviteExpiry: null,
+  inviteWrappedDataKey: null,
+  kekVersion,
+  passwordHash,
+  username,
+  wrappedDataKey,
+});
+
+/**
+ * Build an activated user's INSERT, then hand the result to `consume`. Lets the
+ * "create now" and "give me the statement for a batch" entry points share one
+ * parameter list instead of repeating the forwarding.
+ */
+const consumeActivatedUserInsert =
+  <T>(consume: (built: BuiltUserInsert) => T | Promise<T>) =>
+  async (...args: Parameters<typeof activatedUserOpts>): Promise<T> =>
+    consume(await buildUserInsert(activatedUserOpts(...args)));
+
+/**
+ * Create a new (already-activated) user with encrypted fields. Activated users
+ * are created at the password-bound KEK scheme (v2); the caller computes the
+ * matching wrapped_data_key via wrapDataKeyForPassword.
+ */
+export const createUser = consumeActivatedUserInsert(runUserInsert);
+
+/**
+ * Build the INSERT that {@link createUser} would run, without executing it, so a
+ * caller can include the user creation in a batch/transaction with other writes
+ * (e.g. initial setup creates the owner atomically alongside its config keys).
+ */
+export const buildCreateUserStatement = consumeActivatedUserInsert(
+  ({ statement }) => statement,
+);
+
+/**
+ * Create an invited user (no password yet, has invite code). When the inviter
+ * passes a wrapped DATA_KEY handoff, the invitee self-activates at /join under
+ * the v2 scheme; otherwise an admin activates them later (legacy v1 path).
+ * kek_version is a placeholder here — there is no wrapped_data_key until
+ * activation, which sets the real version.
+ */
+export const createInvitedUser = (
+  username: string,
+  adminLevel: AdminLevel,
+  inviteCodeHash: string,
+  inviteExpiry: string,
+  inviteWrappedDataKey: WrappedKey | null = null,
+): Promise<User> =>
+  insertUser({
+    adminLevel,
+    inviteCodeHash,
+    inviteExpiry,
+    inviteWrappedDataKey,
+    kekVersion: 1,
+    passwordHash: "",
+    username,
+    wrappedDataKey: null,
+  });
+
+/**
+ * Look up a user by username (using blind index, from cache)
+ */
+export const getUserByUsername = async (
+  username: string,
+): Promise<User | null> =>
+  usersCache.getByKey(await hmacHash(username.toLowerCase()));
+
+/**
+ * Get a user by ID (from cache)
+ */
+export const getUserById = (id: number): Promise<User | null> =>
+  usersCache.getById(id);
+
+/** Get the minimal encrypted user fields needed to authenticate a session. */
+export const getUserAuthFieldsById = async (
+  id: number,
+): Promise<UserAuthFields | null> =>
+  (await queryAll<UserAuthFields>(USER_AUTH_SELECT, [id]))[0] ?? null;
+
+/**
+ * Check if a username is already taken
+ */
+export const isUsernameTaken = async (username: string): Promise<boolean> => {
+  const user = await getUserByUsername(username);
+  return user !== null;
+};
+
+/** Get the minimal encrypted user fields needed to show assignable users. */
+export const getUserDisplayFields = (): Promise<UserDisplayFields[]> =>
+  queryAll<UserDisplayFields>(USER_DISPLAY_SELECT);
+
+/**
+ * Verify a user's password (decrypt stored hash, then verify)
+ * Returns the decrypted password hash if valid (needed for KEK derivation)
+ */
+export const verifyUserPassword = async (
+  user: User,
+  password: string,
+): Promise<PasswordHash | null> => {
+  if (!user.password_hash) return null;
+  const decryptedHash = await decrypt(user.password_hash);
+  const isValid = await verifyPassword(password, decryptedHash);
+  return isValid ? decryptedHash : null;
+};
+
+/**
+ * Decrypt a user's admin level
+ */
+export const decryptAdminLevel = async (
+  user: Pick<User, "admin_level">,
+): Promise<AdminLevel> => {
+  const level = await decrypt(user.admin_level);
+  if (!isAdminLevel(level)) {
+    throw new Error(`Invalid admin level: ${level}`);
+  }
+  return level;
+};
+
+/**
+ * Decrypt a user's username
+ */
+export const decryptUsername = (
+  user: Pick<User, "username_hash">,
+): Promise<string> => decrypt(user.username_hash);
+
+/**
+ * Complete an invite by self-activating the user: unwrap the DATA_KEY handoff
+ * with the single-use invite code, re-wrap it under the new password's v2 KEK,
+ * and clear the invite (code, expiry, and the handoff blob). The caller has
+ * already verified the invite is valid and carries a handoff, so every current
+ * invite reaches here — there is no separate admin activation step.
+ *
+ * Single-use: the UPDATE is guarded on `invite_wrapped_data_key IS NOT NULL`, so
+ * if two submissions for the same code race (or one is replayed), only the first
+ * affects a row — the rest no-op and return false rather than overwriting the
+ * password/key that the first accept already set.
+ */
+/** Hash a new password and pre-encrypt the values both activation paths write:
+ * the encrypted hash and an encrypted empty string (used to clear invite
+ * fields). Shared by {@link acceptInvite} and {@link activateKeylessUser}. */
+const buildActivationSecrets = async (
+  password: string,
+): Promise<{
+  passwordHash: PasswordHash;
+  encryptedHash: EnvKeyEncrypted<PasswordHash>;
+  encryptedEmpty: EnvKeyEncrypted;
+}> => {
+  const passwordHash = await hashPassword(password);
+  const [encryptedHash, encryptedEmpty] = await Promise.all([
+    encrypt(passwordHash),
+    encrypt(""),
+  ]);
+  return { encryptedEmpty, encryptedHash, passwordHash };
+};
+
+/** Run a single-use guarded UPDATE and report whether it changed a row. Zero
+ * rows means the guard already fired (a replay or race), so the caller treats
+ * it as a no-op rather than an error. */
+const executeChangedRow = async (
+  sql: string,
+  args: Parameters<typeof execute>[1],
+): Promise<boolean> => {
+  const result = await execute(sql, args);
+  return result.rowsAffected > 0;
+};
+
+/** Run one changed-row write from its deferred numbered form. */
+const executeNumberedChangedRow = (buildSql: NumberedSql): Promise<boolean> => {
+  const { sql, args } = numberedStatement(buildSql);
+  return executeChangedRow(sql, args);
+};
+
+export const acceptInvite = async (
+  userId: number,
+  inviteWrappedDataKey: WrappedKey,
+  inviteCode: string,
+  password: string,
+): Promise<boolean> => {
+  const { passwordHash, encryptedHash, encryptedEmpty } =
+    await buildActivationSecrets(password);
+  const dataKey = await unwrapKeyWithToken(inviteWrappedDataKey, inviteCode);
+  const wrappedDataKey = await wrapDataKeyForPassword(
+    dataKey,
+    password,
+    passwordHash,
+  );
+  return executeNumberedChangedRow(
+    (bind) =>
+      `UPDATE users SET password_hash = ${bind(encryptedHash)}, wrapped_data_key = ${bind(wrappedDataKey)}, kek_version = 2, invite_wrapped_data_key = NULL, invite_code_hash = ${bind(encryptedEmpty)}, invite_expiry = ${bind(encryptedEmpty)} WHERE id = ${bind(userId)} AND invite_wrapped_data_key IS NOT NULL`,
+  );
+};
+
+/**
+ * A **keyless** invite leaves `wrapped_data_key` NULL. An editor holds no
+ * DATA_KEY, so unlike {@link acceptInvite} there is no handoff to unwrap or
+ * re-wrap. The password only authenticates, and protects no key.
+ *
+ * Single-use: the UPDATE is guarded on the `password_hash = ''` unactivated
+ * marker, which database pruning also uses. A replay or a race therefore no-ops
+ * and never overwrites the password the first submit set.
+ */
+export const activateKeylessUser = async (
+  userId: number,
+  password: string,
+): Promise<boolean> => {
+  const { encryptedHash, encryptedEmpty } =
+    await buildActivationSecrets(password);
+  return executeNumberedChangedRow(
+    (bind) =>
+      `UPDATE users SET password_hash = ${bind(encryptedHash)}, kek_version = 2, invite_code_hash = ${bind(encryptedEmpty)}, invite_expiry = ${bind(encryptedEmpty)} WHERE id = ${bind(userId)} AND password_hash = ''`,
+  );
+};
+
+/**
+ * Re-wrap a user's DATA_KEY under the password-bound (v2) KEK. Called at login —
+ * the one place both the raw password and the freshly-unwrapped DATA_KEY are in
+ * hand — for users still on the legacy v1 wrap, replacing the DB-recoverable
+ * wrap in place without touching any encrypted data.
+ */
+export const migrateUserToV2Kek = async (
+  userId: number,
+  dataKey: CryptoKey,
+  password: string,
+  passwordHash: PasswordHash,
+): Promise<void> => {
+  const wrappedDataKey = await wrapDataKeyForPassword(
+    dataKey,
+    password,
+    passwordHash,
+  );
+  // Guard on the row still being v1. A login can reach here off a stale cached
+  // user row whose password was changed in another isolate — that change already
+  // wrote a v2 wrap bound to the *new* password. Overwriting it with a wrap
+  // derived from this (old) password would leave password_hash and
+  // wrapped_data_key bound to different passwords and lock the account out. A
+  // no-op is safe: the login already holds the DATA_KEY for its own session.
+  await execute(
+    "UPDATE users SET wrapped_data_key = ?, kek_version = 2 WHERE id = ? AND kek_version < 2",
+    [wrappedDataKey, userId],
+  );
+};
+
+/**
+ * Delete a user and all their sessions and API keys
+ */
+export const deleteUser = async (userId: number): Promise<void> => {
+  await deleteByFieldBatch([
+    { field: "user_id", table: "api_keys", value: userId },
+    { field: "user_id", table: "sessions", value: userId },
+    { field: "user_id", table: "user_logistics_agents", value: userId },
+    { field: "id", table: "users", value: userId },
+  ]);
+};
+
+/**
+ * Find a user by invite code hash
+ * Scans all users, decrypts invite_code_hash, and compares
+ */
+export const getUserByInviteCode = async (
+  inviteCode: string,
+): Promise<User | null> => {
+  const codeHash = await hashInviteCode(inviteCode);
+  const users = await getAllUsers();
+
+  for (const user of users) {
+    if (!user.invite_code_hash) continue;
+    const decryptedHash = await decrypt(user.invite_code_hash);
+    if (decryptedHash === codeHash) return user;
+  }
+
+  return null;
+};
+
+/**
+ * Hash an invite code using SHA-256
+ */
+export const hashInviteCode = (code: string): Promise<string> =>
+  hashSessionToken(code);
+
+/**
+ * Check if a user's invite is still valid (not expired, has invite code)
+ */
+export const isInviteValid = async (user: User): Promise<boolean> => {
+  if (!user.invite_code_hash) return false;
+
+  const decryptedHash = await decrypt(user.invite_code_hash);
+  if (!decryptedHash) return false;
+
+  if (!user.invite_expiry) return false;
+
+  const decryptedExpiry = await decrypt(user.invite_expiry);
+  if (!decryptedExpiry) return false;
+  return new Date(decryptedExpiry) > now();
+};
+
+/**
+ * Check if a user's invite has expired.
+ * Callers should skip this for users who have already set a password.
+ */
+export const isInviteExpired = async (user: User): Promise<boolean> =>
+  user.invite_code_hash !== null && !(await isInviteValid(user));
+
+/**
+ * Delete invited users whose invite has expired and who never activated. This
+ * removes the invite_wrapped_data_key handoff — a copy of the DATA_KEY wrapped
+ * under the invite code — so an intercepted invite link can no longer be used to
+ * unwrap it from a database dump once the invite has expired.
+ *
+ * Only un-activated invites are ever eligible: a row must have no DATA_KEY wrap
+ * AND no password set. acceptInvite writes both in one atomic UPDATE, so an
+ * activated user (or anyone who has set a password) can never match — the prune
+ * cannot delete an active account. invite_expiry is encrypted per row, but only
+ * a handful of invites are ever outstanding, so decrypting each is cheap.
+ */

@@ -1,0 +1,478 @@
+import { packageQuantityLimit } from "#booking/capacity-tree.ts";
+import {
+  type ChildrenByParent,
+  childCanBeBooked,
+  type MemberWithChildren,
+  membersWithChildren,
+  type TicketListing,
+  ticketsThatFitInPool,
+} from "#booking/model.ts";
+import type { TreePackage } from "#booking/page-packages.ts";
+import {
+  type BookingTree,
+  fixedQuantitiesByListingId,
+  packageSubTree,
+} from "#booking/tree.ts";
+import { requiredMapValue, sumByKey, sumOf } from "#fp";
+import {
+  childCapacityPartsFor,
+  combinedChildCapacityForParent,
+} from "#shared/capacity-fit.ts";
+import { hasDateLessCap } from "#shared/capacity-rules.ts";
+import {
+  PARENT_CHILD_GROUP_UNITS,
+  sharedGroupRemaining,
+} from "#shared/group-capacity.ts";
+
+/** Spots still free in each capacity group, keyed by group id. */
+type GroupRemaining = ReadonlyMap<number, number>;
+/** The group ids each listing belongs to, keyed by listing id. */
+type GroupIdsByListing = ReadonlyMap<number, number[]>;
+
+export type GroupCapacityInfo = {
+  groupRemainingByGroupId: GroupRemaining;
+  groupIdsByListingId: GroupIdsByListing;
+};
+
+export type PackageLimitInfo = GroupCapacityInfo & {
+  listings: readonly TicketListing[];
+  childrenByParentId: ChildrenByParent | undefined;
+};
+
+export const groupCapacityInfo = (
+  groupRemainingByGroupId: GroupRemaining,
+  groupIdsByListingId: GroupIdsByListing,
+): GroupCapacityInfo => ({ groupIdsByListingId, groupRemainingByGroupId });
+
+export const packageLimitInfo = (
+  listings: readonly TicketListing[],
+  childrenByParentId: ChildrenByParent | undefined,
+  groupRemainingByGroupId: GroupRemaining,
+  groupIdsByListingId: GroupIdsByListing,
+): PackageLimitInfo => ({
+  childrenByParentId,
+  listings,
+  ...groupCapacityInfo(groupRemainingByGroupId, groupIdsByListingId),
+});
+
+/** Each page package's whole-bundle limit, keyed by group id. Builds the
+ * page-level {@link PackageLimitInfo} once and maps each package over
+ * {@link pagePackageBundleLimit}, so callers stop re-stating the four
+ * limit-info arguments per call site. */
+/** One page package with the bundle limit computed for it. */
+export type PackageBundleLimit<P extends TreePackage = TreePackage> = {
+  limit: number;
+  pkg: P;
+};
+
+/** Each page package with its bundle limit, in page order. A caller that walks
+ *  packages for rendering takes these pairs, so it never looks a limit up. */
+export const pageBundleLimits = <P extends TreePackage>(
+  tree: BookingTree,
+  packages: readonly P[],
+  page: PackageLimitInfo,
+): PackageBundleLimit<P>[] =>
+  packages.map((pkg) => ({
+    limit: pagePackageBundleLimit(tree, pkg, page),
+    pkg,
+  }));
+
+/** A child without the `dateLessCap` rule has no date-less stock ceiling of
+ * its own, so only the parent's limit clamps the pair before a date is
+ * known. */
+const childOwnTicketLimit = (
+  parent: TicketListing,
+  child: TicketListing,
+): number =>
+  hasDateLessCap(child.listing) ? child.maxPurchasable : parent.maxPurchasable;
+
+const groupIdsFor = (
+  ctx: GroupCapacityInfo,
+  listing: TicketListing,
+): number[] => ctx.groupIdsByListingId.get(listing.listing.id) ?? [];
+
+const sharedSeatsLeftFor = (
+  ctx: GroupCapacityInfo,
+  parent: TicketListing,
+  child: TicketListing,
+): number | undefined =>
+  sharedGroupRemaining(
+    groupIdsFor(ctx, parent),
+    groupIdsFor(ctx, child),
+    ctx.groupRemainingByGroupId,
+  );
+
+/** Tickets this child can still offer with this parent. */
+export const childTicketLimit = (
+  parent: TicketListing,
+  child: TicketListing,
+  ctx: GroupCapacityInfo,
+): number => {
+  const shared = sharedSeatsLeftFor(ctx, parent, child);
+  return shared === undefined
+    ? childOwnTicketLimit(parent, child)
+    : Math.min(
+        ticketsThatFitInPool(shared, PARENT_CHILD_GROUP_UNITS),
+        childOwnTicketLimit(parent, child),
+      );
+};
+
+const sharedGroupTicketLimit = (
+  spotsLeft: number,
+  childOwnLimitTotal: number,
+): number => Math.min(spotsLeft, childOwnLimitTotal);
+
+type ChildLimitPart =
+  | { kind: "own"; ownLimit: number }
+  | { kind: "parentGroup"; ownLimit: number; spotsLeft: number }
+  | { kind: "childGroup"; groupId: number; ownLimit: number };
+
+type ChildrenToBook = {
+  children: readonly TicketListing[];
+  packageQty: number;
+};
+
+type OneChildNeed = {
+  childId: number;
+  childLimit: number;
+  ticketsNeeded: number;
+};
+
+type GroupNeed = {
+  groupId: number;
+  ticketsNeeded: number;
+};
+
+/** A type guard for one part kind, so each variant gets its narrowing without
+ * * restating the guard shape. */
+const isPartOfKind =
+  <Kind extends ChildLimitPart["kind"]>(kind: Kind) =>
+  (part: ChildLimitPart): part is Extract<ChildLimitPart, { kind: Kind }> =>
+    part.kind === kind;
+
+const usesParentGroup = isPartOfKind("parentGroup");
+const usesChildGroup = isPartOfKind("childGroup");
+const usesOnlyChildLimit = isPartOfKind("own");
+
+/** A capacity group this child belongs to, with the spots it still has free. */
+type LimitedGroup = { groupId: number; remaining: number };
+
+const limitedGroupsFor = (
+  ctx: GroupCapacityInfo,
+  child: TicketListing,
+): LimitedGroup[] =>
+  groupIdsFor(ctx, child)
+    .filter((groupId) => ctx.groupRemainingByGroupId.has(groupId))
+    .map((groupId) => ({
+      groupId,
+      remaining: requiredMapValue(
+        ctx.groupRemainingByGroupId,
+        groupId,
+        `Group ${groupId} missing`,
+      ),
+    }));
+
+const smallestLimitedGroupFor = (
+  ctx: GroupCapacityInfo,
+  child: TicketListing,
+): LimitedGroup | null =>
+  limitedGroupsFor(ctx, child).toSorted(
+    (a, b) => a.remaining - b.remaining,
+  )[0] ?? null;
+
+const childLimitPart = (
+  ctx: GroupCapacityInfo,
+  parent: TicketListing,
+  child: TicketListing,
+): ChildLimitPart => {
+  const ownLimit = childOwnTicketLimit(parent, child);
+  const shared = sharedSeatsLeftFor(ctx, parent, child);
+  if (shared !== undefined) {
+    return { kind: "parentGroup", ownLimit, spotsLeft: shared };
+  }
+  const limitedGroup = smallestLimitedGroupFor(ctx, child);
+  return limitedGroup === null
+    ? { kind: "own", ownLimit }
+    : { groupId: limitedGroup.groupId, kind: "childGroup", ownLimit };
+};
+
+const parentGroupChildLimit = (parts: readonly ChildLimitPart[]): number => {
+  const shared = parts.filter(usesParentGroup);
+  if (shared.length === 0) return 0;
+  return Math.min(
+    ticketsThatFitInPool(
+      Math.min(...shared.map((part) => part.spotsLeft)),
+      PARENT_CHILD_GROUP_UNITS,
+    ),
+    sumOf((part: ChildLimitPart) => part.ownLimit)(shared),
+  );
+};
+
+const childGroupLimit = (
+  ctx: GroupCapacityInfo,
+  parts: readonly ChildLimitPart[],
+): number =>
+  sumOf(([groupId, ownLimit]: [number, number]) =>
+    sharedGroupTicketLimit(
+      requiredMapValue(
+        ctx.groupRemainingByGroupId,
+        groupId,
+        `Group ${groupId} missing`,
+      ),
+      ownLimit,
+    ),
+  )([
+    ...sumByKey(
+      (part: Extract<ChildLimitPart, { kind: "childGroup" }>) => part.groupId,
+      (part) => part.ownLimit,
+    )(parts.filter(usesChildGroup)),
+  ]);
+
+const childrenTicketLimit = (
+  ctx: GroupCapacityInfo,
+  parent: TicketListing,
+  bookable: readonly TicketListing[],
+): number => {
+  const parts = bookable.map((child) => childLimitPart(ctx, parent, child));
+  return (
+    sumOf((part: ChildLimitPart) => part.ownLimit)(
+      parts.filter(usesOnlyChildLimit),
+    ) +
+    parentGroupChildLimit(parts) +
+    childGroupLimit(ctx, parts)
+  );
+};
+
+/** Package members paired with only the children that can still be booked. */
+const membersWithBookableChildren = (
+  ctx: PackageLimitInfo,
+): MemberWithChildren[] =>
+  membersWithChildren(ctx.listings, ctx.childrenByParentId).map(
+    ({ member, children }) => ({
+      children: children.filter(childCanBeBooked),
+      member,
+    }),
+  );
+
+/** Ticket limits for package members that also need child tickets. */
+export const packageChildTicketLimits = (
+  ctx: PackageLimitInfo,
+): Map<number, number> =>
+  new Map(
+    membersWithBookableChildren(ctx).map(({ member, children }) => [
+      member.listing.id,
+      childrenTicketLimit(ctx, member, children),
+    ]),
+  );
+
+/** The parent tickets one parent's children can serve together on this page:
+ *  the exact joint allocation over the page's group remaining, not a
+ *  per-pool bound. */
+export const pageCombinedChildCapacity = (
+  parent: TicketListing,
+  children: readonly TicketListing[],
+  ctx: GroupCapacityInfo,
+): number =>
+  combinedChildCapacityForParent(
+    ctx.groupIdsByListingId.get(parent.listing.id) ?? [],
+    childCapacityPartsFor(
+      ctx.groupIdsByListingId,
+      children,
+      (child) => child.listing.id,
+      (child) => child.maxPurchasable,
+    ),
+    ctx.groupRemainingByGroupId,
+  );
+
+/** The most parent tickets one page row can sell: its own ceiling, held to
+ *  what its bookable children can serve together.
+ *  A row with no bookable child sells its own ceiling alone. */
+export const rowTicketLimit = (
+  info: TicketListing,
+  children: readonly TicketListing[],
+  ctx: GroupCapacityInfo,
+): number => {
+  const bookable = children.filter(childCanBeBooked);
+  const childLimit =
+    bookable.length === 0
+      ? info.maxPurchasable
+      : pageCombinedChildCapacity(info, bookable, ctx);
+  return Math.min(info.maxPurchasable, childLimit);
+};
+
+const groupsEveryChildUses = (
+  ctx: GroupCapacityInfo,
+  bookable: readonly TicketListing[],
+): number[] => {
+  const [firstChildIds, ...restChildIds] = bookable.map(
+    (child) =>
+      new Set(limitedGroupsFor(ctx, child).map(({ groupId }) => groupId)),
+  );
+  return [...firstChildIds!].filter((groupId) =>
+    restChildIds.every((ids) => ids.has(groupId)),
+  );
+};
+
+const packageChildrenToBook = (
+  tree: BookingTree,
+  ctx: PackageLimitInfo,
+): ChildrenToBook[] => {
+  const memberQty = fixedQuantitiesByListingId(tree);
+  return membersWithBookableChildren(ctx)
+    .map(({ member, children }) => ({
+      children,
+      packageQty: requiredMapValue(
+        memberQty,
+        member.listing.id,
+        `Listing ${member.listing.id} missing`,
+      ),
+    }))
+    .filter(({ children }) => children.length > 0);
+};
+
+const oneChildNeed = ({
+  children,
+  packageQty,
+}: ChildrenToBook): OneChildNeed[] => {
+  const sole = children.length === 1 ? children[0]! : null;
+  // Only a dateLessCap child has a date-less own limit to count against.
+  return sole && hasDateLessCap(sole.listing)
+    ? [
+        {
+          childId: sole.listing.id,
+          childLimit: sole.maxPurchasable,
+          ticketsNeeded: packageQty,
+        },
+      ]
+    : [];
+};
+
+const groupNeedsFor =
+  (ctx: GroupCapacityInfo) =>
+  ({ children, packageQty }: ChildrenToBook): GroupNeed[] =>
+    groupsEveryChildUses(ctx, children).map((groupId) => ({
+      groupId,
+      ticketsNeeded: packageQty,
+    }));
+
+/** How many whole packages fit each pooled need: sums the tickets needed per
+ * key (a child id or a group id), then divides that key's pool of spots by its
+ * summed need. */
+const limitsFromPooledNeeds =
+  <Need extends { ticketsNeeded: number }>(
+    keyOf: (need: Need) => number,
+    poolFor: (key: number) => number,
+  ) =>
+  (needs: readonly Need[]): number[] =>
+    [...sumByKey<Need, number>(keyOf, (need) => need.ticketsNeeded)(needs)].map(
+      ([key, ticketsNeeded]) =>
+        ticketsThatFitInPool(poolFor(key), ticketsNeeded),
+    );
+
+const singleChildLimits = (needs: readonly OneChildNeed[]): number[] => {
+  const limitByChildId = new Map(
+    needs.map(({ childId, childLimit }) => [childId, childLimit]),
+  );
+  return limitsFromPooledNeeds<OneChildNeed>(
+    (need) => need.childId,
+    (childId) =>
+      requiredMapValue(limitByChildId, childId, `Listing ${childId} missing`),
+  )(needs);
+};
+
+const sharedChildGroupLimits = (
+  ctx: GroupCapacityInfo,
+  needs: readonly GroupNeed[],
+): number[] =>
+  limitsFromPooledNeeds<GroupNeed>(
+    (need) => need.groupId,
+    // Every groupId here came from `groupNeedsFor(ctx)`, which only emits ids it
+    // already found in `ctx.groupRemainingByGroupId`, so the lookup always hits.
+    (groupId) =>
+      requiredMapValue(
+        ctx.groupRemainingByGroupId,
+        groupId,
+        `Group ${groupId} missing`,
+      ),
+  )(needs);
+
+const sharedChildrenAcrossMembersLimit = (
+  tree: BookingTree,
+  ctx: PackageLimitInfo,
+): number => {
+  const childrenToBook = packageChildrenToBook(tree, ctx);
+  const limits = [
+    ...singleChildLimits(childrenToBook.flatMap(oneChildNeed)),
+    ...sharedChildGroupLimits(ctx, childrenToBook.flatMap(groupNeedsFor(ctx))),
+  ];
+  return Math.min(Number.POSITIVE_INFINITY, ...limits);
+};
+
+/** Whole packages the buyer may still book. */
+export const packageBundleLimit = (
+  tree: BookingTree,
+  ctx: PackageLimitInfo,
+): number =>
+  Math.min(
+    packageQuantityLimit(
+      tree,
+      new Map(ctx.listings.map((listing) => [listing.listing.id, listing])),
+      ctx.groupRemainingByGroupId,
+      ctx.groupIdsByListingId,
+      packageChildTicketLimits(ctx),
+    ),
+    sharedChildrenAcrossMembersLimit(tree, ctx),
+  );
+
+/** The smallest non-zero bundle count a package's members' minimums allow:
+ *  each member's per-purchase minimum over its fixed per-package count,
+ *  rounded up. An owner raising a member's minimum after the package was
+ *  saved lifts this floor, exactly as it lifts the webhook's refusal. Zero
+ *  bundles stay valid — they book nothing. */
+export const packageBundleMinimum = (
+  fixedByListingId: ReadonlyMap<number, number>,
+  minQuantityByListingId: ReadonlyMap<number, number>,
+): number =>
+  Math.max(
+    1,
+    ...[...fixedByListingId]
+      .filter(([, fixed]) => fixed > 0)
+      .map(([listingId, fixed]) =>
+        Math.ceil((minQuantityByListingId.get(listingId) ?? 1) / fixed),
+      ),
+  );
+
+/** One package's bundle floor, read from its booking tree beside its
+ *  members' stored minimums. The bookability gate, the page select, and the
+ *  API detail read the same floor, so no surface offers a count the fold
+ *  refuses. */
+export const treePackageBundleMinimum = (
+  tree: BookingTree,
+  members: readonly TicketListing[],
+): number =>
+  packageBundleMinimum(
+    fixedQuantitiesByListingId(tree),
+    new Map(members.map(({ listing }) => [listing.id, listing.min_quantity])),
+  );
+
+/** Whole bundles of ONE page package the buyer may still book, on a page that
+ * can sell several bundles alongside other listings: {@link packageBundleLimit}
+ * over just that package's member nodes and member listings (`page` carries the
+ * whole page's limit info; the member listings are narrowed here). The one
+ * ceiling the page render, the submit clamp, and the API all share. A package
+ * with no member node on this page (every member dropped, e.g. as another
+ * listing's child) sells nothing, so its limit is 0 — never `Math.min()`'s
+ * Infinity. */
+export const pagePackageBundleLimit = (
+  tree: BookingTree,
+  pkg: TreePackage,
+  page: PackageLimitInfo,
+): number => {
+  const memberIds = new Set(pkg.memberListingIds);
+  const subTree = packageSubTree(tree, pkg.groupId);
+  if (subTree.nodes.length === 0) return 0;
+  return packageBundleLimit(subTree, {
+    ...page,
+    listings: page.listings.filter((info) => memberIds.has(info.listing.id)),
+  });
+};

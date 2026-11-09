@@ -1,0 +1,58 @@
+import type { ProviderRead } from "#payment/provider-read.ts";
+import type { RefundAttemptResult } from "#payment/refund-attempt.ts";
+import type { AuthorizedRefundRequest } from "#payment/refund-provider-authorization.ts";
+import type { FetchResult } from "#shared/fetch.ts";
+import type { CheckoutIntent } from "#shared/payments.ts";
+import {
+  createSquarePaymentLink,
+  type PaymentLinkResult,
+} from "#shared/square/checkout.ts";
+import {
+  getSquareClient,
+  resetSquareClient,
+  type SquareClient,
+} from "#shared/square/client.ts";
+import {
+  type SquareConnectionTestResult,
+  testSquareConnection,
+} from "#shared/square/connection.ts";
+import { endSquareLink } from "#shared/square/link-end.ts";
+import { readSquareOrder } from "#shared/square/order.ts";
+import {
+  readSquarePayment,
+  refundSquareCharge,
+} from "#shared/square/payment-outcomes.ts";
+import type { SquareOrder, SquarePayment } from "#shared/square/wire.ts";
+
+type SquareApi = {
+  endLink(linkId: string): Promise<FetchResult>;
+  getSquareClient(): Promise<SquareClient | null>;
+  resetSquareClient(): void;
+  testSquareConnection(): Promise<SquareConnectionTestResult>;
+  createPaymentLink(
+    intent: CheckoutIntent,
+    baseUrl: string,
+  ): Promise<PaymentLinkResult>;
+  readOrder(orderId: string): Promise<ProviderRead<SquareOrder>>;
+  readPayment(paymentId: string): Promise<ProviderRead<SquarePayment>>;
+  refundCharge(
+    request: AuthorizedRefundRequest<"square">,
+  ): Promise<RefundAttemptResult>;
+};
+
+/** The single stubbable seam shared by Square production code and tests. */
+export const squareApi: SquareApi = {
+  createPaymentLink: (intent, baseUrl) =>
+    createSquarePaymentLink(() => squareApi.getSquareClient(), intent, baseUrl),
+  endLink: (linkId) => endSquareLink(() => squareApi.getSquareClient(), linkId),
+  getSquareClient,
+  readOrder: (orderId) =>
+    readSquareOrder(() => squareApi.getSquareClient(), orderId),
+  readPayment: (paymentId) =>
+    readSquarePayment(() => squareApi.getSquareClient(), paymentId),
+  refundCharge: (request) =>
+    refundSquareCharge(() => squareApi.getSquareClient(), request),
+  resetSquareClient,
+  testSquareConnection: () =>
+    testSquareConnection(() => squareApi.getSquareClient()),
+};

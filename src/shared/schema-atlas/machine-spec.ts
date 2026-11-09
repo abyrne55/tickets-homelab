@@ -1,0 +1,296 @@
+// effects: pure
+/** The shared shape of one executable machine table.
+ *
+ * An atlas machine DESCRIBES itself: it draws whatever the real transitions
+ * do, so it can never fail. A machine spec adds the half that can: the
+ * nodes' stored shapes, the events that move them, and a declared table of
+ * exactly where every (node × event × shape) cell must land. Mirror tests
+ * execute every cell against the real transition functions; a cell missing
+ * from the table is the declaration that the transition must refuse
+ * (throw), and the sweep proves that too. */
+
+import * as v from "valibot";
+import { compact } from "#fp";
+import {
+  type AtlasMachine,
+  type AtlasState,
+  type AtlasTrigger,
+  atlasState,
+  edgesFromTriggers,
+} from "#shared/schema-atlas/types.ts";
+
+/** One stored shape standing for a whole family the machine must treat the
+ * same way (keyed and keyless, say). */
+export type MachineRepresentative<State> = {
+  readonly state: State;
+  readonly tag: string;
+};
+
+export const machineRep = <State>(
+  tag: string,
+  state: State,
+): MachineRepresentative<State> => ({ state, tag });
+
+/** Read a stored state word back through its machine's own picklist,
+ * refusing a word the machine does not have. A row carrying an unknown word
+ * is a database this code cannot reason about, so it is raised where it is
+ * read rather than carried inward. */
+export const parseMachineState = <State extends string>(
+  schema: v.GenericSchema<unknown, State>,
+  word: string,
+  table: string,
+): State => {
+  if (!v.is(schema, word)) {
+    throw new Error(`A ${table} row holds unknown state ${word}`);
+  }
+  return v.parse(schema, word);
+};
+/** One map node: its stored shapes, and — when no owner or system event can
+ * move it toward the terminal — the declared reason it is allowed to wait. */
+export type MachineNode<State, NodeId extends string> = {
+  readonly awaits?: "provider";
+  readonly id: NodeId;
+  readonly reps: readonly MachineRepresentative<State>[];
+};
+
+/** One way a stored record can move, running the real transition. */
+export type MachineEvent<
+  State,
+  EventId extends string,
+> = AtlasTrigger<State> & {
+  readonly id: EventId;
+  /** Whether the engine step behind this event sends real money. */
+  readonly movesMoney: boolean;
+};
+
+/** A cell that names a node per shape tag rather than one node for all.
+ * A tag missing from a split means that shape must refuse. */
+export type SplitMove<NodeId extends string> = {
+  readonly perRep: Readonly<Partial<Record<string, NodeId>>>;
+};
+
+/** Where one event must land: one node for every shape, or a node per
+ * shape tag when capability rules split the outcome. */
+export type ExpectedMove<NodeId extends string> = NodeId | SplitMove<NodeId>;
+
+/** The declared table: for each node, the events that must move it and
+ * where to. Every other (event × shape) pair is thereby a declared
+ * refusal, and the sweep still executes it. */
+export type MachineMoves<
+  NodeId extends string,
+  EventId extends string,
+> = Readonly<
+  Record<NodeId, Readonly<Partial<Record<EventId, ExpectedMove<NodeId>>>>>
+>;
+
+const isSplit = <NodeId extends string>(
+  move: ExpectedMove<NodeId>,
+): move is SplitMove<NodeId> => typeof move === "object";
+
+/** The readers over one declared table: `expected` resolves a cell for one
+ * shape ("refused" when absent), and `plain` demands the one answer a cell
+ * gives every shape, throwing otherwise. */
+export type MachineMovesReader<
+  NodeId extends string,
+  EventId extends string,
+> = {
+  readonly expected: (
+    node: NodeId,
+    event: EventId,
+    tag: string,
+  ) => NodeId | "refused";
+  readonly plain: (node: NodeId, event: EventId) => NodeId;
+  /** The shape tags a split cell names; empty for plain or absent cells. */
+  readonly splitTags: (node: NodeId, event: EventId) => readonly string[];
+  /** Every node one cell can land on; empty when the cell is absent. */
+  readonly targets: (node: NodeId, event: EventId) => readonly NodeId[];
+};
+
+export const movesIn = <NodeId extends string, EventId extends string>(
+  moves: MachineMoves<NodeId, EventId>,
+): MachineMovesReader<NodeId, EventId> => {
+  /** Answers one cell by what it holds: absent, a plain node, or a split. */
+  const readCell = <Out>(
+    node: NodeId,
+    event: EventId,
+    read: {
+      readonly absent: () => Out;
+      readonly plain: (move: NodeId) => Out;
+      readonly split: (move: SplitMove<NodeId>) => Out;
+    },
+  ): Out => {
+    const move: ExpectedMove<NodeId> | undefined = moves[node][event];
+    if (move === undefined) return read.absent();
+    return isSplit(move) ? read.split(move) : read.plain(move);
+  };
+  const refusePlain = (node: NodeId, event: EventId): never => {
+    throw new Error(`${node} × ${event} does not name one plain move`);
+  };
+  // The list readers' shared empty answer: an absent cell names nothing.
+  const none = (): readonly never[] => [];
+  return {
+    expected: (node, event, tag) =>
+      readCell<NodeId | "refused">(node, event, {
+        absent: () => "refused",
+        plain: (move) => move,
+        // A tag missing from a split is the declared refusal for that shape.
+        split: (move) => move.perRep[tag] ?? "refused",
+      }),
+    plain: (node, event) =>
+      readCell<NodeId>(node, event, {
+        absent: () => refusePlain(node, event),
+        plain: (move) => move,
+        split: () => refusePlain(node, event),
+      }),
+    splitTags: (node, event) =>
+      readCell<readonly string[]>(node, event, {
+        absent: none,
+        plain: none,
+        split: (move) => Object.keys(move.perRep),
+      }),
+    targets: (node, event) =>
+      readCell<readonly NodeId[]>(node, event, {
+        absent: none,
+        plain: (move) => [move],
+        split: (move) => compact(Object.values(move.perRep)),
+      }),
+  };
+};
+
+/** Where one event moves a row, and the refusal when the table has no cell
+ * for it. `refusal` names the row and the event in the operator's words. */
+export const moveOrRefuse = <NodeId extends string, EventId extends string>(
+  reader: MachineMovesReader<NodeId, EventId>,
+  from: NodeId,
+  event: EventId,
+  refusal: string,
+): NodeId => {
+  const to = reader.expected(from, event, "");
+  if (to === "refused") {
+    throw new Error(refusal);
+  }
+  return to;
+};
+
+/** The ids of every node a rule holds for, in declaration order — the one
+ * reading of the node list every derived list shares, so none of them can
+ * drift into reading the nodes differently. */
+export const nodeIdsWhere = <Node extends MachineNode<unknown, string>>(
+  nodes: readonly Node[],
+  holds: (node: Node) => boolean,
+): readonly Node["id"][] => nodes.filter(holds).map((node) => node.id);
+
+/** The node lists a declared table can answer. */
+export type DerivedNodeIds<NodeId extends string, Event> = {
+  /** The nodes some matching event can move: the table names a cell for
+   * the node and the event. Any shape's cell counts — a split cell moves
+   * the node for the shapes it names. */
+  readonly movedBy: (holds: (event: Event) => boolean) => readonly NodeId[];
+  /** The nodes a row can never leave: no declared cell moves them.
+   * Derived, so a cell added to a closed node's line changes this rather
+   * than quietly contradicting it. */
+  readonly terminal: () => readonly NodeId[];
+};
+
+/** The derived node lists of one declared table — the nodes, the events,
+ * and the raw moves table, in the same shape the mirror tests take. The
+ * factory takes the machine; each reader takes only its question. */
+export const derivedNodeIds = <
+  NodeId extends string,
+  EventId extends string,
+  Event extends { readonly id: EventId },
+>(machine: {
+  readonly events: readonly Event[];
+  readonly moves: MachineMoves<NodeId, EventId>;
+  readonly nodes: readonly MachineNode<unknown, NodeId>[];
+}): DerivedNodeIds<NodeId, Event> => {
+  const reader = movesIn(machine.moves);
+  const movedBy = (holds: (event: Event) => boolean): readonly NodeId[] =>
+    nodeIdsWhere(machine.nodes, (node) =>
+      machine.events.some(
+        (event) => holds(event) && reader.targets(node.id, event.id).length > 0,
+      ),
+    );
+  return {
+    movedBy,
+    terminal: () => {
+      const movable = new Set(movedBy(() => true));
+      return nodeIdsWhere(machine.nodes, (node) => !movable.has(node.id));
+    },
+  };
+};
+
+type AtlasStateExtras = Parameters<typeof atlasState>[4];
+
+type AtlasFacts = NonNullable<NonNullable<AtlasStateExtras>["facts"]>;
+
+/** Node extras whose facts read the node itself — for a machine whose facts
+ * are declared on the node (a flag, a rule) rather than in its stored
+ * shapes — plus the start flag on one named node. */
+export const factsFromNode =
+  <Node extends MachineNode<unknown, string>>(
+    factsOf: (node: Node) => AtlasFacts,
+    startId: string,
+  ) =>
+  (node: Node): AtlasStateExtras => ({
+    facts: factsOf(node),
+    ...(node.id === startId ? { start: true as const } : {}),
+  });
+
+/** The usual node extras: facts read from the node's first shape, and the
+ * start flag on one named node. A node always carries at least one shape,
+ * and all of a node's shapes share its lifecycle rule (the graph suites pin
+ * both), so the first shape speaks for the whole node. */
+export const factsAndStart = <State>(
+  factsOf: (state: State) => AtlasFacts,
+  startId: string,
+): ((node: MachineNode<State, string>) => AtlasStateExtras) =>
+  factsFromNode((node) => factsOf(node.reps[0]!.state), startId);
+
+/** Where each of a machine's nodes sits on its map. */
+export type MachineLayouts<NodeId extends string> = Readonly<
+  Record<NodeId, AtlasState["layout"]>
+>;
+
+/** What one machine's map adds to its spec: an id that names its wording
+ * keys, a layout per node, and each node's facts and start flag. */
+export type AtlasView<NodeId extends string, Node> = {
+  readonly extraOf: (node: Node) => AtlasStateExtras;
+  readonly id: string;
+  readonly layouts: MachineLayouts<NodeId>;
+};
+
+/** One machine's whole `/admin/schema` entry: nodes and edges from the
+ * spec, wording keys from the machine id, layout and facts from the view.
+ * One builder, so the machines' map modules cannot drift apart, and the map
+ * and the mirror tests keep reading one source. */
+export const atlasMachineFrom = <
+  State,
+  NodeId extends string,
+  EventId extends string,
+  Node extends MachineNode<State, NodeId>,
+>(
+  machine: {
+    readonly events: readonly MachineEvent<State, EventId>[];
+    readonly nodeOf: (state: State) => NodeId;
+    readonly nodes: readonly Node[];
+  },
+  view: AtlasView<NodeId, Node>,
+): AtlasMachine => ({
+  id: view.id,
+  introKey: `schema.${view.id}.intro`,
+  states: machine.nodes.map((node) =>
+    atlasState(
+      `schema.${view.id}.state`,
+      node.id,
+      view.layouts[node.id],
+      edgesFromTriggers(
+        machine.events,
+        machine.nodeOf,
+        node.reps.map(({ state }) => state),
+      ),
+      view.extraOf(node),
+    ),
+  ),
+  titleKey: `schema.${view.id}.title`,
+});

@@ -1,0 +1,265 @@
+import { t } from "#i18n";
+import {
+  LINE_KEY_PREFIX,
+  LINE_LISTING_PREFIX,
+  LINE_PACKAGE_PREFIX,
+  NO_QUANTITY_PREFIX,
+  PRICE_PREFIX,
+  QTY_PREFIX,
+} from "#routes/admin/attendee-form-lines.ts";
+import {
+  type AttendeeFormLine,
+  isPaymentLockedLine,
+  isRetainedLine,
+} from "#routes/admin/attendee-form-model.ts";
+import { formatDateRangeLabel } from "#shared/date-labels.ts";
+import type { TableColumn } from "#shared/tables/column.ts";
+import { defineTable } from "#shared/tables/definition.ts";
+import { adminListingLink } from "#templates/admin/admin-page.tsx";
+import {
+  BookingStatusBadges,
+  InactiveNote,
+} from "#templates/admin/attendee-detail.tsx";
+import type {
+  AttendeeFormProps,
+  AttendeeFormTemplateData,
+} from "#templates/admin/attendee-form/types.ts";
+import { ErrorAlert } from "#templates/components/error.tsx";
+import { renderTable } from "#templates/components/table.tsx";
+import { translatedTableColumn } from "#templates/components/translated-table-column.ts";
+import type { ListingWithCount } from "#types";
+
+/** The booking path shown beside a listing when it is not a standalone row. */
+const pathLabel = (
+  line: AttendeeFormLine,
+  data: AttendeeFormTemplateData,
+): string | null => {
+  if (line.packageGroupId > 0) {
+    const name = data.packageNamesById.get(line.packageGroupId);
+    return name === undefined
+      ? t("attendee_form.path_missing_package", { id: line.packageGroupId })
+      : t("attendee_form.path_via_package", { name });
+  }
+  if (line.parentListingId > 0) {
+    return t("attendee_form.path_addon_under", {
+      name:
+        data.parentNamesById.get(line.parentListingId) ??
+        String(line.parentListingId),
+    });
+  }
+  return null;
+};
+
+const lineRowClass = (line: AttendeeFormLine, booked: boolean): string => {
+  if (booked) return "attendee-line";
+  return line.packageGroupId > 0
+    ? "attendee-line attendee-line-package-blank"
+    : "attendee-line attendee-line-empty";
+};
+
+/** One row's cell: the line, the shared template data, and the row's index. */
+type ListingCell = (
+  line: AttendeeFormLine,
+  data: AttendeeFormTemplateData,
+  index: number,
+) => JSX.Element;
+
+/** A cell that reads the row's listing: the factory hands the cell the line's
+ *  listing, so the body starts from the listing it renders. */
+const listingCell =
+  (
+    render: (
+      listing: ListingWithCount,
+      line: AttendeeFormLine,
+      data: AttendeeFormTemplateData,
+      index: number,
+    ) => JSX.Element,
+  ): ListingCell =>
+  (line, data, index) =>
+    render(line.listing!, line, data, index);
+
+const listingNameCell = listingCell((listing, line, data) => {
+  const label = pathLabel(line, data);
+  return (
+    <>
+      {adminListingLink(listing)}
+      {label ? <span class="muted small booking-path"> {label}</span> : null}
+      <InactiveNote active={listing.active} />
+      {BookingStatusBadges({
+        checkedIn: line.existingBooking?.checked_in ?? 0,
+        quantity: line.existingBooking?.quantity ?? 0,
+        refunded: Boolean(line.existingBooking?.refunded),
+      })}
+    </>
+  );
+});
+
+const listingDatesCell = listingCell((listing) => (
+  <span class="muted small">
+    {listing.listing_type === "daily"
+      ? t("attendee_form.shared_dates")
+      : t("attendee_form.fixed_date")}
+  </span>
+));
+
+const listingQuantityCell = listingCell((listing, line, _data, index) => {
+  const paymentLocked = isPaymentLockedLine(line);
+  return (
+    <>
+      <input
+        aria-label={t("attendee_form.qty_aria", { title: listing.name })}
+        class="line-qty"
+        max={listing.max_quantity}
+        min="0"
+        name={`${QTY_PREFIX}${index}`}
+        type="number"
+        value={line.quantity === null ? "0" : String(line.quantity)}
+      />
+      <label class="small">
+        <input
+          checked={line.noQuantity}
+          class="no-quantity-toggle"
+          disabled={paymentLocked}
+          name={`${NO_QUANTITY_PREFIX}${index}`}
+          title={
+            paymentLocked ? t("attendee_form.paid_no_quantity_line") : undefined
+          }
+          type="checkbox"
+          value="1"
+        />
+        {t("attendee_form.no_quantity")}
+      </label>
+      <input
+        name={`${LINE_LISTING_PREFIX}${index}`}
+        type="hidden"
+        value={String(line.listingId)}
+      />
+      <input
+        name={`${LINE_KEY_PREFIX}${index}`}
+        type="hidden"
+        value={line.key}
+      />
+      {line.packageGroupId > 0 ? (
+        <input
+          name={`${LINE_PACKAGE_PREFIX}${index}`}
+          type="hidden"
+          value={String(line.packageGroupId)}
+        />
+      ) : null}
+    </>
+  );
+});
+
+const listingNoticesCell = (
+  line: AttendeeFormLine,
+  data: AttendeeFormTemplateData,
+): JSX.Element => (
+  <>
+    {line.existingBooking?.start_at ? (
+      <div class="muted small">
+        {formatDateRangeLabel(
+          line.existingBooking.start_at,
+          line.existingBooking.end_at,
+        )}
+      </div>
+    ) : null}
+    {line.error ? <ErrorAlert>{line.error}</ErrorAlert> : null}
+    {(data.lineWarnings.get(line.listingId) ?? []).map((warning) => (
+      <div class="warning small" role="alert">
+        {warning}
+      </div>
+    ))}
+  </>
+);
+
+/** The create form's agreed-price box: blank applies the package path's or the
+ *  listing's own price, so the placeholder names the price the row carries. */
+const listingPriceCell = listingCell((listing, line, _data, index) => {
+  const applies = line.packagePrice ?? listing.unit_price;
+  return (
+    <input
+      aria-label={t("attendee_form.price_aria", { title: listing.name })}
+      class="line-price"
+      min="0"
+      name={`${PRICE_PREFIX}${index}`}
+      placeholder={String(applies)}
+      title={t("attendee_form.price_hint")}
+      type="number"
+      value={line.priceRaw}
+    />
+  );
+});
+
+const listingColumns: readonly TableColumn<
+  AttendeeFormLine,
+  AttendeeFormTemplateData
+>[] = [
+  translatedTableColumn("listing", "terms.listing", listingNameCell),
+  translatedTableColumn("dates", "attendee_form.col_dates", listingDatesCell),
+  translatedTableColumn(
+    "quantity",
+    "attendee_form.col_qty",
+    listingQuantityCell,
+    { className: "attendee-line-qty" },
+  ),
+  {
+    cell: listingNoticesCell,
+    header: "",
+    key: "notices",
+  },
+];
+
+const listingEditorTable = defineTable(listingColumns);
+
+/** The create form's editor: the standard columns plus the agreed-price box. */
+const createListingEditorTable = defineTable([
+  ...listingColumns.slice(0, 3),
+  translatedTableColumn("price", "attendee_form.col_price", listingPriceCell, {
+    className: "attendee-line-price",
+  }),
+  ...listingColumns.slice(3),
+]);
+
+/** The fixed listing editor with one quantity box per booking path. */
+export const ListingEditor = ({ data }: AttendeeFormProps): JSX.Element => {
+  const hasBookedLines = data.parsed.lines.some(
+    (line) => isRetainedLine(line) || Boolean(line.existingBooking),
+  );
+  const hasPackagePathLines = data.parsed.lines.some(
+    (line) => !line.existingBooking && line.packageGroupId > 0,
+  );
+  return (
+    <div
+      class={
+        hasBookedLines ? "listing-editor" : "listing-editor show-all-listings"
+      }
+    >
+      {hasBookedLines && (
+        <label class="show-all">
+          <input class="show-all-toggle" type="checkbox" />
+          {t("attendee_form.show_all_listings")}
+        </label>
+      )}
+      {hasPackagePathLines && (
+        <label class="show-all">
+          <input class="package-paths-toggle" type="checkbox" />
+          {t("attendee_form.show_package_paths")}
+        </label>
+      )}
+      {renderTable(
+        data.mode === "create" ? createListingEditorTable : listingEditorTable,
+        data.parsed.lines,
+        {
+          context: data,
+          rowAttrs: (line) => ({
+            class: lineRowClass(
+              line,
+              isRetainedLine(line) || Boolean(line.existingBooking),
+            ),
+          }),
+          tableClass: "line-editor",
+        },
+      )}
+    </div>
+  );
+};

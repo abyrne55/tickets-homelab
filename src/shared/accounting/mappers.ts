@@ -1,0 +1,340 @@
+/**
+ * Event mappers — pure translations from a money event's facts to the ledger
+ * legs to post. Kept free of the checkout pricing types and of any I/O: the
+ * wiring builds {@link BookingFacts} from the priced order and hands the result
+ * to the store.
+ */
+
+import * as v from "valibot";
+import {
+  attendeeAccount,
+  BOOKING_FEE_INCOME,
+  modifierAccount,
+  revenueAccount,
+  TAX_VAT,
+  WORLD,
+} from "#accounting/accounts.ts";
+import { KIND } from "#accounting/kinds.ts";
+import {
+  MANUAL_ATTENDEE_CHARGE,
+  MANUAL_ATTENDEE_WRITEOFF,
+} from "#accounting/manual-entries.ts";
+import { eventGroup, legReference, type RefPart } from "#accounting/refs.ts";
+import { sumByKey } from "#fp";
+import type {
+  AccountRef,
+  Transfer,
+  TransferInput,
+} from "#shared/ledger/types.ts";
+import { assessTax, taxBasisLines } from "#shared/tax/assessment.ts";
+import { NO_TAX, type TaxPolicy, TaxPolicySchema } from "#shared/tax/types.ts";
+
+const BOOKING = "booking";
+const REFUND = "refund";
+
+/** The shared event group for one ledger leg: a tag and the id it refers to. */
+const eventGroupFor =
+  (tag: RefPart) =>
+  (subjectId: string): Promise<string> =>
+    eventGroup([tag, subjectId]);
+
+/**
+ * The shared event group for a booking's legs, derived from its stable event
+ * id. That id is the payment session id on the paid path, the attendee id on
+ * the free/owed path. The single place the booking event key is built, so a ledger preflight
+ * resolves exactly the group {@link mapBooking} posts under.
+ */
+export const bookingEventGroup = eventGroupFor(BOOKING);
+
+/**
+ * The event group a refund of one booking group is posted under. Derived from
+ * the booking's, so a reversal already in the ledger can be recognised without
+ * rebuilding the legs it writes.
+ */
+export const refundEventGroup = eventGroupFor(REFUND);
+
+/**
+ * The refund-side `kind` for each reversible booking leg. The cash leg is
+ * relabelled `refund_cash` so reports can sum refunded cash (decision 8) without
+ * double-counting the reversed sale/fee/modifier legs. The rest carry a
+ * `refund_` prefix so a refund's legs never share a `kind` (or reference) with
+ * the booking's.
+ */
+const REFUND_KIND: Readonly<Record<string, string>> = {
+  [KIND.fee]: KIND.refundFee,
+  [KIND.modifier]: KIND.refundModifier,
+  [KIND.payment]: KIND.refundCash,
+  [KIND.sale]: KIND.refundSale,
+  [MANUAL_ATTENDEE_CHARGE]: KIND.refundManualAttendeeCharge,
+  [MANUAL_ATTENDEE_WRITEOFF]: KIND.refundManualAttendeeWriteoff,
+  [KIND.vat]: KIND.refundVat,
+};
+
+const refundKind = (kind: string): string =>
+  REFUND_KIND[kind] ?? `refund_${kind}`;
+
+/**
+ * The money facts of one booking, decoupled from the checkout pricing types.
+ * `gross` is a listing's list price before modifiers/fee. `delta` is a modifier's
+ * signed effect (negative = discount). `amountPaid` is the cash actually received
+ * now (a deposit, or the full amount). `eventId` is any stable per-booking id
+ * (for example the payment reference) — it is hashed into the references, never stored.
+ * `vat` is the booking's VAT facts. A booking without `vat` charges no tax.
+ */
+export type BookingFacts = {
+  readonly attendeeId: number;
+  readonly occurredAt: string;
+  readonly eventId: string;
+  readonly lines: ReadonlyArray<{ listingId: number; gross: number }>;
+  readonly modifiers: ReadonlyArray<{ modifierId: number; delta: number }>;
+  readonly bookingFee: number;
+  readonly amountPaid: number;
+  readonly vat?: TaxPolicy;
+};
+
+type LegSpec = {
+  source: AccountRef;
+  destination: AccountRef;
+  amount: number;
+  kind: string;
+  refParts: RefPart[];
+};
+
+/** A single fixed-direction leg, dropped when its amount is zero (a free booking
+ *  posts no fee, and a deposit-free reservation posts no payment). */
+const optionalLeg = (
+  amount: number,
+  spec: Omit<LegSpec, "amount">,
+): LegSpec[] => (amount > 0 ? [{ ...spec, amount }] : []);
+
+const modifierLeg = (
+  attendee: AccountRef,
+  modifier: { modifierId: number; delta: number },
+): LegSpec => {
+  const modAccount = modifierAccount(modifier.modifierId);
+  const refParts = ["mod", modifier.modifierId];
+  // A surcharge bills the attendee (revenue). A discount funds the attendee
+  // from the modifier's contra account. Amounts are always positive.
+  return modifier.delta > 0
+    ? {
+        amount: modifier.delta,
+        destination: modAccount,
+        kind: KIND.modifier,
+        refParts,
+        source: attendee,
+      }
+    : {
+        amount: -modifier.delta,
+        destination: attendee,
+        kind: KIND.modifier,
+        refParts,
+        source: modAccount,
+      };
+};
+
+/** The single attendee→`tax:vat` leg, dropped when the tax is zero. */
+const vatLegSpec = (vatAmount: number, attendee: AccountRef): LegSpec[] =>
+  vatAmount > 0
+    ? [
+        {
+          amount: vatAmount,
+          destination: TAX_VAT,
+          kind: KIND.vat,
+          refParts: [KIND.vat],
+          source: attendee,
+        },
+      ]
+    : [];
+
+const bookingLegSpecs = (
+  facts: BookingFacts,
+  attendee: AccountRef,
+): LegSpec[] => {
+  // Aggregate to one sale leg per listing: discount splits produce several
+  // lines for the same listing, which must not share a `["sale", listingId]`
+  // reference. The store treats the second as a conflicting duplicate.
+  const grossByListing = sumByKey(
+    (line: BookingFacts["lines"][number]) => line.listingId,
+    (line) => line.gross,
+  )(facts.lines.filter((line) => line.gross > 0));
+  // A discount larger than the ticket income nets below zero. There is no
+  // taxable income then: no VAT leg and no included-tax share, and the legs
+  // are exactly the facts as booked.
+  const net =
+    [...grossByListing.values()].reduce((total, gross) => total + gross, 0) +
+    facts.modifiers.reduce((total, modifier) => total + modifier.delta, 0);
+  const assessment =
+    net < 0
+      ? null
+      : assessTax(
+          {
+            lines: taxBasisLines(grossByListing),
+            modifiers: facts.modifiers.map((modifier) => ({ ...modifier })),
+          },
+          facts.vat ?? NO_TAX,
+        );
+  const sales: LegSpec[] = (assessment?.lines ?? taxBasisLines(grossByListing))
+    .filter((line) => line.gross > 0)
+    .map(({ listingId, gross }) => ({
+      amount: gross,
+      destination: revenueAccount(listingId),
+      kind: KIND.sale,
+      refParts: [KIND.sale, listingId],
+      source: attendee,
+    }));
+  const modifiers = (assessment?.modifiers ?? facts.modifiers)
+    .filter((modifier) => modifier.delta !== 0)
+    .map((modifier) => modifierLeg(attendee, modifier));
+  const fee = optionalLeg(facts.bookingFee, {
+    destination: BOOKING_FEE_INCOME,
+    kind: KIND.fee,
+    refParts: [KIND.fee],
+    source: attendee,
+  });
+  const payment = optionalLeg(facts.amountPaid, {
+    destination: attendee,
+    kind: KIND.payment,
+    refParts: [KIND.payment],
+    source: WORLD,
+  });
+  return [
+    ...sales,
+    ...modifiers,
+    ...fee,
+    ...payment,
+    ...vatLegSpec(assessment ? assessment.taxAmount : 0, attendee),
+  ];
+};
+
+/**
+ * Reject malformed facts loudly rather than silently dropping a leg with the
+ * zero-amount filter. It catches a blank event id — empty or whitespace-only —
+ * which makes every such booking share one event group and references. It also
+ * catches non-finite amounts (NaN/∞ slip past `> 0`), negative non-modifier
+ * amounts, and fractional/unsafe minor units. All money facts are integer
+ * pence/cents, so a fractional split like `10.5` must be caught here.
+ * Aggregating two of them into `21` hides the fractional pennies before
+ * `validateTransfer` ever sees them. A modifier
+ * `delta` can be negative (a discount) but must still be a safe integer.
+ */
+const assertValidFacts = (facts: BookingFacts): void => {
+  const problems: string[] = [];
+  // Reject a blank id, including whitespace-only. A missing source id normalised
+  // to spaces still hashes to a non-empty event group. Two such bookings then
+  // collide onto one event, and the second is skipped as a replay.
+  if (!facts.eventId?.trim()) problems.push("empty eventId");
+  const requireAmount = (label: string, value: number): void => {
+    if (!Number.isFinite(value)) problems.push(`non-finite ${label}`);
+    else if (value < 0) problems.push(`negative ${label}`);
+    else if (!Number.isSafeInteger(value))
+      problems.push(`non-integer ${label}`);
+  };
+  for (const line of facts.lines) {
+    requireAmount(`listing ${line.listingId} gross`, line.gross);
+  }
+  for (const modifier of facts.modifiers) {
+    if (!Number.isFinite(modifier.delta)) {
+      problems.push(`non-finite modifier ${modifier.modifierId} delta`);
+    } else if (!Number.isSafeInteger(modifier.delta)) {
+      problems.push(`non-integer modifier ${modifier.modifierId} delta`);
+    }
+  }
+  requireAmount("bookingFee", facts.bookingFee);
+  requireAmount("amountPaid", facts.amountPaid);
+  if (facts.vat !== undefined && !v.is(TaxPolicySchema, facts.vat)) {
+    problems.push("invalid tax policy");
+  }
+  if (problems.length > 0) {
+    throw new Error(`mapBooking: invalid facts (${problems.join(", ")})`);
+  }
+};
+
+/**
+ * Map a booking's money facts to the ledger legs to post. The legs are a
+ * `sale` per listing (gross), a signed `modifier` per modifier, a `fee`, and a
+ * `payment` for the cash received — all sharing one event group.
+ * Zero-amount legs are dropped. `balanceOf(attendee)` over the result is the
+ * negative of what the attendee still owes.
+ */
+export const mapBooking = async (
+  facts: BookingFacts,
+): Promise<TransferInput[]> => {
+  assertValidFacts(facts);
+  const group = await bookingEventGroup(facts.eventId);
+  const attendee = attendeeAccount(facts.attendeeId);
+  return Promise.all(
+    bookingLegSpecs(facts, attendee).map(async (spec) => ({
+      amount: spec.amount,
+      destination: spec.destination,
+      eventGroup: group,
+      kind: spec.kind,
+      occurredAt: facts.occurredAt,
+      reference: await legReference([BOOKING, facts.eventId, ...spec.refParts]),
+      source: spec.source,
+    })),
+  );
+};
+
+/**
+ * The money facts of a full refund: the stored legs of the one booking order
+ * being refunded, and when the refund happened. They all share its event group.
+ * `postedBy` is the actor (an admin id or "system").
+ */
+export type RefundFacts = {
+  readonly orderLegs: readonly Transfer[];
+  readonly occurredAt: string;
+  readonly postedBy?: string;
+  /** Optional PII-free reason code stamped on every refund leg (for example why
+   * an automatic refund happened). Kept free of names/emails by convention. */
+  readonly memo?: string | undefined;
+};
+
+/**
+ * Stand freshly-built (not yet stored) booking inputs in for the stored legs
+ * {@link mapRefund} normally reads back from the ledger. `mapRefund` reads only
+ * money-identity fields — never `id`/`recordedAt` — so a placeholder id and the
+ * booking time suffice. For paths that map a reversal in the same breath as the
+ * booking: the historical backfill, and test seeding that mirrors it.
+ */
+export const asOrderLegs = (
+  inputs: TransferInput[],
+  recordedAt: string,
+): Transfer[] => inputs.map((leg) => ({ ...leg, id: 0, recordedAt }));
+
+/**
+ * The booking legs are read from the ledger, so the reversal matches exactly
+ * what was posted, whatever the modifiers, fee or deposit were.
+ *
+ * Refunds do not use `reverses_id`. That one-slot link is for admin voids,
+ * while a refund posts many rows. Repeat and partial refunds are therefore
+ * scoped by event group instead (decision 8). The derived group also makes a re-submit
+ * replay as a no-op. Every leg carries {@link TransferInput.reversesGroup} —
+ * the booking order's event group — so a read can join a reversal back to the
+ * one order it undid. The hashed refund group and references cannot answer
+ * that per-booking-row question on their own.
+ */
+export const mapRefund = async (
+  facts: RefundFacts,
+): Promise<TransferInput[]> => {
+  const legs = facts.orderLegs;
+  if (legs.length === 0) throw new Error("mapRefund: no order legs to refund");
+  const bookingGroup = legs[0]!.eventGroup;
+  if (legs.some((leg) => leg.eventGroup !== bookingGroup)) {
+    throw new Error("mapRefund: order legs span more than one event group");
+  }
+  const group = await refundEventGroup(bookingGroup);
+  return Promise.all(
+    legs.map(async (leg) => ({
+      amount: leg.amount,
+      destination: leg.source,
+      eventGroup: group,
+      kind: refundKind(leg.kind ?? ""),
+      ...(facts.memo !== undefined ? { memo: facts.memo } : {}),
+      occurredAt: facts.occurredAt,
+      postedBy: facts.postedBy ?? "system",
+      reference: await legReference([REFUND, bookingGroup, leg.reference]),
+      reversesGroup: bookingGroup,
+      source: leg.destination,
+    })),
+  );
+};

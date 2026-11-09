@@ -1,0 +1,66 @@
+/**
+ * Renewal route — handles GET/POST for /renew/?t=<token>
+ *
+ * Lets a customer pick from the qualifying renewal tier listings and pay for
+ * any quantity of months. Reuses `handleTicket` so the picker UI, validation,
+ * CSRF, and Stripe checkout flow stay the same as the regular ticket form.
+ */
+
+import { hmacHash } from "#crypto/hashing.ts";
+import { getBuiltSiteByRenewalTokenIndex } from "#db/built-sites.ts";
+import { notFoundResponse, publicPageResponse } from "#routes/response.ts";
+import { formatDateLabel } from "#shared/date-labels.ts";
+import { listingDateToCalendarDate } from "#shared/dates.ts";
+import { encodedAfter } from "#shared/encoded-after.ts";
+import { getQualifyingTierListings } from "#shared/renewal-tier.ts";
+import { renewalErrorPage } from "#templates/public/renewal.tsx";
+import { renderTicketFlow } from "./ticket-submit.ts";
+import { applyNoindex } from "./types.ts";
+
+const renewalActionUrl = encodedAfter("/renew/?t=");
+
+/** Resolve site by token. A null result becomes 404. */
+const resolveRenewalSite = async (token: string | null) => {
+  if (!token) return null;
+  const tokenIndex = await hmacHash(token);
+  return getBuiltSiteByRenewalTokenIndex(tokenIndex);
+};
+
+/** Shared handler for GET and POST: resolve token, build context, hand off to handleTicket. */
+const handleRenewal = async (request: Request): Promise<Response> => {
+  const token = new URL(request.url).searchParams.get("t");
+  const site = await resolveRenewalSite(token);
+  if (!site || !token) return notFoundResponse();
+
+  const tiers = await getQualifyingTierListings();
+  if (tiers.length === 0) {
+    return applyNoindex(
+      await publicPageResponse(() => renewalErrorPage({ siteName: site.name })),
+    );
+  }
+
+  const deadlineDate = site.readOnlyFrom
+    ? listingDateToCalendarDate(site.readOnlyFrom)
+    : null;
+
+  return applyNoindex(
+    await renderTicketFlow(request, [], {
+      overrides: {
+        actionUrl: renewalActionUrl(token),
+        groupDescription: deadlineDate
+          ? `Current deadline: ${formatDateLabel(
+              deadlineDate,
+            )}. Pick a tier and quantity below.`
+          : "Pick a tier and quantity below.",
+        groupName: `Renew ${site.name}`,
+        siteToken: token,
+        terms: "",
+      },
+    })(tiers),
+  );
+};
+
+export {
+  handleRenewal as handleRenewalGet,
+  handleRenewal as handleRenewalPost,
+};
