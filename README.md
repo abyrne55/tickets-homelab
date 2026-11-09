@@ -1,5 +1,49 @@
 # Chobble Tickets
 
+> **This is a slimmed-down fork of Chobble Tickets.** It drops Nix and devenv
+> in favour of Podman, and keeps only the app source, the static asset build,
+> the container images, and the core test suite. The ratchet and quality
+> scripts, TLA models, Cucumber specs, mutation testing, real-browser tests,
+> the Bunny edge entry, deploy workflows, `cli/`, and `docs/` stay in the
+> upstream project.
+
+### Run with Podman
+
+```bash
+podman build --format docker -t tickets .
+podman run --rm -p 3000:3000 -v tickets-data:/data \
+  -e DB_ENCRYPTION_KEY="$(openssl rand -base64 32)" tickets
+curl http://localhost:3000/health   # Up :)
+```
+
+Keep the same `DB_ENCRYPTION_KEY` between runs, or the data in the volume
+becomes unreadable. `scripts/container-check.sh` boots the image and checks
+that it serves, keeps its data, and stops cleanly.
+
+### Develop and test with Podman
+
+`./dev` runs one command in the dev image with the repo mounted. Build the
+image once:
+
+```bash
+podman build -t tickets-dev -f Containerfile.dev .
+```
+
+Then:
+
+```bash
+./dev deno task typecheck                          # needs ~4 GiB for the VM
+./dev deno task lint:ci                            # Biome
+./dev deno task dev                                # server with --watch
+./dev scripts/test.sh test/shared/dates.test.ts    # one file
+./dev scripts/test.sh                              # the whole suite
+./dev                                              # a shell in the image
+```
+
+`scripts/test.sh` builds the static assets, starts stripe-mock, and runs
+`deno test`. The full suite takes about 10 minutes with 6 CPUs and 4 GiB in the
+Podman machine.
+
 Chobble Tickets is a reservation system that runs on Bunny Edge Scripting (or
 any Deno environment) with libsql, which encrypts all PII at rest and handles
 free and paid listings with Stripe, Square, or SumUp.
