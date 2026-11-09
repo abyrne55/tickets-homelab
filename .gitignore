@@ -13,3 +13,4 @@ src/ui/static/style.css
 .static-assets-cache.json.*.pending
 .static-assets-build.lock
 repomix-output.xml
+repomix-code.xml
