@@ -6,6 +6,12 @@ This file provides guidance to AI coding agents working with code in this reposi
 
 A slimmed, security-focused fork of [Chobble Tickets](https://github.com/chobbledotcom/tickets): a Deno + libsql (SQLite/Turso) booking and ticketing server. This fork ships only as a hardened container image (Hummingbird base, `deno compile` single binary) for rootless Podman Quadlets. Upstream's Nix/devenv, Bunny edge build and deploy tooling, `cli/`, `docs/`, Cucumber, TLA models, and mutation testing were removed on purpose. Do not reintroduce them. Comments and some code (`src/edge.ts`, `src/deploy.ts`, `bunny-*.ts`) still refer to upstream platforms.
 
+## Getting oriented
+
+Before exploring the source, run `repomix` and read `repomix-output.xml`. It is a repo map of about 7k tokens that costs far less than browsing directories one by one. Then, when you need to understand a whole area, pack just that area with `repomix -c repomix.code.config.json --include "<glob>"` and read `repomix-code.xml` instead of opening its files one at a time. Sizes and details are under Commands. For a specific symbol or a file you already know, `grep` and a direct read are cheaper than a pack.
+
+Repomix runs on the host, not through `./dev`. If `repomix` is not installed, use `npx repomix` in its place. Rerun it rather than trusting an old output file, since nothing regenerates the packs.
+
 ## Commands
 
 All tooling (Deno, Biome, stripe-mock, pinned by checksum) lives in the dev image. `./dev <cmd>` runs one command in it with the repo mounted at `/work`. Build the image once:
