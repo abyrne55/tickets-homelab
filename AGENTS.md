@@ -1,6 +1,6 @@
 ## What this is
 
-A slimmed, security-focused fork of [Chobble Tickets](https://github.com/chobbledotcom/tickets): a Deno + libsql (SQLite/Turso) booking and ticketing server. This fork ships only as a hardened container image (Hummingbird base, `deno compile` single binary) for rootless Podman Quadlets. Upstream's Nix/devenv, Bunny edge build and deploy tooling, `cli/`, `docs/`, Cucumber, TLA models, and mutation testing were removed on purpose. Do not reintroduce them. Comments and some code (`bunny-*.ts`, `bunnyServeHandler` in `src/serve-app.ts`) still refer to upstream platforms.
+A slimmed, security-focused fork of [Chobble Tickets](https://github.com/chobbledotcom/tickets): a Deno + libsql (SQLite/Turso) booking and ticketing server. This fork ships only as a hardened container image (Hummingbird base, `deno compile` single binary) for rootless Podman Quadlets. Upstream's Nix/devenv, Bunny edge build and deploy tooling, `cli/`, `docs/`, Cucumber, TLA models, and mutation testing were removed on purpose. Do not reintroduce them. Comments and some code (`bunny-*.ts`) still refer to upstream platforms.
 
 ## Getting oriented
 
