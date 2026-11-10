@@ -4,7 +4,7 @@ import { initPairedControls } from "#src/ui/client/admin/paired-controls.ts";
 import { createDomInstaller, requireElement } from "#test-utils/happy-dom.ts";
 
 describe("paired controls", () => {
-  const dom = createDomInstaller();
+  const dom = createDomInstaller(["Event"]);
   afterEach(() => dom.cleanup());
 
   /** The two paired checkbox labels installed onto the DOM, with the script

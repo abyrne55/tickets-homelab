@@ -1,5 +1,5 @@
 import { stub } from "@std/testing/mock";
-import { bunnyServeHandler } from "#src/serve-app.ts";
+import { denoServeHandler } from "#src/serve-app.ts";
 
 /** Import an entry file with `Deno.serve` stubbed, and answer the arguments of
  * each serve call. A query string gives each call a fresh module instance. */
@@ -20,12 +20,13 @@ export const importEntry = async (
   }
 };
 
-/** Serve a request through the Bunny entry as the CDN sends it, with the
- * client address in `x-real-ip`. */
-export const serveFromBunny = (
+/** Serve a request through the Deno entry, with the client address as the
+ * TCP connection's remote hostname. */
+export const serveFromDeno = (
   request: Request,
   ip = "192.0.2.1",
-): Promise<Response> => {
-  request.headers.set("x-real-ip", ip);
-  return bunnyServeHandler(request);
-};
+): Promise<Response> =>
+  denoServeHandler(request, {
+    completed: Promise.resolve(),
+    remoteAddr: { hostname: ip, port: 51000, transport: "tcp" },
+  });

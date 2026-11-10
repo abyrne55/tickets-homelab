@@ -1,14 +1,11 @@
 /**
  * Shared production request handler for the server entry points.
  *
- * The Bunny edge entry (`edge.ts`), the Deno Deploy entry (`deploy.ts`), and
- * the local dev entry (`index.ts`) all wrap the router identically. They boot
- * the app once, run `handleRequest`, and turn any unhandled error into a
- * logged generic 503 rather than letting it crash the isolate. Kept here so
- * every entry point shares one implementation, and so the boot/serve
- * behaviour is unit-testable (`test/serve-app.test.ts`) while the entry files
- * stay logic-free one-liners. Each platform hands over the client IP its own
- * way, so each entry point has its own adapter.
+ * The entry point (`index.ts`) wraps the router in `denoServeHandler`. It boots
+ * the app once, runs `handleRequest`, and turns any unhandled error into a
+ * logged generic 503 rather than letting it crash the process. Kept here so
+ * the boot/serve behaviour is unit-testable (`test/serve-app.test.ts`) while
+ * the entry file stays a logic-free one-liner.
  */
 
 import { setN1GuardNotifyOnly } from "#db/query-log.ts";
@@ -114,14 +111,6 @@ const serveHandler = async (
       ? scheduledResponse(503)
       : temporaryErrorResponse(request.method);
   }
-};
-
-/** Bunny gives the handler only the request. The Bunny CDN puts the client
- * address in `x-real-ip`, so a request without it is a platform fault. */
-export const bunnyServeHandler = (request: Request): Promise<Response> => {
-  const ip = request.headers.get("x-real-ip");
-  if (!ip) throw new Error("Bunny request has no x-real-ip header");
-  return serveHandler(request, ip);
 };
 
 /** Deno gives the client address of the TCP connection. */

@@ -25,6 +25,7 @@ export const pickerDatesFromBounds = (
     epochMsToTzDate(bounds.maxMs, tz),
     "a picker bound date",
   );
+  // biome-ignore lint/complexity/useMathMinMax: operands are date strings
   const endDay = latest > brandedToday ? latest : brandedToday;
   return selectableDates(dateRange(startDay, endDay));
 };

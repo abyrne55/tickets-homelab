@@ -1,5 +1,5 @@
 {
-  "$schema": "https://biomejs.dev/schemas/2.4.16/schema.json",
+  "$schema": "https://biomejs.dev/schemas/2.6.6/schema.json",
   "assist": {
     "actions": {
       "source": {
@@ -68,13 +68,7 @@
         "noUnusedVariables": "error"
       },
       "nursery": {
-        "noExcessiveLinesPerFile": {
-          "level": "error",
-          "options": {
-            "maxLines": 1000
-          }
-        },
-        "useSortedClasses": "error"
+        "useTailwindSortedClasses": "error"
       },
       "performance": {
         "noAccumulatingSpread": "error"
@@ -101,7 +95,13 @@
         "useSingleVarDeclarator": "error",
         "useTemplate": "error",
         "useThrowNewError": "error",
-        "useTrimStartEnd": "error"
+        "useTrimStartEnd": "error",
+        "noExcessiveLinesPerFile": {
+          "level": "error",
+          "options": {
+            "maxLines": 1000
+          }
+        }
       },
       "suspicious": {
         "noAssignInExpressions": "error",

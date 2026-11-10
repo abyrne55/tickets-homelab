@@ -107,6 +107,7 @@ export const dumpMigrationState = (
   const recorded = recordedMigrationIds(statements);
   const known = new Set(knownIds);
   const newestKnownDate = knownIds.reduce(
+    // biome-ignore lint/complexity/useMathMinMax: operands are date strings
     (newest, id) => (migrationDate(id) > newest ? migrationDate(id) : newest),
     "",
   );
