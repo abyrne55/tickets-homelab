@@ -9,6 +9,7 @@ import {
 } from "#templates/public/reservations/controls.ts";
 import { expectIncludesAll } from "#test-utils/assertions.ts";
 import { reservesHint, reservesHintStart } from "#test-utils/duration-hint.ts";
+import { withSetting } from "#test-utils/settings.ts";
 import { withSubmittedValues } from "#test-utils/saved-form.ts";
 
 describe("renderDateSelector", () => {
@@ -95,6 +96,62 @@ describe("renderPayMoreInput", () => {
     max_price: 10000,
     unit_price: 500,
   };
+
+  test("renders a hidden, unnamed slider stepping one whole unit", () => {
+    const html = renderPayMoreInput(listing);
+    const slider = html.match(/<input type="range"[^>]*>/)![0];
+    expectIncludesAll(slider, [
+      "data-price-slider",
+      'step="100"',
+      'min="500"',
+      'max="10000"',
+      'value="500"',
+      "hidden",
+    ]);
+    assert(!slider.includes("name="));
+  });
+
+  test("floors the slider minimum and ceils its maximum to whole units", () => {
+    const html = renderPayMoreInput({
+      ...listing,
+      max_price: 4050,
+      unit_price: 250,
+    });
+    expectIncludesAll(html, [
+      'min="200"',
+      'max="4100"',
+      'data-min="250"',
+      'data-max="4050"',
+      'data-places="2"',
+    ]);
+  });
+
+  test("steps by one yen for a zero-decimal currency", async () => {
+    const html = await withSetting({ currency: "JPY" }, () =>
+      renderPayMoreInput(listing),
+    );
+    expectIncludesAll(html, ['step="1"', 'data-places="0"']);
+  });
+
+  test("starts the slider at the prefill", () => {
+    const html = renderPayMoreInput(listing, "custom_price", 2500);
+    assertStringIncludes(html, 'value="2500" data-min');
+  });
+
+  test("omits the slider when there is nothing to slide", () => {
+    const html = renderPayMoreInput({ ...listing, max_price: 500 });
+    assert(!html.includes("data-price-slider"));
+    assert(!html.includes("price-slider-box"));
+  });
+
+  test("keeps the text input as the submitted field", () => {
+    const html = renderPayMoreInput(listing);
+    expectIncludesAll(html, [
+      'name="custom_price"',
+      'inputmode="decimal"',
+      'value="5.00"',
+    ]);
+  });
 
   test("restores the submitted price on a re-render", async () => {
     const html = await withSubmittedValues({ custom_price: "25.00" }, () =>

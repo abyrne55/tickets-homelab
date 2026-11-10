@@ -32,6 +32,7 @@ import { initOrderGallery } from "./admin/order-gallery.ts";
 import { initPairedControls } from "./admin/paired-controls.ts";
 import { initPaymentResultNotifier } from "./admin/payment-result.ts";
 import { initPaymentTestButtons } from "./admin/payment-test-buttons.ts";
+import { initPriceSlider } from "./admin/price-slider.ts";
 import { initQrRefresh } from "./admin/qr-refresh.ts";
 import { initRunningTotal } from "./admin/running-total.ts";
 import { initSchemaAtlas } from "./admin/schema-atlas.ts";
@@ -53,6 +54,7 @@ initPaymentResultNotifier();
 initPaymentTestButtons();
 initQrRefresh();
 initRunningTotal();
+initPriceSlider();
 initCharCounters();
 initMarkdownPreview();
 // After the preview module so the injected editor's toggle can join the

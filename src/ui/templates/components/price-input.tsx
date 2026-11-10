@@ -25,6 +25,9 @@ const byCurrencyPlaces =
     return places === 0 ? zeroDecimal : withPlaces(places);
   };
 
+/** Minor units in one whole currency unit (100 for GBP, 1 for JPY). */
+export const minorPerMajor = (): number => 10 ** currencyPlaces();
+
 /** The `<input step>` for the active currency (see the module comment). */
 export const moneyStep = byCurrencyPlaces(
   "1",

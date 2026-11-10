@@ -61,6 +61,7 @@
   "public.ticket.vat": "Tax",
   "public.ticket.vat_included": "Includes {amount} tax.",
   "public.ticket.vat_deposit": "Full booking total: {total}, including {amount} tax. The balance is paid later.",
+  "public.ticket.price_slider_label": "Choose your price",
   "public.ticket.price_input_title": "A non-negative number (e.g. 10.00)",
   "public.ticket.agree_terms": "I agree to the terms above",
   "public.ticket.your_price_min": "Price per ticket ({min} minimum)",

@@ -5,11 +5,19 @@
 
 import { t } from "#i18n";
 import { escapeHtml } from "#jsx/escape-html.ts";
-import { formatCurrency, toMajorUnits } from "#shared/currency.ts";
+import {
+  formatCurrency,
+  getDecimalPlaces,
+  toMajorUnits,
+} from "#shared/currency.ts";
+import { settings } from "#db/settings.ts";
 import { formatDateLabel } from "#shared/date-labels.ts";
 import { savedFormValue } from "#shared/forms/saved-data.ts";
 import { renderMarkdown } from "#shared/markdown.ts";
-import { moneyPattern } from "#templates/components/price-input.tsx";
+import {
+  minorPerMajor,
+  moneyPattern,
+} from "#templates/components/price-input.tsx";
 import type { ListingWithCount } from "#types";
 import { pricedMonthsForListing } from "./quantities.ts";
 
@@ -69,6 +77,24 @@ export const renderDayCountSelector = (
        </select>`;
 };
 
+/** A range slider that mirrors the pay-more text box, in minor units so the step
+ *  is exactly one whole currency unit. It has no `name` (never submitted) and
+ *  starts hidden: the client script reveals it, so no-JS pages are unchanged. */
+const renderPriceSlider = (
+  minPrice: number,
+  maxPrice: number,
+  initial: number,
+): string => {
+  if (maxPrice <= minPrice) return "";
+  const step = minorPerMajor();
+  const sliderMin = Math.floor(minPrice / step) * step;
+  const sliderMax = Math.ceil(maxPrice / step) * step;
+  const clamped = Math.min(Math.max(initial, minPrice), maxPrice);
+  return `<input type="range" class="price-slider" data-price-slider min="${sliderMin}" max="${sliderMax}" step="${step}" value="${clamped}" data-min="${minPrice}" data-max="${maxPrice}" data-places="${getDecimalPlaces(
+    settings.currency,
+  )}" aria-label="${escapeHtml(t("public.ticket.price_slider_label"))}" hidden />`;
+};
+
 /** A price input for pay-more listings. `required` is the HTML constraint: page
  *  listings emit a required input when the minimum price is above zero, but a
  *  child's pay-more input renders non-required — the no-JS baseline emits one for
@@ -119,7 +145,10 @@ export const renderPayMoreInput = (
   const value = saved !== "" ? saved : toMajorUnits(prefillValue);
   return (
     `<label>${rangeHint}` +
-    `<input type="text" inputmode="decimal" name="${fieldName}" value="${escapeHtml(
+    renderPriceSlider(minPrice, maxPrice, prefillValue) +
+    `<input type="text" inputmode="decimal"${
+      maxPrice > minPrice ? ' class="price-slider-box"' : ""
+    } name="${fieldName}" value="${escapeHtml(
       value,
     )}" min="${escapeHtml(toMajorUnits(minPrice))}" max="${escapeHtml(
       toMajorUnits(maxPrice),
