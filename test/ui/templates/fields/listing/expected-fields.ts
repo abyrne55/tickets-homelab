@@ -300,6 +300,14 @@ export const LISTING_FIELDS = [
     type: "checkbox-group",
   },
   {
+    hint: "Shows buyers how many tickets are left on the public booking page. Has no effect on daily listings, whose capacity is per date.",
+    label: "Show tickets remaining",
+    name: "show_remaining",
+    options: [{ label: "Show how many tickets are left", value: "1" }],
+    section: "options",
+    type: "checkbox-group",
+  },
+  {
     hint: "Handled by an agent at the customer's location. Attendees gain start and end agent selectors (e.g. delivery/collection, set-up/teardown, or pickup/drop-off).",
     label: "Needs logistics",
     name: "uses_logistics",

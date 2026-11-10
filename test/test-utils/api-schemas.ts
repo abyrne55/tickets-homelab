@@ -172,6 +172,7 @@ export const AdminListingSchema = v.strictObject({
       "hidden",
       "non_transferable",
       "purchase_only",
+      "show_remaining",
       "use_defaults",
       "uses_logistics",
     ],

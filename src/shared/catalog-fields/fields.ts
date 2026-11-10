@@ -134,6 +134,7 @@ export const listingCatalogFields = {
     CATALOG_API_FORM,
   ],
   purchaseOnly: ["purchase_only", falseColumn, "boolean", CATALOG_FORM],
+  showRemaining: ["show_remaining", falseColumn, "boolean", CATALOG_API_FORM],
   thankYouUrl: [
     "thank_you_url",
     encryptedTextColumn,

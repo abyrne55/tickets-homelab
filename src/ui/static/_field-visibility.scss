@@ -134,6 +134,7 @@ form.listing-form--templated.listing-form--no-daily:not(
 @include hide-when-using-defaults("webhook-url", "webhook_url");
 @include hide-when-using-defaults("thank-you-url", "thank_you_url");
 @include hide-when-using-defaults("hidden", "hidden");
+@include hide-when-using-defaults("show-remaining", "show_remaining");
 
 // Hide the max price field unless "Allow Pay More" is checked.
 @include reveal-when-checked("can_pay_more", 'label:has([name="max_price"])');

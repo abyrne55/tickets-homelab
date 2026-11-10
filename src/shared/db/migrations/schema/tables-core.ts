@@ -115,6 +115,7 @@ export const coreTables: [name: string, table: Table][] = [
         ["uses_logistics", wholeNumberStartingAtZero],
         ["use_defaults", wholeNumberStartingAtZero],
         ["bookable_alone", wholeNumberStartingAtZero],
+        ["show_remaining", wholeNumberStartingAtZero],
         // Precomputed counts over listing_attendees, maintained by the
         // LISTING_AGGREGATE_TRIGGERS so listing reads and the active-listing
         // stats never COUNT the listing_attendees table. booked_quantity is

@@ -65,6 +65,13 @@ describe("ticketPage (single listing)", () => {
     ]);
   });
 
+  test("shows tickets left only when the listing opts in", async () => {
+    const on = await renderTicket({ ...listing, show_remaining: true });
+    assertStringIncludes(on, "tickets-remaining");
+    const off = await renderTicket(listing);
+    assert(!off.includes("tickets-remaining"));
+  });
+
   test("includes CSRF token in form", async () => {
     const html = await renderTicket(listing);
     expectIncludesAll(html, [
