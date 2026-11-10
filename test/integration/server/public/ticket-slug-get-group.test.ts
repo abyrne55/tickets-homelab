@@ -43,42 +43,42 @@ describeWithEnv(
         expect(html.split("tickets-remaining").length - 1).toBe(1);
       });
 
-      test("caps each listing's tickets left by the group capacity", async () => {
+      /** G1 (capacity 25) holding L1 (own cap 1000), L2 (3) and L3 (1), all
+       * showing tickets left. `counts` reads the page's labels, sorted so row
+       * order doesn't matter. */
+      const cappedGroupScenario = async () => {
         const group = await createTestGroup({
           maxAttendees: 25,
           slug: "capped-group",
         });
-        const l1 = await createTestListing({
-          groupId: group.id,
-          maxAttendees: 1000,
-          name: "Listing One",
-          showRemaining: true,
-        });
-        await createTestListing({
-          groupId: group.id,
-          maxAttendees: 3,
-          name: "Listing Two",
-          showRemaining: true,
-        });
-        await createTestListing({
-          groupId: group.id,
-          maxAttendees: 1,
-          name: "Listing Three",
-          showRemaining: true,
-        });
+        const make = (name: string, maxAttendees: number) =>
+          createTestListing({
+            groupId: group.id,
+            maxAttendees,
+            name,
+            showRemaining: true,
+          });
+        const l1 = await make("Listing One", 1000);
+        const l2 = await make("Listing Two", 3);
+        const l3 = await make("Listing Three", 1);
         const counts = async (): Promise<string[]> => {
           const html = await (
             await handleRequest(mockRequest(`/ticket/${group.slug}`))
           ).text();
-          return [...html.matchAll(/class="tickets-remaining">([^<]+)</g)].map(
-            (match) => match[1]!,
-          );
+          return [...html.matchAll(/class="tickets-remaining">([^<]+)</g)]
+            .map((match) => match[1]!)
+            .sort();
         };
+        return { counts, l1, l2, l3 };
+      };
 
-        // (Counts are sorted, so row order doesn't matter.) Nothing sold: L1 is limited by the group's 25, the others by their own.
+      test("caps each listing's tickets left by the group capacity", async () => {
+        const { counts, l1 } = await cappedGroupScenario();
+
+        // Nothing sold: L1 is limited by the group's 25, the others by their own.
         expect(await counts()).toEqual([
-          "25 tickets left",
           "1 ticket left",
+          "25 tickets left",
           "3 tickets left",
         ]);
 
@@ -86,10 +86,25 @@ describeWithEnv(
         // its own tighter cap.
         await bookTestAttendee([{ listingId: l1.id, quantity: 2 }], "Alice");
         expect(await counts()).toEqual([
-          "23 tickets left",
           "1 ticket left",
+          "23 tickets left",
           "3 tickets left",
         ]);
+      });
+
+      test("sold-out listings drop their count while L1 tracks the shared pool", async () => {
+        const { counts, l2, l3 } = await cappedGroupScenario();
+
+        // Buy all 3 of L2 and the 1 of L3: the pool falls to 21, both sold-out
+        // rows lose their label, and L1 shows what the pool has left.
+        await bookTestAttendee(
+          [
+            { listingId: l2.id, quantity: 3 },
+            { listingId: l3.id, quantity: 1 },
+          ],
+          "Bob",
+        );
+        expect(await counts()).toEqual(["21 tickets left"]);
       });
 
       test("renders ticket page for group slug", async () => {
