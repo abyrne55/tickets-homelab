@@ -43,6 +43,55 @@ describeWithEnv(
         expect(html.split("tickets-remaining").length - 1).toBe(1);
       });
 
+      test("caps each listing's tickets left by the group capacity", async () => {
+        const group = await createTestGroup({
+          maxAttendees: 25,
+          slug: "capped-group",
+        });
+        const l1 = await createTestListing({
+          groupId: group.id,
+          maxAttendees: 1000,
+          name: "Listing One",
+          showRemaining: true,
+        });
+        await createTestListing({
+          groupId: group.id,
+          maxAttendees: 3,
+          name: "Listing Two",
+          showRemaining: true,
+        });
+        await createTestListing({
+          groupId: group.id,
+          maxAttendees: 1,
+          name: "Listing Three",
+          showRemaining: true,
+        });
+        const counts = async (): Promise<string[]> => {
+          const html = await (
+            await handleRequest(mockRequest(`/ticket/${group.slug}`))
+          ).text();
+          return [...html.matchAll(/class="tickets-remaining">([^<]+)</g)].map(
+            (match) => match[1]!,
+          );
+        };
+
+        // (Counts are sorted, so row order doesn't matter.) Nothing sold: L1 is limited by the group's 25, the others by their own.
+        expect(await counts()).toEqual([
+          "25 tickets left",
+          "1 ticket left",
+          "3 tickets left",
+        ]);
+
+        // Two sold on L1 shrink the shared pool, so L1 drops while L2 stays at
+        // its own tighter cap.
+        await bookTestAttendee([{ listingId: l1.id, quantity: 2 }], "Alice");
+        expect(await counts()).toEqual([
+          "23 tickets left",
+          "1 ticket left",
+          "3 tickets left",
+        ]);
+      });
+
       test("renders ticket page for group slug", async () => {
         const group = await createTestGroup({
           name: "Public Group",
