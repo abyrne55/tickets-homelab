@@ -3,6 +3,7 @@
  * checkbox. Each restores the buyer's just-submitted value on a validation
  * re-render. */
 
+import { settings } from "#db/settings.ts";
 import { t } from "#i18n";
 import { escapeHtml } from "#jsx/escape-html.ts";
 import {
@@ -10,7 +11,6 @@ import {
   getDecimalPlaces,
   toMajorUnits,
 } from "#shared/currency.ts";
-import { settings } from "#db/settings.ts";
 import { formatDateLabel } from "#shared/date-labels.ts";
 import { savedFormValue } from "#shared/forms/saved-data.ts";
 import { renderMarkdown } from "#shared/markdown.ts";

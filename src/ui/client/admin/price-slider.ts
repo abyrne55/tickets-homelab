@@ -12,9 +12,8 @@ const formatMinor = (minor: number, places: number): string =>
   (minor / 10 ** places).toFixed(places);
 
 const connect = (slider: HTMLInputElement): void => {
-  const box = slider.parentElement?.querySelector<HTMLInputElement>(
-    "input[type=text]",
-  );
+  const box =
+    slider.parentElement?.querySelector<HTMLInputElement>("input[type=text]");
   if (!box) return;
   const min = Number(slider.dataset.min);
   const max = Number(slider.dataset.max);

@@ -9,8 +9,8 @@ import {
 } from "#templates/public/reservations/controls.ts";
 import { expectIncludesAll } from "#test-utils/assertions.ts";
 import { reservesHint, reservesHintStart } from "#test-utils/duration-hint.ts";
-import { withSetting } from "#test-utils/settings.ts";
 import { withSubmittedValues } from "#test-utils/saved-form.ts";
+import { withSetting } from "#test-utils/settings.ts";
 
 describe("renderDateSelector", () => {
   test("escapes date values in the option value attribute", () => {
