@@ -104,7 +104,7 @@ describe("provider fetch boundary", () => {
     expect(signal?.aborted).toBe(false);
     await time.tickAsync(PROVIDER_TIMEOUT_MS / 2);
     expect(signal?.aborted).toBe(true);
-    expect((signal?.reason as DOMException).name).toBe("TimeoutError");
+    expect((signal!.reason as DOMException).name).toBe("TimeoutError");
   });
 
   test("says a provider we could not reach was unreachable", async () => {

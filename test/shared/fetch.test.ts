@@ -96,7 +96,7 @@ describe("fetchText", () => {
     const [url, init] = fetchStub.calls[0]!.args;
     expect(url).toBe("https://example.com/post");
     expect(init?.method).toBe("POST");
-    expect((init?.headers as Record<string, string>).Authorization).toBe(
+    expect((init!.headers as Record<string, string>).Authorization).toBe(
       "Bearer token",
     );
     expect(init?.body).toBe("payload");

@@ -280,7 +280,7 @@ export const bookedSpanDays = (
   const diffDays = Math.round(
     (new Date(endIso).getTime() - new Date(startIso).getTime()) / DAY_MS,
   );
-  return diffDays > 1 ? diffDays : 1;
+  return Math.max(diffDays, 1);
 };
 
 /** The dated entry whose booked range ends last — the stay covering a whole
