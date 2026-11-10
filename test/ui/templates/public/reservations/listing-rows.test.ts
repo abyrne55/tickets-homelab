@@ -7,6 +7,7 @@ import { t } from "#i18n";
 import { buildPageTree } from "#templates/public/reservations/availability.ts";
 import {
   buildPageListingRows,
+  fixedPriceLabel,
   remainingLabel,
   renderListingDescription,
   soldOutLabel,
@@ -79,6 +80,55 @@ describe("remainingLabel and tickets-left rows", () => {
   });
 });
 
+describe("fixedPriceLabel and priced rows", () => {
+  const priced = (price: number, over = {}) =>
+    tl(1, 10, { name: "Priced", slug: "pr12c", unit_price: price, ...over });
+  const hasPrice = (html: string) => html.includes('class="ticket-price"');
+
+  test("shows the price on a multi-listing row", () => {
+    const html = renderRows({ listings: [priced(1250)] });
+    assertStringIncludes(html, '<span class="ticket-price">£12.50</span>');
+    assertStringIncludes(html, 'class="ticket-row-head"');
+  });
+
+  test("shows the price on a radio card", () => {
+    const html = renderRows({
+      listings: [priced(1250)],
+      singleTicket: true,
+    });
+    assertStringIncludes(html, "ticket-choice-input");
+    assertStringIncludes(html, '<span class="ticket-price">£12.50</span>');
+  });
+
+  test("shows the price on a single-listing page", () => {
+    assertStringIncludes(
+      renderRows({ isSingleListing: true, listings: [priced(1250)] }),
+      '<span class="ticket-price">£12.50</span>',
+    );
+  });
+
+  test("shows Free at zero", () => {
+    assertStringIncludes(
+      renderRows({ listings: [priced(0)] }),
+      '<span class="ticket-price">Free</span>',
+    );
+  });
+
+  test("is empty for pay-what-you-want, customisable-days and renewal", () => {
+    expect(fixedPriceLabel(priced(500, { can_pay_more: true }))).toBe("");
+    expect(fixedPriceLabel(priced(500, { customisable_days: true }))).toBe("");
+    expect(fixedPriceLabel(priced(500), true)).toBe("");
+    assert(!hasPrice(renderRows({ listings: [priced(500)], renewal: true })));
+  });
+
+  test("is absent from sold-out and closed rows", () => {
+    const soldOut = { ...priced(500), isSoldOut: true, maxPurchasable: 0 };
+    assert(!hasPrice(renderRows({ listings: [soldOut] })));
+    const closed = { ...priced(500), isClosed: true, maxPurchasable: 0 };
+    assert(!hasPrice(renderRows({ listings: [closed] })));
+  });
+});
+
 describe("renderListingDescription", () => {
   test("wraps a description in the compact prose block", () => {
     expect(renderListingDescription("Hello there")).toBe(
@@ -116,6 +166,7 @@ type RowOptions = {
   /** A renewal page prices its counts by months per unit. */
   renewal?: boolean;
   singlePackagePage?: boolean;
+  singleTicket?: boolean;
   /** Members of a package that the cart also added by their own slug. */
   standaloneListingIds?: ReadonlySet<number>;
 };
@@ -129,6 +180,7 @@ const renderRows = ({
   prefill,
   renewal,
   singlePackagePage = false,
+  singleTicket,
   ...rest
 }: RowOptions): string => {
   const { rows, standaloneRowIds } = buildPageTree(
@@ -155,6 +207,7 @@ const renderRows = ({
     renewal,
     rows,
     singlePackagePage,
+    singleTicket,
     standaloneRowIds,
   });
 };

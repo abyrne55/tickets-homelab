@@ -22,6 +22,7 @@ import type {
 import { t } from "#i18n";
 import { escapeHtml } from "#jsx/escape-html.ts";
 import { SINGLE_TICKET_FIELD } from "#shared/booking/single-ticket-groups.ts";
+import { formatCurrency } from "#shared/currency.ts";
 import { savedFormValue } from "#shared/forms/saved-data.ts";
 import { renderMarkdown } from "#shared/markdown.ts";
 import { renderListingAttributes } from "#templates/public/listing-attributes.ts";
@@ -55,6 +56,23 @@ export const remainingLabel = (info: TicketListing): string =>
   info.listing.show_remaining && info.spotsRemaining !== undefined
     ? `<span class="tickets-remaining">${t("public.tickets_remaining", { count: info.spotsRemaining })}</span>`
     : "";
+
+/** The fixed per-ticket price shown on a bookable card ("Free" at zero).
+ * Empty where the price is not a single fixed figure: pay-what-you-want
+ * listings show their own input, and customisable-days and renewal pages price
+ * by a chosen span or count. */
+export const fixedPriceLabel = (
+  info: TicketListing,
+  renewal?: boolean,
+): string => {
+  const { listing } = info;
+  if (listing.can_pay_more || listing.customisable_days || renewal) return "";
+  const text =
+    listing.unit_price > 0
+      ? formatCurrency(listing.unit_price)
+      : t("availability.free");
+  return `<span class="ticket-price">${escapeHtml(text)}</span>`;
+};
 
 /** Render each ticket entry to its HTML row and join the rows into one string. */
 const joinRenderedRows = <T>(
@@ -212,7 +230,7 @@ const renderListingRow: RenderListingControls = (
     return `
     <label class="ticket-row ticket-choice">
       ${imageHtml}
-      <span class="ticket-choice-name">${quantityHtml}${escapeHtml(listing.name)}</span>
+      <span class="ticket-row-head"><span class="ticket-choice-name">${quantityHtml}${escapeHtml(listing.name)}</span>${fixedPriceLabel(info, renewal)}</span>
       ${remainingLabel(info)}
       ${renderListingDescription(listing.description)}
       ${attributesHtml}
@@ -226,7 +244,7 @@ const renderListingRow: RenderListingControls = (
   return `
     <div class="ticket-row">
       ${imageHtml}
-      <label>${escapeHtml(listing.name)}${quantityHtml}</label>
+      <div class="ticket-row-head"><label>${escapeHtml(listing.name)}${quantityHtml}</label>${fixedPriceLabel(info, renewal)}</div>
       ${remainingLabel(info)}
       ${renderListingDescription(listing.description)}
       ${attributesHtml}
@@ -356,7 +374,7 @@ const renderSingleListingControls: RenderListingControls = (
   const labelledQuantity = hideQuantity
     ? controls.quantityHtml
     : `<label>${monthsQuantity(info.listing, renewal)}${controls.quantityHtml}</label>`;
-  return `${labelledQuantity}${remainingLabel(info)}${controls.priceHtml}${controls.termNote}${controls.childBlock}`;
+  return `${fixedPriceLabel(info, renewal)}${labelledQuantity}${remainingLabel(info)}${controls.priceHtml}${controls.termNote}${controls.childBlock}`;
 };
 
 /** Render the per-listing rows (with their child blocks). A single-listing page
