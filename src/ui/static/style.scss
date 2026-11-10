@@ -1197,6 +1197,25 @@ label > textarea {
   width: 100%;
 }
 
+/* Pay-what-you-want slider beside its synced number box. The slider is
+   revealed by script; without it the label looks as it always did. */
+label:has(> .price-slider:not([hidden])) {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem;
+
+  > .price-slider {
+    flex: 1 1 8rem;
+    min-width: 0;
+  }
+
+  > .price-slider-box {
+    flex: 0 0 auto;
+    width: 8ch;
+  }
+}
+
 /* Popups */
 dialog {
   max-width: 90%;
