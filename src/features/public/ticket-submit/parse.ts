@@ -11,7 +11,7 @@ import {
   packageBundleMembers,
   packageBundleMinError,
 } from "#booking/min-refusal.ts";
-import { quantityBelowMin } from "#booking/model.ts";
+import { quantityBelowMin, type TicketListing } from "#booking/model.ts";
 import {
   aggregateNodeQuantities,
   nodeQuantitiesFor,
@@ -39,6 +39,7 @@ import {
   REGISTRATION_CLOSED_SUBMIT_MESSAGE,
   type TicketCtx,
 } from "#routes/public/types.ts";
+import { SINGLE_TICKET_FIELD } from "#shared/booking/single-ticket-groups.ts";
 import type { FormParams } from "#shared/form-data.ts";
 import { getTicketFieldsSetting } from "#shared/listing-fields.ts";
 import type { CheckoutIntent } from "#shared/payments.ts";
@@ -293,6 +294,24 @@ const ctxPackageLimit = (
     ),
   );
 
+/** On a one-ticket-per-order group page, the buyer's radio choice as a
+ * quantity map (that listing 1, every other 0). A missing or foreign value
+ * yields undefined, so the page's ordinary quantity inputs apply (a page with
+ * a single available listing posts a hidden quantity instead of a radio). */
+const singleTicketChoice = (
+  form: FormParams,
+  ctx: PageSubmitArgs[1],
+  listings: readonly TicketListing[],
+): Map<number, number> | undefined => {
+  if (ctx.singleTicketGroupId === undefined) return undefined;
+  const chosen = Number(form.get(SINGLE_TICKET_FIELD));
+  const offered = listings.some(
+    ({ listing, isSoldOut, isClosed }) =>
+      listing.id === chosen && !isSoldOut && !isClosed,
+  );
+  return offered ? new Map([[chosen, 1]]) : undefined;
+};
+
 /**
  * Resolve the page listings' quantities from the form. Listings no package
  * books keep their own `quantity_<id>` inputs. For each package the buyer
@@ -309,10 +328,12 @@ export const resolvePageQuantities = (
   // Listings with a standalone node keep their own quantity_<id> input — every
   // non-member, plus any member the cart also added by its own slug.
   const standaloneIds = standaloneListingIds(tree);
-  const standaloneQuantities = parseQuantities(
-    form,
-    ctx.listings.filter((info) => standaloneIds.has(info.listing.id)),
+  const standaloneListings = ctx.listings.filter((info) =>
+    standaloneIds.has(info.listing.id),
   );
+  const standaloneQuantities =
+    singleTicketChoice(form, ctx, standaloneListings) ??
+    parseQuantities(form, standaloneListings);
   const packageCounts = new Map(
     ctx.packages.map((pkg) => [
       pkg.groupId,

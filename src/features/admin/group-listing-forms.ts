@@ -22,6 +22,7 @@ import {
 } from "#routes/response.ts";
 import { entityReturnPath } from "#shared/admin-pages.ts";
 import { adminPattern } from "#shared/admin-surface.ts";
+import { singleTicketMemberError } from "#shared/booking/single-ticket-groups.ts";
 import { xCount } from "#shared/count-text.ts";
 import { commaParts } from "#shared/split.ts";
 import { parsePositiveInt } from "#shared/validation/number.ts";
@@ -50,6 +51,11 @@ const packageListingError = async (
       group.hide_package_listings,
     );
     if (packageError) return packageError;
+  }
+  if (group.single_ticket_per_order) {
+    return (
+      listings.map(singleTicketMemberError).find((e) => e !== null) ?? null
+    );
   }
   return null;
 };

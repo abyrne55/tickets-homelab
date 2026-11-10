@@ -191,6 +191,11 @@ export const GroupOverviewPanel = ({
             {...publicUrlRowsProps(group, shareable, allowedDomain)}
           />
           {group.hidden && <HiddenDetailRow />}
+          {group.single_ticket_per_order && (
+            <LabelledRow label={t("fields.group.single_ticket_per_order")}>
+              {t("fields.group.single_ticket_per_order_label")}
+            </LabelledRow>
+          )}
           <GroupAttendeesRow attendeeCount={totalCount} group={group} />
           <GroupAggregateMismatchRow
             attendees={attendees}

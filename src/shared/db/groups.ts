@@ -47,6 +47,10 @@ import {
   mapParallel,
   requiredMapValue,
 } from "#fp";
+import {
+  type FlaggedGroup,
+  singleTicketRefusal,
+} from "#shared/booking/single-ticket-groups.ts";
 import { projectCatalogFields } from "#shared/catalog-fields/definition.ts";
 import {
   type GroupInput,
@@ -239,6 +243,44 @@ export const anyHiddenPackageGroup = (
   groupIds: readonly number[],
 ): Promise<boolean> =>
   anyGroupMatching(groupIds, "is_package = 1 AND hide_package_listings = 1");
+
+/** The "one ticket per order" groups that any of the given listings belong to,
+ * each with the given listings it contains. One join query; names come from
+ * the request-cached groups set. Empty input → no query. */
+export const flaggedGroupsForListings = async (
+  listingIds: readonly number[],
+): Promise<FlaggedGroup[]> => {
+  if (listingIds.length === 0) return [];
+  const rows = await queryAll<{ group_id: number; listing_id: number }>(
+    `SELECT groupListing.group_id, groupListing.listing_id
+       FROM group_listings AS groupListing
+       JOIN groups AS groupRow ON groupRow.id = groupListing.group_id
+      WHERE groupListing.listing_id IN (${inPlaceholders(listingIds)})
+        AND groupRow.single_ticket_per_order = 1
+      ORDER BY groupListing.group_id`,
+    [...listingIds],
+  );
+  if (rows.length === 0) return [];
+  const byGroup = Map.groupBy(rows, (row) => Number(row.group_id));
+  const named = await getGroupsById();
+  return [...byGroup].map(([id, members]) => ({
+    id,
+    listingIds: members.map((row) => Number(row.listing_id)),
+    name: named.get(id)?.name ?? "",
+  }));
+};
+
+/** The refusal when this order's tickets break a "one ticket per order" group,
+ * or null. `quantities` maps listing id → tickets in the order. */
+export const singleTicketOrderRefusal = async (
+  quantities: ReadonlyMap<number, number>,
+): Promise<string | null> =>
+  singleTicketRefusal(
+    quantities,
+    await flaggedGroupsForListings(
+      [...quantities].filter(([, qty]) => qty > 0).map(([id]) => id),
+    ),
+  );
 
 /** Whether any of the given listings is a member of a package group. Empty
  * input → false (no query). Used to keep a package member from being turned into

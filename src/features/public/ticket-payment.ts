@@ -320,6 +320,10 @@ const pageHiddenFor = (
     ? ticketPageHidden(activeListings, group)
     : roots.some((root) => root.hidden);
 
+/** The group page's one-ticket-per-order marker, when the group has it on. */
+const singleTicketContext = (group: Group) =>
+  group.single_ticket_per_order ? { singleTicketGroupId: group.id } : {};
+
 export const getTicketContext = async (
   activeListings: TicketListing[],
   group?: Group,
@@ -423,6 +427,7 @@ export const getTicketContext = async (
       groupDescription: group.description,
       groupImage: groupImage!,
       groupName: group.name,
+      ...singleTicketContext(group),
     }),
   };
 };

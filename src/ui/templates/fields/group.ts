@@ -56,6 +56,7 @@ const groupToggleNames = [
   "hide_package_listings",
   "scan_checks_in_all_listings",
   "show_hidden_listings",
+  "single_ticket_per_order",
 ] as const;
 type GroupToggleName = (typeof groupToggleNames)[number];
 

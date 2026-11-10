@@ -128,5 +128,10 @@ export const ENTRIES_RECENT: MigrationRegistryEntry[] = [
     "2026-11-09_listing_show_remaining",
     () => import("./2026-11-09_listing_show_remaining.ts"),
   ),
+  // Per-group "one ticket per order" limit.
+  entry(
+    "2026-11-10_group_single_ticket_per_order",
+    () => import("./2026-11-10_group_single_ticket_per_order.ts"),
+  ),
 ];
 /* jscpd:ignore-end */

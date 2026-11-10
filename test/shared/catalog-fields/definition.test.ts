@@ -39,6 +39,7 @@ describe("catalog field projection", () => {
         name: schemas.name,
         scanChecksInAllListings: schemas.boolean,
         showHiddenListings: schemas.boolean,
+        singleTicketPerOrder: schemas.boolean,
         termsAndConditions: schemas.string,
       },
     );
@@ -65,6 +66,7 @@ describe("catalog field projection", () => {
         name: "Package",
         scan_checks_in_all_listings: "1",
         show_hidden_listings: "1",
+        single_ticket_per_order: "1",
         terms_and_conditions: "Terms",
       }),
     ).toEqual({
@@ -76,6 +78,7 @@ describe("catalog field projection", () => {
       name: "Package",
       scanChecksInAllListings: true,
       showHiddenListings: true,
+      singleTicketPerOrder: true,
       termsAndConditions: "Terms",
     });
   });
@@ -217,6 +220,7 @@ describe("catalog field projection", () => {
         max_attendees: 0,
         scan_checks_in_all_listings: false,
         show_hidden_listings: true,
+        single_ticket_per_order: false,
         terms_and_conditions: "",
       }),
     ).toEqual({
@@ -227,6 +231,7 @@ describe("catalog field projection", () => {
       maxAttendees: 0,
       scanChecksInAllListings: false,
       showHiddenListings: true,
+      singleTicketPerOrder: false,
       termsAndConditions: "",
     });
   });

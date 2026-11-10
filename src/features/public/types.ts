@@ -43,6 +43,8 @@ export type TicketSharedContext = {
    * daily children. Per selectable parent span ({@link ChildDatesByDayCount}). */
   childDatesById: Map<string, ChildDatesByDayCount>;
   groupName?: string;
+  /** The group whose page this is, when it allows one ticket per order. */
+  singleTicketGroupId?: number;
   groupDescription?: string;
   groupImage?: ItemImageColumns;
   /** The header entity whose image gallery the public page renders (the group

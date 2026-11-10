@@ -550,6 +550,10 @@ export interface Group {
    * through its direct link. Ignored for packages: a bundle is one product
    * built from its members, so they always stay. */
   show_hidden_listings: boolean;
+  /** When true one order may hold at most one ticket across all of the group's
+   * member listings, whichever page or cart it came from. Public flows only;
+   * admin-created attendees are not limited. Not offered on packages. */
+  single_ticket_per_order: boolean;
   slug: string;
   slug_index: BlindIndex;
   terms_and_conditions: string;

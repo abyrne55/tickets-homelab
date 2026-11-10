@@ -54,6 +54,7 @@ const packageGroup = (member: unknown) => ({
   name: "Camping Weekend",
   package_members: [member],
   show_hidden_listings: true,
+  single_ticket_per_order: false,
   slug: "camping-weekend",
   terms_and_conditions: "",
 });

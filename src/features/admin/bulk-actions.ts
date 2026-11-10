@@ -283,6 +283,7 @@ const handleDuplicateGroupPost = groupFormPost(
       maxAttendees: group.max_attendees,
       name: newName,
       showHiddenListings: group.show_hidden_listings,
+      singleTicketPerOrder: group.single_ticket_per_order,
       slug,
       slugIndex,
       termsAndConditions: group.terms_and_conditions,

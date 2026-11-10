@@ -150,6 +150,7 @@ export const groupDataToInput = (
   name: data.name,
   scanChecksInAllListings: data.scanChecksInAllListings,
   showHiddenListings: data.showHiddenListings,
+  singleTicketPerOrder: data.singleTicketPerOrder,
   slug,
   slugIndex,
   termsAndConditions: data.termsAndConditions,

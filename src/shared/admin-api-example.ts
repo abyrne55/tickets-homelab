@@ -117,6 +117,7 @@ const ADMIN_API_EXAMPLE_GROUP = {
   max_attendees: 50,
   name: "Summer Series",
   show_hidden_listings: true,
+  single_ticket_per_order: false,
   slug: "summer-series",
   terms_and_conditions: "",
 };

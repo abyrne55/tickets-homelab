@@ -21,6 +21,8 @@ import type {
 } from "#db/attributes.ts";
 import { t } from "#i18n";
 import { escapeHtml } from "#jsx/escape-html.ts";
+import { SINGLE_TICKET_FIELD } from "#shared/booking/single-ticket-groups.ts";
+import { savedFormValue } from "#shared/forms/saved-data.ts";
 import { renderMarkdown } from "#shared/markdown.ts";
 import { renderListingAttributes } from "#templates/public/listing-attributes.ts";
 import { renderListingImage } from "#templates/public/shared.tsx";
@@ -60,6 +62,25 @@ const joinRenderedRows = <T>(
   renderRow: (entry: T) => string,
 ): string => entries.map(renderRow).join("");
 
+/** The radio a one-ticket-per-order group page offers in place of a quantity
+ * select, or undefined for any other page. Every card shares one name, so the
+ * buyer picks at most one listing; the server maps the choice to quantity 1.
+ * A listing that cannot sell a single ticket (minimum above one) keeps its
+ * select, and the checked state survives a validation re-render. */
+const singleTicketRadio = (
+  listingId: number,
+  singleTicket: boolean | undefined,
+  maxPurchasable: number,
+  minQuantity: number,
+): string | undefined =>
+  singleTicket && maxPurchasable >= 1 && minQuantity <= 1
+    ? `<input type="radio" name="${SINGLE_TICKET_FIELD}" value="${listingId}" class="ticket-choice-input"${
+        savedFormValue(SINGLE_TICKET_FIELD) === String(listingId)
+          ? " checked"
+          : ""
+      } />`
+    : undefined;
+
 /** Render quantity selector for an listing row.
  *
  * An optional per-listing `prefill` pre-selects the quantity (clamped to the
@@ -72,6 +93,7 @@ const listingControls = (
   prefill: TicketPrefill | undefined,
   childCtx: ChildRenderCtx | undefined,
   renewal?: boolean | undefined,
+  singleTicket?: boolean | undefined,
 ): {
   childBlock: string;
   priceHtml: string;
@@ -79,7 +101,10 @@ const listingControls = (
   termNote: string;
 } => {
   const { listing } = info;
-  const maxPurchasable = childLimitedMax(info, childCtx);
+  // A one-ticket-per-order group never offers more than one ticket.
+  const maxPurchasable = singleTicket
+    ? Math.min(childLimitedMax(info, childCtx), 1)
+    : childLimitedMax(info, childCtx);
   const fieldName = nodeQuantityFieldName(node)!;
   const priceFieldName = nodePriceFieldName(node)!;
   return {
@@ -95,7 +120,13 @@ const listingControls = (
       : "",
     quantityHtml: hideQuantity
       ? `<input type="hidden" name="${fieldName}" value="1" />`
-      : `<select name="${fieldName}">${quantityOptions(
+      : (singleTicketRadio(
+          listing.id,
+          singleTicket,
+          maxPurchasable,
+          listing.min_quantity,
+        ) ??
+        `<select name="${fieldName}">${quantityOptions(
           maxPurchasable,
           restoredQuantity(
             listing.id,
@@ -105,7 +136,7 @@ const listingControls = (
           ),
           monthLabelsForListing(listing, renewal),
           listing.min_quantity,
-        )}</select>`,
+        )}</select>`),
     termNote: termNoteFor(listing, hideQuantity, renewal),
   };
 };
@@ -120,6 +151,7 @@ type RenderListingControls = (
   childCtx?: ChildRenderCtx,
   attributes?: AttributeWithOptions[],
   renewal?: boolean,
+  singleTicket?: boolean,
 ) => string;
 const renderListingRow: RenderListingControls = (
   info,
@@ -129,6 +161,7 @@ const renderListingRow: RenderListingControls = (
   childCtx,
   attributes,
   renewal,
+  singleTicket,
 ): string => {
   const { listing, isClosed } = info;
   const imageHtml = renderListingImage(listing);
@@ -168,7 +201,27 @@ const renderListingRow: RenderListingControls = (
     prefill,
     childCtx,
     renewal,
+    singleTicket,
   );
+
+  if (
+    singleTicket &&
+    !hideQuantity &&
+    quantityHtml.startsWith('<input type="radio"')
+  ) {
+    return `
+    <label class="ticket-row ticket-choice">
+      ${imageHtml}
+      <span class="ticket-choice-name">${quantityHtml}${escapeHtml(listing.name)}</span>
+      ${remainingLabel(info)}
+      ${renderListingDescription(listing.description)}
+      ${attributesHtml}
+      ${priceHtml}
+      ${termNote}
+      ${childBlock}
+    </label>
+  `;
+  }
 
   return `
     <div class="ticket-row">
@@ -319,6 +372,7 @@ const buildListingRows = (
   childCtxFor: (info: TicketListing) => ChildRenderCtx | undefined,
   attributesByListing: ListingAttributesById = new Map(),
   renewal?: boolean,
+  singleTicket?: boolean,
 ): string =>
   isSingleListing
     ? renderSingleListingControls(
@@ -330,17 +384,28 @@ const buildListingRows = (
         undefined,
         renewal,
       )
-    : joinRenderedRows(rows, ({ info, node }) =>
-        renderListingRow(
-          info,
-          node,
-          hideQuantity,
-          prefill?.listings.get(info.listing.id),
-          childCtxFor(info),
-          attributesByListing.get(info.listing.id),
-          renewal,
+    : wrapSingleTicketRows(
+        joinRenderedRows(rows, ({ info, node }) =>
+          renderListingRow(
+            info,
+            node,
+            hideQuantity,
+            prefill?.listings.get(info.listing.id),
+            childCtxFor(info),
+            attributesByListing.get(info.listing.id),
+            renewal,
+            singleTicket,
+          ),
         ),
+        singleTicket && !hideQuantity,
       );
+
+/** A one-ticket-per-order group page wraps its cards in one container under a
+ * short note; the stylesheet highlights the chosen card and dims the rest. */
+const wrapSingleTicketRows = (rowsHtml: string, single?: boolean): string =>
+  single
+    ? `<div class="ticket-choices"><p class="ticket-choices-note">${t("public.single_ticket_note")}</p>${rowsHtml}</div>`
+    : rowsHtml;
 
 /** Build the page's listing area. A page that IS one package (every listing a
  * member, nothing sold beside it) shows that package's count selector plus
@@ -359,6 +424,8 @@ export const buildPageListingRows = (opts: {
   renewal?: boolean | undefined;
   /** Every page listing with its booking node, in page order. */
   rows: readonly PageListingRow[];
+  /** Offer radio cards: the page is a one-ticket-per-order group. */
+  singleTicket?: boolean | undefined;
   singlePackagePage: boolean;
   standaloneRowIds: ReadonlySet<number>;
 }): string => {
@@ -433,6 +500,7 @@ export const buildPageListingRows = (opts: {
         claimedChildParents.has(info.listing.id) ? undefined : opts.childCtx,
       attributesByListing,
       opts.renewal,
+      opts.singleTicket,
     )
   );
 };
