@@ -311,7 +311,7 @@ const ADMIN_API_EXAMPLE_ATTENDEE = {
   special_instructions: "Vegetarian",
   split_logistics_agents: false,
   status_id: 3,
-  ticket_token: "tok_9f3c7a1b",
+  ticket_token: "tok_9f3c7a1b", // notsecret
   webhooks_pending: 0,
 } satisfies AdminApiAttendee;
 
