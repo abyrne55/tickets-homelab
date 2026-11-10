@@ -2,6 +2,7 @@ import { buildBookingTree } from "#booking/build-tree.ts";
 import type { FoldBase, FoldChildrenResult } from "#booking/fold-tree.ts";
 import { buildOrderLines, nodeQuantitiesFor } from "#booking/order-lines.ts";
 import type { BookingTree } from "#booking/tree.ts";
+import { singleTicketOrderRefusal } from "#db/groups.ts";
 import { apiError } from "#routes/api/cors.ts";
 import {
   bookingSuccessResponse,
@@ -178,6 +179,8 @@ export const foldAndBuildOrderLines = async (
 > => {
   const fold = await foldSelectedChildren(ctx, form, base, tree);
   if (!fold.ok) return apiError(fold.error);
+  const singleTicketError = await singleTicketOrderRefusal(fold.quantities);
+  if (singleTicketError) return apiError(singleTicketError);
   // The JSON API sells ordinary purchases: the web renewal page is the only
   // surface that carries a renewal context.
   const items = buildOrderLines(

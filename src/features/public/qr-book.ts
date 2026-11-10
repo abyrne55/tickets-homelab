@@ -9,6 +9,7 @@
 
 import { buildTicketListing, quantityBelowMin } from "#booking/model.ts";
 import { getGroupRemainingForListing } from "#db/attendees/capacity/groups.ts";
+import { singleTicketOrderRefusal } from "#db/groups.ts";
 import { getActiveHolidays } from "#db/holidays.ts";
 import { anyNonStandaloneChild, listingChildren } from "#db/listing-parents.ts";
 import { getListingWithCountBySlug } from "#db/listings/records.ts";
@@ -74,6 +75,11 @@ const canSkipToCheckout = async (
   // The same staleness runs the other way: the owner can lower the maximum,
   // and an older token then carries a quantity the listing no longer sells.
   if (payload.q > listing.max_quantity) return false;
+  // A group that allows one ticket per order refuses a larger signed quantity;
+  // the booking form shows the refusal instead of skipping to checkout.
+  if (await singleTicketOrderRefusal(new Map([[listing.id, payload.q]]))) {
+    return false;
+  }
   // Customisable listings are priced by a chosen day count, so the visitor must
   // pass through the booking form to select it — never skip to a fixed price.
   if (listing.customisable_days) return false;

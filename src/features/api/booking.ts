@@ -1,5 +1,6 @@
 import { bookingError } from "#booking/form.ts";
 import { quantityBelowMin } from "#booking/model.ts";
+import { singleTicketOrderRefusal } from "#db/groups.ts";
 import { getActiveHolidays } from "#db/holidays.ts";
 import { anyNonStandaloneChild } from "#db/listing-parents.ts";
 import { apiError } from "#routes/api/cors.ts";
@@ -62,6 +63,10 @@ const resolveQuantityAndDate = async (
   if (quantity > listing.max_quantity) {
     return apiError(bookingError.aboveMaximumQuantity(listing.max_quantity));
   }
+  const singleTicketError = await singleTicketOrderRefusal(
+    new Map([[listing.id, quantity]]),
+  );
+  if (singleTicketError) return apiError(singleTicketError);
   if (!countsPerDate(listing.listing_type)) {
     return { date: null, quantity };
   }

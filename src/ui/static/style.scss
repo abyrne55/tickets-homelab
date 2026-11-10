@@ -3202,6 +3202,45 @@ a.cal-day-selected:active {
   color: var(--color-text-secondary);
 }
 
+// One-ticket-per-order group page: each listing is a radio card. The radio
+// stays focusable but is visually hidden; the chosen card is highlighted and
+// the others dim. Pure CSS, no JavaScript.
+.ticket-choices-note {
+  font-weight: bold;
+  margin: 0 0 var(--space-s) 0;
+}
+
+.ticket-choice {
+  border: 2px solid transparent;
+  border-radius: 0.5rem;
+  cursor: pointer;
+  display: block;
+  padding: var(--space-s);
+}
+
+.ticket-choice-input {
+  block-size: 1px;
+  clip-path: inset(50%);
+  inline-size: 1px;
+  overflow: hidden;
+  position: absolute;
+  white-space: nowrap;
+}
+
+.ticket-choice:has(input:checked) {
+  background: var(--color-accent);
+  border-color: var(--color-link);
+}
+
+.ticket-choice:has(input:focus-visible) {
+  outline: 3px solid var(--color-link);
+  outline-offset: 2px;
+}
+
+.ticket-choices:has(input:checked) .ticket-choice:not(:has(input:checked)) {
+  opacity: 0.55;
+}
+
 .tickets-remaining {
   display: block;
   font-size: 0.85rem;

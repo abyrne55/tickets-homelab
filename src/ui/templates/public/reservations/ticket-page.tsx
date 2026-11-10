@@ -156,6 +156,7 @@ export const ticketPage = ({
   groupName,
   groupDescription,
   groupImage,
+  singleTicketGroupId,
   galleryImages = [],
   prefill,
   actionUrl,
@@ -262,6 +263,7 @@ export const ticketPage = ({
     renewal: renewal === true,
     rows,
     singlePackagePage,
+    singleTicket: singleTicketGroupId !== undefined,
     standaloneRowIds,
   });
 

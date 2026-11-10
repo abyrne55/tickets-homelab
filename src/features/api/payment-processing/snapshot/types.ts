@@ -1,3 +1,4 @@
+import type { FlaggedGroup } from "#shared/booking/single-ticket-groups.ts";
 import type { ModifierSpec } from "#shared/payments.ts";
 import type { RegistrationPackageFacts } from "#shared/registration-package-facts.ts";
 import type { BookingLedgerDisposition } from "#shared/session-ledger.ts";
@@ -11,6 +12,8 @@ export interface PaidOrderSnapshot {
   notificationPackages: RegistrationPackageFacts;
   parentsByChildId: ReadonlyMap<number, number[]>;
   publicStatusId: number;
+  /** The one-ticket-per-order groups the order's listings belong to. */
+  singleTicketGroups: FlaggedGroup[];
 }
 
 export interface SnapshotGroupRow {

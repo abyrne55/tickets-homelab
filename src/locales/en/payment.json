@@ -8,6 +8,7 @@
   "payment.pay_now": "Pay Now",
   "payment.success.title_paid": "Payment Successful",
   "payment.failure.refunded": "Your payment has been automatically refunded.",
+  "payment.failure.single_ticket_per_order": "{name} allows one ticket per order.",
   "payment.failure.below_minimum": "Sorry, this listing sells at least {min_quantity} tickets per booking.",
   "payment.failure.below_minimum_named": "Sorry, {name} sells at least {min_quantity} tickets per booking.",
   "payment.failure.above_maximum": "Sorry, this listing sells at most {max_quantity, plural, one {1 ticket} other {# tickets}} per booking.",

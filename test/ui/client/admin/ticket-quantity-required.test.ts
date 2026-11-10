@@ -132,3 +132,33 @@ describe("ticket quantity required", () => {
     );
   });
 });
+
+describe("ticket quantity required with radio cards", () => {
+  const dom = createDomInstaller();
+  afterEach(() => dom.cleanup());
+
+  const submitted = (html: string) => {
+    const window = dom.installDom(html);
+    const form = window.document.querySelector("form")!;
+    initTicketQuantityRequired();
+    const event = new window.Event("submit", { cancelable: true });
+    form.dispatchEvent(event);
+    return event.defaultPrevented;
+  };
+
+  test("blocks submission when no radio is checked", () => {
+    expect(
+      submitted(
+        '<form><input type="radio" name="single_ticket" value="1"></form>',
+      ),
+    ).toBe(true);
+  });
+
+  test("allows submission when a radio is checked", () => {
+    expect(
+      submitted(
+        '<form><input type="radio" name="single_ticket" value="1" checked></form>',
+      ),
+    ).toBe(false);
+  });
+});

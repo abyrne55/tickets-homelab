@@ -10,6 +10,7 @@
   "public.packages": "Packages",
   "public.available_with_other": "Available as an add-on to another booking",
   "public.sold_out": "Sold Out",
+  "public.single_ticket_note": "One ticket per order",
   "public.tickets_remaining": "{count, plural, one {# ticket left} other {# tickets left}}",
   "public.registration_closed": "Registration Closed",
   "public.book_now": "Book now",

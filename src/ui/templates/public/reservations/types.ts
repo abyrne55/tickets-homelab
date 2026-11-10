@@ -93,6 +93,9 @@ export type TicketPageOptions = GroupAvailability & {
   groupName?: string;
   groupDescription?: string;
   groupImage?: ItemImageColumns;
+  /** Set on the public page of a group that allows one ticket per order: its
+   * listings render as radio cards instead of quantity selects. */
+  singleTicketGroupId?: number;
   /** The header entity's images, shown as the shared CSS gallery above the
    * form (empty ⇒ falls back to the single header image). */
   galleryImages?: readonly Image[];

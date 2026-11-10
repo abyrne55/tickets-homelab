@@ -209,6 +209,7 @@ export const testGroup = (overrides: Partial<Group> = {}): Group => ({
   name: "Test Group",
   scan_checks_in_all_listings: false,
   show_hidden_listings: true,
+  single_ticket_per_order: false,
   slug: "test-group",
   // Hand-crafted fixture stand-in for the stored blind index — test cast.
   slug_index: "test-group-index" as BlindIndex,

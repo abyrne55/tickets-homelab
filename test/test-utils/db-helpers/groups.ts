@@ -26,6 +26,16 @@ export const createGroupWithListings = async (
   return { group, listings };
 };
 
+/** The form checkboxes that are ticked, as `name: "1"` entries. */
+const checkedFields = (
+  flags: Record<string, boolean>,
+): Record<string, string> =>
+  Object.fromEntries(
+    Object.entries(flags)
+      .filter(([, on]) => on)
+      .map(([name]) => [name, "1"]),
+  );
+
 export const createTestGroup = async (
   overrides: Partial<Omit<GroupInput, "slugIndex">> = {},
 ): Promise<Group> => {
@@ -37,6 +47,7 @@ export const createTestGroup = async (
     name: overrides.name ?? "Test Group",
     scanChecksInAllListings: overrides.scanChecksInAllListings ?? false,
     showHiddenListings: overrides.showHiddenListings ?? true,
+    singleTicketPerOrder: overrides.singleTicketPerOrder ?? false,
     termsAndConditions: overrides.termsAndConditions ?? "",
   };
 
@@ -47,12 +58,13 @@ export const createTestGroup = async (
       max_attendees: String(input.maxAttendees),
       name: input.name,
       terms_and_conditions: input.termsAndConditions,
-      ...(input.hidden ? { hidden: "1" } : {}),
-      ...(input.isPackage ? { is_package: "1" } : {}),
-      ...(input.scanChecksInAllListings
-        ? { scan_checks_in_all_listings: "1" }
-        : {}),
-      ...(input.showHiddenListings ? { show_hidden_listings: "1" } : {}),
+      ...checkedFields({
+        hidden: input.hidden,
+        is_package: input.isPackage,
+        scan_checks_in_all_listings: input.scanChecksInAllListings,
+        show_hidden_listings: input.showHiddenListings,
+        single_ticket_per_order: input.singleTicketPerOrder,
+      }),
     },
     async () => {
       const { groups } = await import("#db/groups.ts");

@@ -41,6 +41,7 @@ import {
   handleRemoveListingsGet,
   handleRemoveListingsPost,
 } from "#routes/admin/group-listing-forms.ts";
+import { singleTicketGroupError } from "#shared/booking/single-ticket-groups.ts";
 import { projectCatalogFields } from "#shared/catalog-fields/definition.ts";
 import {
   type GroupInput,
@@ -113,6 +114,17 @@ export const soldHiddenPackageError = (id: number): Promise<string | null> =>
       : null;
   });
 
+/** Refuse "one ticket per order" on a package, or on a group whose member
+ * sells at least two tickets per purchase. Off, or on a brand-new group with no
+ * members, is always fine apart from the package rule. */
+const validateSingleTicketFlag: GroupValidator = async (input, id) =>
+  input.singleTicketPerOrder
+    ? singleTicketGroupError(
+        input.isPackage === true,
+        id === undefined ? [] : await getListingsByGroupId(id),
+      )
+    : null;
+
 /** Combined validation: slug uniqueness plus the package invariant. On create
  * (`id` undefined) the group has no members yet, so only the slug is checked.
  * Deleting or un-packaging a package with sold tickets is allowed for a
@@ -132,6 +144,8 @@ export const validateGroupWithPackage: GroupValidator = async (input, id) => {
   if (nameLengthError) return nameLengthError;
   const slugError = await validateGroupSlug(input, id);
   if (slugError) return slugError;
+  const singleTicketError = await validateSingleTicketFlag(input, id);
+  if (singleTicketError) return singleTicketError;
   if (id === undefined) return null;
   if (!input.isPackage) {
     const hiddenError = await soldHiddenPackageError(Number(id));

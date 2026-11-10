@@ -35,6 +35,7 @@ import {
   deactivationOrphanedAddOnError,
   listingSaveOrphanedAddOnTx,
 } from "#shared/add-on-reachability.ts";
+import { singleTicketMemberError } from "#shared/booking/single-ticket-groups.ts";
 import type { ListingInput } from "#shared/catalog-fields/fields.ts";
 import { optionalFieldsSchema } from "#shared/catalog-fields/fields-schema.ts";
 import { formatCurrency } from "#shared/currency.ts";
@@ -195,12 +196,21 @@ const validateListingGroup: ListingUpdateCheck = async (
     );
     if (!checked.ok) return checked.error;
 
-    return packageMembershipError(
+    const packageError = await packageMembershipError(
       checked.group,
       input.name,
       incompatibleByType,
       existingId,
     );
+    if (packageError) return packageError;
+    // A group that allows one ticket per order can't hold a listing that
+    // sells two or more per purchase.
+    return checked.group.single_ticket_per_order && input.minQuantity
+      ? singleTicketMemberError({
+          min_quantity: input.minQuantity,
+          name: input.name,
+        })
+      : null;
   })(groupIds);
 };
 

@@ -29,6 +29,7 @@ export const catalogTables: [name: string, table: Table][] = [
         ["hide_package_listings", wholeNumberStartingAtZero],
         ["scan_checks_in_all_listings", wholeNumberStartingAtZero],
         ["show_hidden_listings", wholeNumberStartingAtOne],
+        ["single_ticket_per_order", wholeNumberStartingAtZero],
       ],
       indexes: [
         {

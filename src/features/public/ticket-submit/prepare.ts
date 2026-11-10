@@ -10,6 +10,7 @@ import { buildBookingTree } from "#booking/build-tree.ts";
 import { buildOrderLines } from "#booking/order-lines.ts";
 import { isMemberNodeOf } from "#booking/tree.ts";
 import type { ChildAllocation } from "#db/attendee-types.ts";
+import { singleTicketOrderRefusal } from "#db/groups.ts";
 import { answerModifierQuantities } from "#db/modifier-resolve.ts";
 import { parseQuestionAnswers } from "#db/questions/parsing.ts";
 import { requiredMapValue, sum } from "#fp";
@@ -88,6 +89,8 @@ export const prepareOrder = async (
   if (totalQuantity === 0) {
     return { error: "Please select at least one ticket", ok: false };
   }
+  const singleTicketError = await singleTicketOrderRefusal(pageQuantities);
+  if (singleTicketError) return { error: singleTicketError, ok: false };
 
   // Resolve the order's date and day-count *before* folding children, so the
   // child bookability filter and inherited durations evaluate against the real
@@ -160,6 +163,12 @@ export const prepareOrder = async (
   );
   if (!fold.ok) return { error: fold.error, ok: false };
   const { hasCustomisable, dayCount, quantities } = fold;
+  // Folded children join the order's tickets, so a child that belongs to a
+  // one-ticket group counts against it too.
+  if (fold.allocations.length > 0) {
+    const foldedRefusal = await singleTicketOrderRefusal(quantities);
+    if (foldedRefusal) return { error: foldedRefusal, ok: false };
+  }
   // A folded ctx carrying the expanded listing set drives availability, item
   // building, contact fields and free-reservation creation downstream; the
   // questionListingMap already includes child questions (loaded in

@@ -202,6 +202,12 @@ export const groupCatalogFields = {
     "boolean",
     CATALOG_API_FORM,
   ],
+  singleTicketPerOrder: [
+    "single_ticket_per_order",
+    falseColumn,
+    "boolean",
+    CATALOG_API_FORM,
+  ],
   termsAndConditions: [
     "terms_and_conditions",
     encryptedTextColumn,

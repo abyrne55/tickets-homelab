@@ -27,6 +27,7 @@ import type {
   SnapshotModifierRow,
   SnapshotRows,
 } from "#routes/api/payment-processing/snapshot/types.ts";
+import type { FlaggedGroup } from "#shared/booking/single-ticket-groups.ts";
 import type { BookingIntent } from "#shared/booking-intent.ts";
 import type { GroupListing, ListingWithCount } from "#types";
 
@@ -161,6 +162,17 @@ const snapshotStatements = (
       "SELECT id FROM attendee_statuses WHERE is_public_default = 1 ORDER BY sort_order, id",
       [],
     ),
+    // Last, so the batch's other results keep their positions: the
+    // one-ticket-per-order groups the order's listings belong to.
+    statement(
+      `SELECT groupRow.id, groupRow.name, groupListing.listing_id
+       FROM group_listings AS groupListing
+       JOIN groups AS groupRow ON groupRow.id = groupListing.group_id
+       WHERE groupRow.single_ticket_per_order = 1
+         AND ${selectIn("groupListing.listing_id", listingIds)}
+       ORDER BY groupRow.id, groupListing.listing_id`,
+      listingIds,
+    ),
   ];
 };
 
@@ -232,6 +244,24 @@ const mapGroups = async (rows: RawGroupRow[]): Promise<SnapshotGroupRow[]> =>
     name: row.name,
   }));
 
+type RawSingleTicketRow = ListingIdRow & {
+  id: number;
+  name: EnvKeyEncrypted;
+};
+
+const mapSingleTicketGroups = async (
+  rows: RawSingleTicketRow[],
+): Promise<FlaggedGroup[]> => {
+  const byGroup = Map.groupBy(rows, (row) => row.id);
+  return Promise.all(
+    [...byGroup].map(async ([id, members]) => ({
+      id,
+      listingIds: members.map((row) => row.listing_id),
+      name: await decrypt(members[0]!.name),
+    })),
+  );
+};
+
 const mapModifiers = async (
   rows: RawModifierRow[],
 ): Promise<SnapshotModifierRow[]> =>
@@ -265,6 +295,7 @@ export const loadPaidOrderSnapshot = async (
     modifierScopesResult,
     visitCountsResult,
     publicStatusesResult,
+    singleTicketResult,
   ] = await queryBatch(snapshotStatements(eventGroup, intent, contactHashes));
   const ledger = resultRows<LedgerRow>(ledgerResult!)[0]!;
   const rows: SnapshotRows = {
@@ -301,5 +332,10 @@ export const loadPaidOrderSnapshot = async (
       unitPrice: row.unit_price,
     }),
   );
-  return buildPaidOrderSnapshot(intent.modifiers, rows, dayPrices);
+  return {
+    ...buildPaidOrderSnapshot(intent.modifiers, rows, dayPrices),
+    singleTicketGroups: await mapSingleTicketGroups(
+      resultRows<RawSingleTicketRow>(singleTicketResult!),
+    ),
+  };
 };

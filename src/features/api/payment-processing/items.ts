@@ -28,6 +28,7 @@ import type {
   PaymentFailureResult,
 } from "#routes/api/webhook-types.ts";
 import { isRegistrationClosed } from "#routes/format.ts";
+import { singleTicketRefusal } from "#shared/booking/single-ticket-groups.ts";
 import type { BookingIntent } from "#shared/booking-intent.ts";
 import {
   allocatedChildIds,
@@ -245,7 +246,25 @@ const hasStaleChildSurplus = (
     snapshot.parentsByChildId,
   );
 
-export const validateAllItems = async (
+/** The failure when the signed order breaks a one-ticket-per-order group, or
+ * null. The owner can turn the limit on while a checkout is open, so the order
+ * is judged again here, before any line is charged. */
+const judgeSingleTicket = async (
+  session: ValidatedPaymentSession,
+  intent: BookingIntent,
+  snapshot: PaidOrderSnapshot,
+): Promise<PaymentFailureResult | null> => {
+  const error = singleTicketRefusal(
+    quantitiesByListingId(intent.items),
+    snapshot.singleTicketGroups,
+  );
+  const first = intent.items[0];
+  return error && first
+    ? validationFailure(session, { error, status: 410 }, first.e)
+    : null;
+};
+
+const validateLines = async (
   session: ValidatedPaymentSession,
   intent: BookingIntent,
   snapshot: PaidOrderSnapshot,
@@ -323,3 +342,13 @@ export const validateAllItems = async (
   }
   return { items: validatedItems, ok: true };
 };
+
+/** Judge the whole signed order against the current database: the
+ * one-ticket-per-order limit first, then every line. */
+export const validateAllItems = async (
+  session: ValidatedPaymentSession,
+  intent: BookingIntent,
+  snapshot: PaidOrderSnapshot,
+): Promise<{ ok: true; items: ValidatedItem[] } | PaymentFailureResult> =>
+  (await judgeSingleTicket(session, intent, snapshot)) ??
+  validateLines(session, intent, snapshot);

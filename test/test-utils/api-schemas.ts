@@ -328,7 +328,12 @@ export const PackageBookRequestSchema = v.strictObject({
 const groupEntries = {
   description: v.string(),
   ...v.entriesFromList(
-    ["hidden", "hide_package_listings", "show_hidden_listings"],
+    [
+      "hidden",
+      "hide_package_listings",
+      "show_hidden_listings",
+      "single_ticket_per_order",
+    ],
     v.boolean(),
   ),
   id: AtLeastOne,

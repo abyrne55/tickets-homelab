@@ -102,7 +102,7 @@ export const buildPaidOrderSnapshot = (
   refs: ModifierRef[],
   rows: SnapshotRows,
   dayPrices: SnapshotDayPriceRow[],
-): PaidOrderSnapshot => {
+): Omit<PaidOrderSnapshot, "singleTicketGroups"> => {
   const publicStatusId = rows.publicStatusIds[0];
   if (publicStatusId === undefined) {
     throw new Error(

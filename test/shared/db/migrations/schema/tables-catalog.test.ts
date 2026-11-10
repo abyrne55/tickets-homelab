@@ -5,7 +5,7 @@ import { jsonHash } from "#test-utils/hash.ts";
 
 test("keeps the complete catalog schema exact", async () => {
   expect(await jsonHash(catalogTables)).toBe(
-    "eb32697e7850fe4b0ec2ad6799488c5c7a863267e4e3825f642c3d8d13807c12",
+    "c58eac7e222504565a08cf472f9d81bd4cebe5357ba2839a2d42e8c22cf9a8c6",
   );
 });
 

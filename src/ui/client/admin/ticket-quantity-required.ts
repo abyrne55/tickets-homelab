@@ -12,6 +12,11 @@ type QuantityInput = HTMLSelectElement | HTMLInputElement;
 const selectedTicketQuantity = (inputs: NodeListOf<QuantityInput>): number => {
   let total = 0;
   for (const input of inputs) {
+    // A one-ticket-per-order group page offers radios: a checked one is a ticket.
+    if (input.type === "radio") {
+      if ((input as HTMLInputElement).checked) total += 1;
+      continue;
+    }
     const raw = input.value.trim();
     const value = /^\d+$/.test(raw) ? Number(raw) : 0;
     if (Number.isSafeInteger(value) && value > 0) total += value;
@@ -23,7 +28,7 @@ export const initTicketQuantityRequired = (): void => {
   const forms = document.querySelectorAll<HTMLFormElement>("form");
   for (const form of forms) {
     const qtyInputs = form.querySelectorAll<QuantityInput>(
-      '[name^="quantity_"], [name^="package_quantity_"]',
+      '[name^="quantity_"], [name^="package_quantity_"], [name="single_ticket"]',
     );
     if (qtyInputs.length === 0) continue;
 
