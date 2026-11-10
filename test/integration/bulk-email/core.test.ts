@@ -46,7 +46,8 @@ describe("bulk-email audiences and targets", () => {
   });
 
   test("targetQuery URL-encodes an attendee token", () => {
-    expect(targetQuery({ kind: "attendee", token: "abc/def+ghi" })).toBe(
+    const token = "abc/def+ghi"; // notsecret
+    expect(targetQuery({ kind: "attendee", token })).toBe(
       "?attendee=abc%2Fdef%2Bghi",
     );
   });

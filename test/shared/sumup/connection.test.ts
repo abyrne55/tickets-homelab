@@ -91,7 +91,7 @@ describe("sumup testSumupConnection", () => {
   });
 
   test("names no mode for a real sup_sk_ key, whose account decides", async () => {
-    settings.setForTest({ sumup_api_key: "sup_sk_MvxmLOl0" });
+    settings.setForTest({ sumup_api_key: "sup_sk_MvxmLOl0" }); // notsecret
     await withMerchantClient(async () => {
       const result = await sumupApi.testSumupConnection();
       expect(result.apiKey).toEqual({ valid: true });

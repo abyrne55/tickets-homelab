@@ -229,7 +229,7 @@ describeWithEnv("KEK v2 (password-bound DATA_KEY)", { db: true }, () => {
       // The racing password change commits first: row goes to v2, bound to the
       // new password.
       await settings.updateUserPassword(user.id, {
-        newPassword: "newpass67890",
+        newPassword: "newpass67890", // notsecret
         oldKekVersion: user.kek_version,
         oldPassword: "oldpass12345",
         oldPasswordHash: oldHash,

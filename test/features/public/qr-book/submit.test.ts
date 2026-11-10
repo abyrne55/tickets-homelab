@@ -46,7 +46,7 @@ describeWithEnv("QR booking submission", { db: true }, () => {
           [`quantity_${listing.id}`]: "1",
           email: "ada@example.com",
           name: "Ada",
-          qr_token: "qr1.forged.signature",
+          qr_token: "qr1.forged.signature", // notsecret
         });
         expectStripeCheckoutAtPrice(response, stripe, 500);
       });

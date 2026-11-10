@@ -665,7 +665,7 @@ describe("sendSuperuserCredentialsEmail", () => {
 
   const RECIPIENT = {
     email: validEmail("admin@example.com"),
-    password: "a1b2c3d4e5f6",
+    password: "a1b2c3d4e5f6", // notsecret
     username: "myadmin",
   };
 
