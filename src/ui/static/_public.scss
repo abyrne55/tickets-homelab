@@ -10,6 +10,19 @@
 // Included from the end of style.scss (`@include public.styles`) so it wins
 // the cascade over the base rules it refines.
 
+// Feed the base stylesheet's variables so links, notes and the rest of the
+// chrome follow the flyer palette without a rule each.
+@mixin base-colors {
+  --color-bg: var(--paper);
+  --color-bg-secondary: var(--rule);
+  --color-text: var(--ink);
+  --color-text-secondary: var(--muted);
+  --color-link: var(--plum);
+  --color-accent: var(--card);
+  --color-secondary: var(--plum);
+  --color-shadow: transparent;
+}
+
 @mixin styles {
   @font-face {
     font-display: swap;
@@ -19,7 +32,13 @@
     src: url("/fonts/figtree-latin-wght-normal.woff2") format("woff2");
   }
 
-  body[data-page-family="public"] {
+  // The palette lives on the root at the same specificity as the base
+  // stylesheet's own `:root` (0,1,0), and the body keeps the base rule's
+  // `font-family: var(--font-family)` and surface colours. Coming last in
+  // style.css, this beats the base; an operator's /custom.css, loaded after
+  // style.css, beats this, so `body { font-family: serif }` and
+  // `:root { --color-link: ... }` keep working on public pages.
+  :root:where(:has(> body[data-page-family="public"])) {
     --ink: #23192a;
     --paper: #f6f2f7;
     --card: #fff;
@@ -33,25 +52,14 @@
     --rule: #cfc3d4;
     --field-radius: 0.5rem;
     --stub-w: 7.5rem;
-    --font-display: "Figtree", system-ui, -apple-system, "Segoe UI", sans-serif;
-    --font-body: "Figtree", system-ui, -apple-system, "Segoe UI", sans-serif;
+    --font-family: "Figtree", system-ui, -apple-system, "Segoe UI", sans-serif;
 
-    // Feed the base stylesheet's variables so links, notes and the rest of the
-    // chrome follow the flyer palette without a rule each.
-    --color-bg: var(--paper);
-    --color-bg-secondary: var(--rule);
-    --color-text: var(--ink);
-    --color-text-secondary: var(--muted);
-    --color-link: var(--plum);
-    --color-accent: var(--card);
-    --color-secondary: var(--plum);
-    --color-shadow: transparent;
+    @include base-colors;
+  }
 
-    background: var(--paper);
-    color: var(--ink);
-    font-family: var(--font-body);
-
-    @include dark {
+  // Same specificity as the base dark root (0,2,0), so it wins on order.
+  @include dark-root {
+    &:where(:has(> body[data-page-family="public"])) {
       --ink: #efe8f2;
       --paper: #19141e;
       --card: #241d2b;
@@ -63,7 +71,16 @@
       --soft: #c4b9cb;
       --error: #ff8a80;
       --rule: #4a3f52;
-      background: var(--paper);
+      // Restated: the base dark root sets these at this same specificity.
+      @include base-colors;
+    }
+  }
+
+  // The base dark theme paints a gradient on body ([data-theme] body, 0,1,1);
+  // the flyer keeps flat paper.
+  body:where([data-page-family="public"]) {
+    @include dark {
+      background: var(--color-bg);
     }
   }
 
@@ -89,7 +106,6 @@
     h2,
     h3,
     legend {
-      font-family: var(--font-display);
       letter-spacing: -0.01em;
       line-height: 1.1;
     }
@@ -181,7 +197,6 @@
     // Every custom question title matches the contact field labels, whether
     // the question is a label (text, select) or a legend (radios).
     fieldset.custom-question > legend {
-      font-family: var(--font-body);
       font-size: 1rem;
       font-weight: 600;
       line-height: 1.4;
@@ -340,7 +355,6 @@
     }
 
     .ticket-name {
-      font-family: var(--font-display);
       font-size: 1.15rem;
       font-weight: 600;
       line-height: 1.2;
@@ -363,7 +377,6 @@
     }
 
     .ticket-price {
-      font-family: var(--font-display);
       font-size: 1.4rem;
       font-weight: 650;
       line-height: 1;
@@ -528,7 +541,6 @@
       border-radius: var(--field-radius);
       color: var(--on-plum);
       cursor: pointer;
-      font-family: var(--font-display);
       font-size: 1.1rem;
       font-weight: 600;
       inline-size: 100%;
@@ -638,7 +650,6 @@
     .order-summary-total th,
     .order-summary-total td {
       border-block-start: 2px dashed var(--rule);
-      font-family: var(--font-display);
       font-size: 1.25rem;
       font-weight: 650;
       padding-block-start: 0.5rem;
@@ -667,7 +678,6 @@
       block-size: 3rem;
       color: var(--on-marigold);
       display: flex;
-      font-family: var(--font-display);
       font-size: 1.6rem;
       font-weight: 650;
       inline-size: 3rem;
@@ -699,7 +709,6 @@
     }
 
     .ticket-card-name {
-      font-family: var(--font-display);
       font-size: 1.6rem;
       font-weight: 650;
       line-height: 1.1;
