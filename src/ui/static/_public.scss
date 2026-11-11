@@ -56,7 +56,8 @@
       --card: #241d2b;
       --plum: #d9aee2;
       --on-plum: #19141e;
-      --marigold: #e8a93a;
+      --marigold: #5e4617;
+      --on-marigold: #f6e4b9;
       --muted: #a99db0;
       --error: #ff8a80;
       --rule: #4a3f52;
@@ -134,7 +135,7 @@
       }
 
       p + p::before {
-        content: " \00b7  ";
+        content: " \00b7 ";
         white-space: pre;
       }
     }
@@ -172,6 +173,21 @@
       inline-size: 100%;
       margin: 0;
       padding: 0.6rem 0.75rem;
+    }
+
+    // A custom question reads the same whether it is a label (text, select)
+    // or a legend (radios).
+    label.custom-question {
+      font-family: var(--font-display);
+      font-size: 1.25rem;
+      font-weight: 600;
+      line-height: 1.1;
+    }
+
+    label.custom-question > :is(input, select, textarea) {
+      font-family: var(--font-body);
+      font-size: 1rem;
+      line-height: 1.4;
     }
 
     // The sub-label notes inside a label stay quiet.
