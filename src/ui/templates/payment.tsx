@@ -96,7 +96,13 @@ export const successPage = ({
         </div>
         {ticketUrl ? (
           <p class="actions">
-            <a class="btn" href={ticketUrl}>
+            {/* /t/ refuses framing, so inside an embed the ticket replaces the
+                host page instead of loading into the iframe. */}
+            <a
+              class="btn"
+              href={ticketUrl}
+              {...(inIframe ? { target: "_top" } : {})}
+            >
               {t(
                 ticketUrl.includes("+")
                   ? "payment.success.view_tickets"

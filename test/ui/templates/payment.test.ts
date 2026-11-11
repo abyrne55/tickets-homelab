@@ -167,6 +167,20 @@ describe("successPage", () => {
     });
   });
 
+  test("opens the ticket in the top window in iframe mode", async () => {
+    await withRequestContext(() => {
+      detectIframeMode(new URL("https://example.com/?iframe=true"));
+      const html = successPage({ ticketUrl: "/t/abc123" });
+      assertStringIncludes(html, 'href="/t/abc123" target="_top"');
+    });
+  });
+
+  test("opens the ticket in the same tab outside iframe mode", () => {
+    const html = successPage({ ticketUrl: "/t/abc123" });
+    assertStringIncludes(html, 'href="/t/abc123"');
+    assert(!html.includes("target="));
+  });
+
   test("excludes scroll-into-view marker when not in iframe mode", () => {
     const html = successPage({ ticketUrl: "/t/abc123" });
     assert(!html.includes("data-scroll-into-view"));
