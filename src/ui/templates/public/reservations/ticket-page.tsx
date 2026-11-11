@@ -51,7 +51,7 @@ import {
   splitChildQuestions,
 } from "./day-config.ts";
 import { TicketPageForm, TicketPageHeader } from "./form.tsx";
-import { buildPageListingRows } from "./listing-rows.ts";
+import { buildPageListingRows, fixedPriceLabel } from "./listing-rows.ts";
 import { ticketPageHeadExtra } from "./og-tags.ts";
 import type { TicketPageOptions } from "./types.ts";
 
@@ -302,6 +302,11 @@ export const ticketPage = ({
           headerName={headerName}
           listingAttributes={listingAttributes}
           pastDays={pastDays}
+          priceHtml={
+            isSingleListing && rows[0]
+              ? fixedPriceLabel(rows[0].info, renewal === true)
+              : ""
+          }
           singleListing={singleListing}
         />
       )}

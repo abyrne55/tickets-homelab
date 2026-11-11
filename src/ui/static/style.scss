@@ -3241,6 +3241,33 @@ a.cal-day-selected:active {
   opacity: 0.55;
 }
 
+.ticket-row-head {
+  align-items: baseline;
+  display: flex;
+  gap: var(--space-s);
+  justify-content: space-between;
+}
+
+.ticket-price {
+  flex-shrink: 0;
+  font-weight: bold;
+  white-space: nowrap;
+}
+
+// On a single-listing page the price shares the title's row, smaller than it.
+.ticket-title-row {
+  max-inline-size: var(--width-card-wide);
+  margin-block-end: var(--space-s);
+
+  h1 {
+    margin: 0;
+  }
+
+  .ticket-price {
+    font-size: 1.25rem;
+  }
+}
+
 .tickets-remaining {
   display: block;
   font-size: 0.85rem;

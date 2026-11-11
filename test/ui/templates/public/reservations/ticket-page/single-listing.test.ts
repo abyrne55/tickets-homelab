@@ -72,6 +72,24 @@ describe("ticketPage (single listing)", () => {
     assert(!off.includes("tickets-remaining"));
   });
 
+  test("shows a fixed price beside the title, once", async () => {
+    const html = await renderTicket({ ...listing, unit_price: 1250 });
+    assertStringIncludes(
+      html,
+      '<div class="ticket-row-head ticket-title-row"><h1>Test Listing</h1><span class="ticket-price">',
+    );
+    expect(html.split('class="ticket-price"').length - 1).toBe(1);
+  });
+
+  test("shows no header price for a pay-what-you-want listing", async () => {
+    const html = await renderTicket({
+      ...listing,
+      can_pay_more: true,
+      unit_price: 1250,
+    });
+    assert(!html.includes('class="ticket-price"'));
+  });
+
   test("includes CSRF token in form", async () => {
     const html = await renderTicket(listing);
     expectIncludesAll(html, [
