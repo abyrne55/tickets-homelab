@@ -246,7 +246,6 @@ export const TicketPageForm = ({
       {prefill?.token && (
         <input name="qr_token" type="hidden" value={prefill.token} />
       )}
-      <Raw html={renderFields(fields, fieldValues)} />
       {hasDaily && dates && (
         <Raw
           html={renderDateSelector(
@@ -267,6 +266,8 @@ export const TicketPageForm = ({
         listingRows={listingRows}
       />
 
+      {/* Contact details come after the ticket choice, then any questions. */}
+      <Raw html={renderFields(fields, fieldValues)} />
       {questions &&
         questions.length > 0 &&
         renderQuestions(questions, questionListingMap)}

@@ -28,6 +28,7 @@
     --marigold: #e9a23b;
     --on-marigold: #23192a;
     --muted: #6c6173;
+    --soft: #4a3f52;
     --error: #b3261e;
     --rule: #cfc3d4;
     --field-radius: 0.5rem;
@@ -59,6 +60,7 @@
       --marigold: #5e4617;
       --on-marigold: #f6e4b9;
       --muted: #a99db0;
+      --soft: #c4b9cb;
       --error: #ff8a80;
       --rule: #4a3f52;
       background: var(--paper);
@@ -142,7 +144,7 @@
 
     .description,
     .prose > .description {
-      color: var(--muted);
+      color: var(--soft);
     }
 
     // ---- Fields: labels above inputs, always --------------------------------
@@ -175,19 +177,14 @@
       padding: 0.6rem 0.75rem;
     }
 
-    // A custom question reads the same whether it is a label (text, select)
-    // or a legend (radios).
-    label.custom-question {
-      font-family: var(--font-display);
-      font-size: 1.25rem;
-      font-weight: 600;
-      line-height: 1.1;
-    }
-
-    label.custom-question > :is(input, select, textarea) {
+    // Every custom question title matches the contact field labels, whether
+    // the question is a label (text, select) or a legend (radios).
+    fieldset.custom-question > legend {
       font-family: var(--font-body);
       font-size: 1rem;
+      font-weight: 600;
       line-height: 1.4;
+      margin-block-end: 0.25rem;
     }
 
     // The sub-label notes inside a label stay quiet.
