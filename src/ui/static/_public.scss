@@ -444,8 +444,10 @@
       outline-offset: 2px;
     }
 
-    // The pay-what-you-like control shows only on its chosen card.
-    .ticket-choice:not(:has(.ticket-choice-input:checked)) .pay-more {
+    // The pay-what-you-like control shows only on its chosen card. The client
+    // script (single-ticket-pay-more.ts) hides AND disables the others, so a
+    // hidden box never blocks submit; without JS every box stays visible.
+    .ticket-row label.pay-more[hidden] {
       display: none;
     }
 

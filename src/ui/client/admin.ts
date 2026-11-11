@@ -38,6 +38,7 @@ import { initRunningTotal } from "./admin/running-total.ts";
 import { initSchemaAtlas } from "./admin/schema-atlas.ts";
 import { initSelectOnClick } from "./admin/select-on-click.ts";
 import { initShareButtons } from "./admin/share-button.ts";
+import { initSingleTicketPayMore } from "./admin/single-ticket-pay-more.ts";
 import { initTicketQuantityRequired } from "./admin/ticket-quantity-required.ts";
 
 initSelectOnClick();
@@ -72,5 +73,6 @@ initDuplicatePreview();
 initDurationWarning();
 initPairedControls();
 initTicketQuantityRequired();
+initSingleTicketPayMore();
 initAddressLookup();
 initSchemaAtlas();
