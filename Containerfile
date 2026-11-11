@@ -2,20 +2,21 @@
 FROM quay.io/hummingbird/curl:8-builder AS build
 USER 0
 ARG TARGETARCH
+# renovate: datasource=github-releases depName=denoland/deno extractVersion=^v(?<version>.*)$
 ARG DENO_VERSION=2.9.8
-ARG DENO_SHA256_AMD64=e890975bc2549807bbcc0b584ffafda72cc7c93349dd99c80483dd784f6c4609
-ARG DENO_SHA256_ARM64=d49596c20b9788cf8f5d8ddf644103d4bde56ed239753f0bdb92ba9361d51905
 RUN dnf install -y unzip && dnf clean all
 RUN set -eu; \
     case "${TARGETARCH}" in \
-      amd64) arch=x86_64; sha="${DENO_SHA256_AMD64}" ;; \
-      arm64) arch=aarch64; sha="${DENO_SHA256_ARM64}" ;; \
+      amd64) arch=x86_64 ;; \
+      arm64) arch=aarch64 ;; \
       *) echo "Unsupported architecture: ${TARGETARCH}" >&2; exit 1 ;; \
     esac; \
-    curl -fsSL -o /tmp/deno.zip "https://github.com/denoland/deno/releases/download/v${DENO_VERSION}/deno-${arch}-unknown-linux-gnu.zip"; \
-    echo "${sha}  /tmp/deno.zip" | sha256sum -c -; \
-    unzip -o /tmp/deno.zip -d /usr/local/bin; \
-    rm /tmp/deno.zip
+    cd /tmp; \
+    base="https://github.com/denoland/deno/releases/download/v${DENO_VERSION}/deno-${arch}-unknown-linux-gnu.zip"; \
+    curl -fLO --proto =https "${base}"; \
+    curl -fL --proto =https "${base}.sha256sum" | sha256sum -c -; \
+    unzip -o deno-${arch}-unknown-linux-gnu.zip -d /usr/local/bin; \
+    rm deno-${arch}-unknown-linux-gnu.zip
 
 WORKDIR /src
 COPY deno.json deno.lock ./

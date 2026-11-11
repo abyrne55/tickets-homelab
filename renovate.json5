@@ -1,0 +1,48 @@
+{
+  $schema: 'https://docs.renovatebot.com/renovate-schema.json',
+  extends: ['config:recommended', 'helpers:pinGitHubActionDigests'],
+  enabledManagers: ['deno', 'github-actions', 'dockerfile', 'custom.regex'],
+  rangeStrategy: 'bump',
+  platformAutomerge: true,
+  automergeStrategy: 'squash',
+  customManagers: [
+    {
+      customType: 'regex',
+      managerFilePatterns: ['/^Containerfile(\\.dev)?$/'],
+      matchStrings: [
+        '# renovate: datasource=(?<datasource>\\S+) depName=(?<depName>\\S+)( extractVersion=(?<extractVersion>\\S+))?\\nARG \\w+_VERSION=(?<currentValue>\\S+)',
+      ],
+      extractVersionTemplate: '{{{extractVersion}}}',
+    },
+  ],
+  packageRules: [
+    {
+      description: 'PR #12: stripe 22.2 changes the pinned Stripe API version',
+      matchDatasources: ['npm'],
+      matchPackageNames: ['stripe'],
+      allowedVersions: '<22.2.0',
+    },
+    {
+      description: 'PR #12: stripe-mock 0.206 breaks about 14 checkout tests',
+      matchDatasources: ['github-releases'],
+      matchPackageNames: ['stripe/stripe-mock'],
+      allowedVersions: '<0.189.0',
+    },
+    {
+      description: 'PR #12: pool.test.ts patches libsql client internals, so these stay exact',
+      matchPackageNames: ['@libsql/client', '@libsql/core', '@libsql/hrana-client'],
+      enabled: false,
+    },
+    {
+      description: 'PR #12: Sentry v11 removes nodeStackLineParser',
+      matchPackageNames: ['@sentry/core', '@sentry/deno'],
+      allowedVersions: '<11.0.0',
+      groupName: 'sentry',
+    },
+    {
+      description: 'Automerge non-major updates; majors stay manual',
+      matchUpdateTypes: ['minor', 'patch', 'digest'],
+      automerge: true,
+    },
+  ],
+}

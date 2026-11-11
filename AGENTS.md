@@ -10,7 +10,7 @@ Repomix runs on the host, not through `./dev`. If `repomix` is not installed, us
 
 ## Commands
 
-All tooling (Deno, Biome, stripe-mock, pinned by checksum) lives in the dev image. `./dev <cmd>` runs one command in it with the repo mounted at `/work`. Build the image once:
+All tooling (Deno, Biome, stripe-mock, versions pinned; checksums verified at build time) lives in the dev image. `./dev <cmd>` runs one command in it with the repo mounted at `/work`. Build the image once:
 
 ```bash
 podman build -t tickets-dev -f Containerfile.dev .
@@ -86,4 +86,4 @@ These shape what code can do at runtime (see `Containerfile`):
 - The runtime image has no shell and runs as UID 65532. Nothing can shell out.
 - Files read at runtime must be listed with `--include` in the `deno compile` step. A new runtime asset directory or a native/WASM codec needs a matching flag.
 - The root filesystem may be read-only. libsql unpacks its native library into `/tmp`, which must be mounted `exec`.
-- Deno, Biome, and stripe-mock versions are pinned with SHA-256 checksums for both architectures in `Containerfile` and `Containerfile.dev`. A version bump must update both checksums, and the Deno version in both files.
+- Deno, Biome, and stripe-mock versions are ARGs in `Containerfile` and `Containerfile.dev`. Renovate bumps them. The build verifies each download against the checksum the release publishes (the GitHub asset digest for Biome), so no hashes are stored. The Deno version must match in both files. `renovate.json5` holds the deliberate version holds (stripe, stripe-mock, libsql, Sentry; see PR #12) and is where to lift them.
