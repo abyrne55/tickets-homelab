@@ -90,7 +90,7 @@ describeWithEnv(
         });
         await assertPublicHtml(
           `/ticket/reserved?tokens=${token}`,
-          "Junk/Spam",
+          "junk or spam",
           "tickets@mysite.com",
         );
       });
@@ -100,7 +100,7 @@ describeWithEnv(
           "/ticket/reserved?tokens=abc123",
           "Thank you for your order",
         );
-        assert(!html.includes("Junk/Spam"));
+        assert(!html.includes("junk or spam"));
       });
     });
 

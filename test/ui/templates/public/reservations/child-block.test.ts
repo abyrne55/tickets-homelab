@@ -256,7 +256,7 @@ describeWithEnv(
 
       const html = await renderHidingChildName(parent, child);
       expectIncludesAll(html, [
-        `<p class="child-option child-sole" data-sole-parent="${parent.id}" data-sole-child="${child.id}"></p><label>Price per ticket`,
+        `<p class="child-option child-sole" data-sole-parent="${parent.id}" data-sole-child="${child.id}"></p><label class="pay-more">Price per ticket`,
         "</label></fieldset>",
       ]);
       assert(!html.includes("Includes"));

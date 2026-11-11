@@ -1,11 +1,13 @@
 /* MVP.css v1.17.2 - https://github.com/andybrewer/mvp */
 
 @use "sass:map";
+@use "mixins" as *;
 @use "badges";
 @use "field-visibility";
 @use "entity-page";
 @use "markdown-editor";
 @use "print";
+@use "public";
 @use "public-url-rows";
 // The layer name stays equal to SCREENSHOT_LAYER in scripts/screenshots/layers.ts.
 @layer __screenshot_layer__;
@@ -177,7 +179,7 @@ body:not(:has(#main-nav)) {
   --width-content: 1080px;
 }
 
-:root[data-theme="dark"] {
+@include dark-root {
   --color-accent: #44475a;
   --color-bg: #282a36;
   --color-bg-secondary: #44475a;
@@ -190,11 +192,13 @@ body:not(:has(#main-nav)) {
   --color-text-secondary: #6272a4;
 }
 
-[data-theme="dark"] body {
-  background: #282a36;
-  background: linear-gradient(342deg, #21222c, #282a36 35%, #252631);
-  background-size: 100% 100%;
-  background-attachment: fixed;
+body {
+  @include dark {
+    background: #282a36;
+    background: linear-gradient(342deg, #21222c, #282a36 35%, #252631);
+    background-size: 100% 100%;
+    background-attachment: fixed;
+  }
 }
 
 html {
@@ -202,8 +206,11 @@ html {
   scroll-behavior: smooth;
 }
 
-html[data-theme="dark"] {
+@include dark-root {
   color-scheme: dark;
+}
+html[data-theme="auto"] {
+  color-scheme: light dark;
 }
 
 /* Cross-document view transitions: cross-fade between same-origin page loads so
@@ -217,44 +224,58 @@ html[data-theme="dark"] {
 }
 
 /* Dark mode form enhancements */
-[data-theme="dark"] form {
-  border-width: 2px;
-  box-shadow:
-    0 0 8px rgba(189, 147, 249, 0.12),
-    0 0 16px rgba(189, 147, 249, 0.06);
-  transition: box-shadow 0.3s ease;
+form {
+  @include dark {
+    border-width: 2px;
+    box-shadow:
+      0 0 8px rgba(189, 147, 249, 0.12),
+      0 0 16px rgba(189, 147, 249, 0.06);
+    transition: box-shadow 0.3s ease;
+  }
 }
-[data-theme="dark"] form:focus-within {
-  box-shadow:
-    0 0 12px rgba(189, 147, 249, 0.3),
-    0 0 24px rgba(189, 147, 249, 0.15);
+form:focus-within {
+  @include dark {
+    box-shadow:
+      0 0 12px rgba(189, 147, 249, 0.3),
+      0 0 24px rgba(189, 147, 249, 0.15);
+  }
 }
-[data-theme="dark"] input[type="text"],
-[data-theme="dark"] input[type="password"],
-[data-theme="dark"] input[type="email"],
-[data-theme="dark"] select,
-[data-theme="dark"] textarea {
-  border-width: 2px;
-  transition: border-color 0.3s ease, outline 0.2s ease-in-out;
-  outline: 1px solid transparent;
+input[type="text"],
+input[type="password"],
+input[type="email"],
+select,
+textarea {
+  @include dark {
+    border-width: 2px;
+    transition: border-color 0.3s ease, outline 0.2s ease-in-out;
+    outline: 1px solid transparent;
+  }
 }
-[data-theme="dark"] input[type="text"]:focus,
-[data-theme="dark"] input[type="password"]:focus,
-[data-theme="dark"] input[type="email"]:focus,
-[data-theme="dark"] select:focus,
-[data-theme="dark"] textarea:focus {
-  border-color: transparent;
-  outline: 2px solid #ffffff;
+input[type="text"]:focus,
+input[type="password"]:focus,
+input[type="email"]:focus,
+select:focus,
+textarea:focus {
+  @include dark {
+    border-color: transparent;
+    outline: 2px solid #ffffff;
+  }
 }
-[data-theme="dark"] table {
-  border-width: 2px;
+table {
+  @include dark {
+    border-width: 2px;
+  }
 }
-[data-theme="dark"] table tr:nth-child(2n) {
-  background: linear-gradient(45deg, #44475a 0%, #4a4d6a 50%, #44475a 100%);
+table tr:nth-child(2n) {
+  @include dark {
+    background: linear-gradient(45deg, #44475a 0%, #4a4d6a 50%, #44475a 100%);
+  }
 }
-[data-theme="dark"] table thead {
-  background-color: #21222c;
-  color: #f8f8f2;
+table thead {
+  @include dark {
+    background-color: #21222c;
+    color: #f8f8f2;
+  }
 }
 
 @keyframes btn-glow-pulse {
@@ -269,19 +290,23 @@ html[data-theme="dark"] {
       0 0 20px rgba(139, 233, 253, 0.3);
   }
 }
-[data-theme="dark"] button[type="submit"],
-[data-theme="dark"] input[type="submit"] {
-  animation: btn-glow-pulse 3s ease-in-out infinite;
-  transition: box-shadow 0.2s ease, filter 0.2s ease;
+button[type="submit"],
+input[type="submit"] {
+  @include dark {
+    animation: btn-glow-pulse 3s ease-in-out infinite;
+    transition: box-shadow 0.2s ease, filter 0.2s ease;
+  }
 }
-[data-theme="dark"] button[type="submit"]:hover,
-[data-theme="dark"] input[type="submit"]:hover,
-[data-theme="dark"] button[type="submit"]:active,
-[data-theme="dark"] input[type="submit"]:active {
-  box-shadow:
-    0 0 12px rgba(139, 233, 253, 0.7),
-    0 0 28px rgba(139, 233, 253, 0.4);
-  animation: none;
+button[type="submit"]:hover,
+input[type="submit"]:hover,
+button[type="submit"]:active,
+input[type="submit"]:active {
+  @include dark {
+    box-shadow:
+      0 0 12px rgba(139, 233, 253, 0.7),
+      0 0 28px rgba(139, 233, 253, 0.4);
+    animation: none;
+  }
 }
 
 @media (prefers-reduced-motion: reduce) {
@@ -1141,8 +1166,10 @@ label > small {
   width: 100%;
 }
 
-[data-theme="dark"] label > small {
-  color: #b1aeae;
+label > small {
+  @include dark {
+    color: #b1aeae;
+  }
 }
 
 label > select,
@@ -1461,18 +1488,24 @@ output.success {
   padding: var(--space-m);
 }
 
-[data-theme="dark"] .error {
-  --error-glow: rgba(255, 85, 85, 0.5);
-  background: #3c2020;
-  color: #ff5555;
+.error {
+  @include dark {
+    --error-glow: rgba(255, 85, 85, 0.5);
+    background: #3c2020;
+    color: #ff5555;
+  }
 }
-[data-theme="dark"] .success {
-  background: #203c20;
-  color: #50fa7b;
+.success {
+  @include dark {
+    background: #203c20;
+    color: #50fa7b;
+  }
 }
-[data-theme="dark"] .info {
-  background: #1f2a3c;
-  color: #8ab4ff;
+.info {
+  @include dark {
+    background: #1f2a3c;
+    color: #8ab4ff;
+  }
 }
 
 /* A live error alert (the shared ErrorAlert component: role="alert", raised in
@@ -1528,9 +1561,11 @@ output.success {
   border-left-color: #cc0000;
   color: #cc0000;
 }
-[data-theme="dark"] .system-note-alert {
-  background: #3c2020;
-  color: #ff5555;
+.system-note-alert {
+  @include dark {
+    background: #3c2020;
+    color: #ff5555;
+  }
 }
 .system-note-dismiss {
   float: right;
@@ -1583,10 +1618,12 @@ input[type="submit"].danger:hover,
   border-color: var(--color-danger-hover);
 }
 
-[data-theme="dark"] .danger,
-[data-theme="dark"] a.danger {
-  --color-danger: #ff5555;
-  --color-danger-hover: #cc3333;
+.danger,
+a.danger {
+  @include dark {
+    --color-danger: #ff5555;
+    --color-danger-hover: #cc3333;
+  }
 }
 
 .password-warning {
@@ -1618,14 +1655,20 @@ input[type="submit"].danger:hover,
   font-weight: bold;
 }
 
-[data-theme="dark"] .password-warning {
-  color: #ff5555;
+.password-warning {
+  @include dark {
+    color: #ff5555;
+  }
 }
-[data-theme="dark"] .danger-text {
-  color: #ff5555;
+.danger-text {
+  @include dark {
+    color: #ff5555;
+  }
 }
-[data-theme="dark"] .success-text {
-  color: #50fa7b;
+.success-text {
+  @include dark {
+    color: #50fa7b;
+  }
 }
 
 /* Bulk check-in / check-out button */
@@ -2003,10 +2046,12 @@ button.secondary:hover,
   border-color: var(--color-secondary-hover);
 }
 
-[data-theme="dark"] button.secondary,
-[data-theme="dark"] .btn.secondary {
-  --color-secondary: #6272a4;
-  --color-secondary-hover: #7a8abf;
+button.secondary,
+.btn.secondary {
+  @include dark {
+    --color-secondary: #6272a4;
+    --color-secondary-hover: #7a8abf;
+  }
 }
 
 /* Ticket slider */
@@ -2078,8 +2123,10 @@ button.secondary:hover,
   aspect-ratio: 1;
 }
 
-[data-theme="dark"] .ticket-card {
-  box-shadow: 2px 2px 8px rgba(0, 0, 0, 0.3);
+.ticket-card {
+  @include dark {
+    box-shadow: 2px 2px 8px rgba(0, 0, 0, 0.3);
+  }
 }
 
 /* Admin footer: a top row with the Chobble link (growing to fill) and
@@ -2562,9 +2609,11 @@ a.cal-day-selected:active {
 }
 
 /* Override dark-mode form box-shadow (base and focus) which would otherwise apply */
-[data-theme="dark"] .filter-row,
-[data-theme="dark"] .filter-row:focus-within {
-  box-shadow: none;
+.filter-row,
+.filter-row:focus-within {
+  @include dark {
+    box-shadow: none;
+  }
 }
 
 .filter-row label {
@@ -2970,8 +3019,10 @@ a.cal-day-selected:active {
    colour as the striped alternate rows, hiding the box until it's ticked. Use
    the accent colour (which also fills the checked box) so the outline reads on
    every row. */
-[data-theme="dark"] .row-select-tick {
-  border-color: var(--color-secondary);
+.row-select-tick {
+  @include dark {
+    border-color: var(--color-secondary);
+  }
 }
 
 .order-select:checked + .row-select-tick {
@@ -3202,45 +3253,6 @@ a.cal-day-selected:active {
   color: var(--color-text-secondary);
 }
 
-// One-ticket-per-order group page: each listing is a radio card. The radio
-// stays focusable but is visually hidden; the chosen card is highlighted and
-// the others dim. Pure CSS, no JavaScript.
-.ticket-choices-note {
-  font-weight: bold;
-  margin: 0 0 var(--space-s) 0;
-}
-
-.ticket-choice {
-  border: 2px solid transparent;
-  border-radius: 0.5rem;
-  cursor: pointer;
-  display: block;
-  padding: var(--space-s);
-}
-
-.ticket-choice-input {
-  block-size: 1px;
-  clip-path: inset(50%);
-  inline-size: 1px;
-  overflow: hidden;
-  position: absolute;
-  white-space: nowrap;
-}
-
-.ticket-choice:has(input:checked) {
-  background: var(--color-accent);
-  border-color: var(--color-link);
-}
-
-.ticket-choice:has(input:focus-visible) {
-  outline: 3px solid var(--color-link);
-  outline-offset: 2px;
-}
-
-.ticket-choices:has(input:checked) .ticket-choice:not(:has(input:checked)) {
-  opacity: 0.55;
-}
-
 .ticket-row-head {
   align-items: baseline;
   display: flex;
@@ -3273,3 +3285,5 @@ a.cal-day-selected:active {
   font-size: 0.85rem;
   opacity: 0.75;
 }
+
+@include public.styles;

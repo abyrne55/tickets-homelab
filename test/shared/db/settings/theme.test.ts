@@ -8,7 +8,12 @@ describeWithEnv("settings.theme from DB", { db: true }, () => {
     settings.clearTestOverride("theme");
   });
 
-  test("loads light theme from database by default", () => {
+  test("follows the device (auto) by default", () => {
+    expect(settings.theme).toBe("auto");
+  });
+
+  test("loads light theme after updating database", async () => {
+    await settings.update.theme("light");
     expect(settings.theme).toBe("light");
   });
 

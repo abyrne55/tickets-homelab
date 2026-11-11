@@ -88,7 +88,6 @@ describeWithEnv("server (payment flow: ticket success)", { db: true }, () => {
         // Should have ticket link with verified token
         expectIncludesAll(html, [
           "View your ticket",
-          'target="_blank"',
           "/t/",
           // Should have thank_you_url for single-listing purchase
           "https://example.com/verified-thanks",
@@ -130,7 +129,7 @@ describeWithEnv("server (payment flow: ticket success)", { db: true }, () => {
           )}`,
         ),
       );
-      const html = await expectHtmlResponse(response, 200, "Junk/Spam");
+      const html = await expectHtmlResponse(response, 200, "junk or spam");
       assertStringIncludes(html, "noreply@tickets.com");
     });
   });

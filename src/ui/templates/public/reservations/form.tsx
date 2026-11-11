@@ -33,6 +33,9 @@ import {
 import { renderQuestions } from "./questions.tsx";
 import type { BookingPrefill } from "./types.ts";
 
+/** The date and place a group's listings all share, shown once in the header. */
+export type SharedWhen = { date: string; location: string };
+
 /** Header block shown above the form with listing/group details */
 export const TicketPageHeader = ({
   headerName,
@@ -41,6 +44,7 @@ export const TicketPageHeader = ({
   galleryImages,
   listingAttributes,
   singleListing,
+  sharedWhen,
   pastDays,
   priceHtml = "",
 }: {
@@ -50,55 +54,67 @@ export const TicketPageHeader = ({
   galleryImages: readonly Image[];
   listingAttributes: AttributeWithOptions[] | undefined;
   singleListing: ListingWithCount | null;
+  /** On a group page, the date/location every listing in it has in common. */
+  sharedWhen?: SharedWhen | undefined;
   pastDays: number | null;
   /** The single listing's fixed price, shown right-aligned on the title row. */
   priceHtml?: string;
-}): JSX.Element => (
-  <>
-    {/* The full CSS gallery when the header entity has images; otherwise the
+}): JSX.Element => {
+  const when: SharedWhen = {
+    date: singleListing?.date || sharedWhen?.date || "",
+    location: singleListing?.location || sharedWhen?.location || "",
+  };
+  return (
+    <>
+      {/* The full CSS gallery when the header entity has images; otherwise the
         single header-image projection (a listing whose only picture is its
         stored `image_url` with no image_uses rows). */}
-    {galleryImages.length > 0 ? (
-      <PublicImageGallery images={galleryImages} />
-    ) : (
-      headerImage && <Raw html={renderListingImage(headerImage)} />
-    )}
-    <div class="prose">
-      {priceHtml ? (
-        <div class="ticket-row-head ticket-title-row">
-          <h1>{headerName}</h1>
-          <Raw html={priceHtml} />
-        </div>
+      {galleryImages.length > 0 ? (
+        <PublicImageGallery images={galleryImages} />
       ) : (
-        <h1>{headerName}</h1>
+        headerImage && <Raw html={renderListingImage(headerImage)} />
       )}
-      {headerDescription && (
-        <div class="description">
-          <Raw html={renderMarkdown(headerDescription)} />
-        </div>
-      )}
-      {singleListing?.date && (
-        <p>
-          <strong>{t("public.ticket.date_label")}</strong>{" "}
-          {formatDatetimeLabel(singleListing.date)}
-          {pastDays !== null && (
-            <Badge variant="alert">
-              {" "}
-              {t("public.ticket.days_ago", { count: pastDays })}
-            </Badge>
-          )}
-        </p>
-      )}
-      {singleListing?.location && (
-        <p>
-          <strong>{t("public.ticket.location_label")}</strong>{" "}
-          {singleListing.location}
-        </p>
-      )}
-      <Raw html={renderListingAttributes(listingAttributes)} />
-    </div>
-  </>
-);
+      <div class="prose">
+        {priceHtml ? (
+          <div class="ticket-row-head ticket-title-row">
+            <h1>{headerName}</h1>
+            <Raw html={priceHtml} />
+          </div>
+        ) : (
+          <h1>{headerName}</h1>
+        )}
+        {headerDescription && (
+          <div class="description">
+            <Raw html={renderMarkdown(headerDescription)} />
+          </div>
+        )}
+        {(when.date || when.location) && (
+          <div class="event-meta">
+            {when.date && (
+              <p>
+                <strong>{t("public.ticket.date_label")}</strong>{" "}
+                {formatDatetimeLabel(when.date)}
+                {pastDays !== null && (
+                  <Badge variant="alert">
+                    {" "}
+                    {t("public.ticket.days_ago", { count: pastDays })}
+                  </Badge>
+                )}
+              </p>
+            )}
+            {when.location && (
+              <p>
+                <strong>{t("public.ticket.location_label")}</strong>{" "}
+                {when.location}
+              </p>
+            )}
+          </div>
+        )}
+        <Raw html={renderListingAttributes(listingAttributes)} />
+      </div>
+    </>
+  );
+};
 
 /** Opt-in add-on selectors: one quantity input per add-on, defaulting to 0
  * (not selected) and restored on validation error. */

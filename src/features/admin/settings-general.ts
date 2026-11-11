@@ -205,7 +205,9 @@ export const handleThemePost = settingsHandler({
     await settings.update.underlineLinks(v.underlineLinks);
   },
   validate: (v) =>
-    v.theme !== "light" && v.theme !== "dark" ? t("error.invalid_theme") : null,
+    v.theme !== "light" && v.theme !== "dark" && v.theme !== "auto"
+      ? t("error.invalid_theme")
+      : null,
 });
 
 /** Handle POST /admin/settings/show-public-api - owner only */

@@ -95,7 +95,6 @@ describeWithEnv("server (payment flow)", { db: true, triggers: true }, () => {
             "Thank you for your order",
             "https://example.com/thanks",
             "View your ticket",
-            'target="_blank"',
           );
 
           // Verify attendee was created with encrypted PII blob

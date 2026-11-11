@@ -127,7 +127,7 @@ describeWithEnv(
           `/ticket/${group.slug}`,
           "Public Group",
           "Continue",
-          "Select Tickets",
+          "Choose your ticket",
           "Group Listing 1",
           "Group Listing 2",
           `action="/ticket/${group.slug}"`,

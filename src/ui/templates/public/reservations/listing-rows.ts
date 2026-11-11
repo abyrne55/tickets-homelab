@@ -80,6 +80,19 @@ const joinRenderedRows = <T>(
   renderRow: (entry: T) => string,
 ): string => entries.map(renderRow).join("");
 
+/** DOM ids tying a card's name label to its radio or quantity select. */
+const choiceId = (listingId: number): string => `ticket-choice-${listingId}`;
+const quantityId = (listingId: number): string =>
+  `ticket-quantity-${listingId}`;
+
+/** The right-hand stub of a card: the fixed price, or a pay-what-you-like cue
+ * for a listing that carries its own price input. Empty for neither. */
+const stubPrice = (info: TicketListing, renewal?: boolean): string =>
+  fixedPriceLabel(info, renewal) ||
+  (info.listing.can_pay_more
+    ? `<span class="ticket-price ticket-price-open">${t("public.ticket.pay_what_you_like")}</span>`
+    : "");
+
 /** The radio a one-ticket-per-order group page offers in place of a quantity
  * select, or undefined for any other page. Every card shares one name, so the
  * buyer picks at most one listing; the server maps the choice to quantity 1.
@@ -92,7 +105,7 @@ const singleTicketRadio = (
   minQuantity: number,
 ): string | undefined =>
   singleTicket && maxPurchasable >= 1 && minQuantity <= 1
-    ? `<input type="radio" name="${SINGLE_TICKET_FIELD}" value="${listingId}" class="ticket-choice-input"${
+    ? `<input type="radio" id="${choiceId(listingId)}" name="${SINGLE_TICKET_FIELD}" value="${listingId}" class="ticket-choice-input"${
         savedFormValue(SINGLE_TICKET_FIELD) === String(listingId)
           ? " checked"
           : ""
@@ -144,7 +157,7 @@ const listingControls = (
           maxPurchasable,
           listing.min_quantity,
         ) ??
-        `<select name="${fieldName}">${quantityOptions(
+        `<select id="${quantityId(listing.id)}" name="${fieldName}">${quantityOptions(
           maxPurchasable,
           restoredQuantity(
             listing.id,
@@ -189,7 +202,7 @@ const renderListingRow: RenderListingControls = (
     return `
       <div class="ticket-row sold-out">
         ${imageHtml}
-        <label>${escapeHtml(listing.name)}</label>
+        <span class="ticket-name">${escapeHtml(listing.name)}</span>
         ${attributesHtml}
         ${soldOutLabel(t("public.registration_closed"))}
       </div>
@@ -204,7 +217,7 @@ const renderListingRow: RenderListingControls = (
     return `
       <div class="ticket-row sold-out">
         ${imageHtml}
-        <label>${escapeHtml(listing.name)}</label>
+        <span class="ticket-name">${escapeHtml(listing.name)}</span>
         ${renderListingDescription(listing.description)}
         ${attributesHtml}
         ${soldOutLabel()}
@@ -227,30 +240,44 @@ const renderListingRow: RenderListingControls = (
     !hideQuantity &&
     quantityHtml.startsWith('<input type="radio"')
   ) {
+    // The card is a div, not a label: the pay-more control inside it is a
+    // label of its own, and labels cannot nest. The name label's stretched
+    // ::after makes the whole card click through to the radio.
     return `
-    <label class="ticket-row ticket-choice">
-      ${imageHtml}
-      <span class="ticket-row-head"><span class="ticket-choice-name">${quantityHtml}${escapeHtml(listing.name)}</span>${fixedPriceLabel(info, renewal)}</span>
-      ${remainingLabel(info)}
-      ${renderListingDescription(listing.description)}
-      ${attributesHtml}
-      ${priceHtml}
-      ${termNote}
-      ${childBlock}
-    </label>
+    <div class="ticket-row ticket-choice">
+      <div class="ticket-body">
+        ${imageHtml}
+        ${quantityHtml}
+        <label class="ticket-name ticket-choice-name" for="${choiceId(listing.id)}">${escapeHtml(listing.name)}</label>
+        ${remainingLabel(info)}
+        ${renderListingDescription(listing.description)}
+        ${attributesHtml}
+        ${priceHtml}
+        ${termNote}
+        ${childBlock}
+      </div>
+      <div class="ticket-stub">${stubPrice(info, renewal)}</div>
+    </div>
   `;
   }
 
   return `
     <div class="ticket-row">
-      ${imageHtml}
-      <div class="ticket-row-head"><label>${escapeHtml(listing.name)}${quantityHtml}</label>${fixedPriceLabel(info, renewal)}</div>
-      ${remainingLabel(info)}
-      ${renderListingDescription(listing.description)}
-      ${attributesHtml}
-      ${priceHtml}
-      ${termNote}
-      ${childBlock}
+      <div class="ticket-body">
+        ${imageHtml}
+        ${
+          hideQuantity
+            ? `<span class="ticket-name">${escapeHtml(listing.name)}</span>`
+            : `<label class="ticket-name" for="${quantityId(listing.id)}">${escapeHtml(listing.name)}</label>`
+        }
+        ${remainingLabel(info)}
+        ${renderListingDescription(listing.description)}
+        ${attributesHtml}
+        ${priceHtml}
+        ${termNote}
+        ${childBlock}
+      </div>
+      <div class="ticket-stub">${stubPrice(info, renewal)}${quantityHtml}</div>
     </div>
   `;
 };
@@ -268,9 +295,9 @@ const renderPackageMemberRow = (
 ): string => `
     <div class="ticket-row package-member">
       ${renderListingImage(info.listing)}
-      <label>${escapeHtml(
+      <span class="ticket-name">${escapeHtml(
         info.listing.name,
-      )} <span class="package-member-qty">&times;${fixedQty}</span></label>
+      )} <span class="package-member-qty">&times;${fixedQty}</span></span>
       ${renderListingDescription(info.listing.description)}
       ${renderListingAttributes(attributes)}
       ${childCtx ? renderChildBlock(info, childCtx) : ""}

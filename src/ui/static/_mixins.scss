@@ -1,0 +1,26 @@
+// Dark styling that applies for an explicit dark theme and, under the "auto"
+// theme, whenever the device prefers dark. Use inside a rule: the rule's own
+// selector becomes the descendant of the theme attribute.
+@mixin dark {
+  [data-theme="dark"] & {
+    @content;
+  }
+  @media (prefers-color-scheme: dark) {
+    [data-theme="auto"] & {
+      @content;
+    }
+  }
+}
+
+// Same, for declarations on the root element itself (custom properties,
+// color-scheme), where the theme attribute is on the element, not above it.
+@mixin dark-root {
+  :root[data-theme="dark"] {
+    @content;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root[data-theme="auto"] {
+      @content;
+    }
+  }
+}

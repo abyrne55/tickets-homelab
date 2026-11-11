@@ -8,10 +8,23 @@ import { adminFormPost, adminGet } from "#test-utils/session.ts";
 import { enablePublicSite } from "#test-utils/settings.ts";
 
 describeWithEnv("integration: theme settings", { db: true }, () => {
-  test("default theme is light", async () => {
+  test("default theme follows the device", async () => {
     const response = await adminGet("/admin/settings");
     const html = await response.text();
-    assertStringIncludes(html, 'data-theme="light"');
+    assertStringIncludes(html, 'data-theme="auto"');
+  });
+
+  test("auto is a valid choice and renders as data-theme=auto", async () => {
+    await adminFormPost("/admin/settings/theme", { theme: "light" });
+    const { response } = await adminFormPost("/admin/settings/theme", {
+      theme: "auto",
+    });
+    await expectFlashRedirect(
+      "/admin/settings?form=settings-theme#settings-theme",
+      "Theme set to auto",
+    )(response);
+    const html = await (await adminGet("/admin/settings")).text();
+    assertStringIncludes(html, 'data-theme="auto"');
   });
 
   test("changing theme to dark via admin settings", async () => {

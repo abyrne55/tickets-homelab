@@ -38,7 +38,7 @@ describeWithEnv(
           "Continue",
           "Multi Listing 1",
           "Multi Listing 2",
-          "Select Tickets",
+          "Choose your ticket",
         );
       });
 

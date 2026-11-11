@@ -64,6 +64,68 @@ describe("ticketPage listing date and location", () => {
     assert(!html.includes("<strong>Location:</strong>"));
   });
 
+  describe("group pages", () => {
+    const renderGroup = (listings: ListingWithCount[]) =>
+      withRequestContext(
+        () =>
+          ticketPage({
+            dates: [],
+            groupName: "Cookie night",
+            listings: listings.map((l) =>
+              buildTicketListing(l, false, undefined),
+            ),
+            slugs: listings.map((l) => l.slug),
+          }),
+        { iframe: false },
+      );
+    const at = (id: number, date: string, location: string) =>
+      testListingWithCount({
+        attendee_count: 0,
+        date,
+        id,
+        location,
+        name: `Ticket ${id}`,
+        slug: `slug${id}`,
+      });
+
+    test("shows the date and place the listings share", async () => {
+      const html = await renderGroup([
+        at(1, "2026-06-15T14:00:00.000Z", "Village Hall"),
+        at(2, "2026-06-15T14:00:00.000Z", "Village Hall"),
+      ]);
+      expectIncludesAll(html, [
+        'class="event-meta"',
+        "<strong>Date:</strong>",
+        "<strong>Location:</strong>",
+        "Village Hall",
+      ]);
+    });
+
+    test("shows only the field every listing agrees on", async () => {
+      const html = await renderGroup([
+        at(1, "2026-06-15T14:00:00.000Z", "Village Hall"),
+        at(2, "2026-06-16T14:00:00.000Z", "Village Hall"),
+      ]);
+      assert(!html.includes("<strong>Date:</strong>"));
+      assertStringIncludes(html, "<strong>Location:</strong>");
+    });
+
+    test("shows nothing when the listings disagree or have no values", async () => {
+      const html = await renderGroup([
+        at(1, "2026-06-15T14:00:00.000Z", "Village Hall"),
+        at(2, "", ""),
+      ]);
+      assert(!html.includes('class="event-meta"'));
+    });
+
+    test("renders ticket stubs without nesting labels", async () => {
+      const html = await renderGroup([at(1, "", ""), at(2, "", "")]);
+      assertStringIncludes(html, 'class="ticket-stub"');
+      assertStringIncludes(html, 'for="ticket-quantity-1"');
+      assert(!/<label[^>]*>(?:(?!<\/label>).)*<label/s.test(html));
+    });
+  });
+
   test("hides date and location in iframe mode", async () => {
     const listing = testListingWithCount({
       attendee_count: 0,

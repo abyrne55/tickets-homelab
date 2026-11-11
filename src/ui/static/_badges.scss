@@ -1,3 +1,4 @@
+@use "mixins" as *;
 /* Pill/label badges shared across admin & public pages. All share one shape;
    the variant sets the colour. `.badge-alert` additionally carries the inline
    margins it needs when it sits mid-sentence. */
@@ -37,17 +38,25 @@
   margin-left: 1rem;
   margin-right: 1rem;
 }
-[data-theme="dark"] .badge,
-[data-theme="dark"] .badge-missing {
-  background-color: #44475a;
+.badge,
+.badge-missing {
+  @include dark {
+    background-color: #44475a;
+  }
 }
-[data-theme="dark"] .badge-ok {
-  background-color: #1a7a1a;
+.badge-ok {
+  @include dark {
+    background-color: #1a7a1a;
+  }
 }
-[data-theme="dark"] .badge.danger,
-[data-theme="dark"] .badge-alert {
-  background-color: #991919;
+.badge.danger,
+.badge-alert {
+  @include dark {
+    background-color: #991919;
+  }
 }
-[data-theme="dark"] .badge-warning {
-  background-color: #99551a;
+.badge-warning {
+  @include dark {
+    background-color: #99551a;
+  }
 }
