@@ -83,11 +83,6 @@ export const TicketPageHeader = ({
         ) : (
           <h1>{headerName}</h1>
         )}
-        {headerDescription && (
-          <div class="description">
-            <Raw html={renderMarkdown(headerDescription)} />
-          </div>
-        )}
         {(when.date || when.location) && (
           <div class="event-meta">
             {when.date && (
@@ -108,6 +103,11 @@ export const TicketPageHeader = ({
                 {when.location}
               </p>
             )}
+          </div>
+        )}
+        {headerDescription && (
+          <div class="description">
+            <Raw html={renderMarkdown(headerDescription)} />
           </div>
         )}
         <Raw html={renderListingAttributes(listingAttributes)} />
