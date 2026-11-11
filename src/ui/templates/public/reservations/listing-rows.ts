@@ -374,7 +374,7 @@ const renderSingleListingControls: RenderListingControls = (
   const labelledQuantity = hideQuantity
     ? controls.quantityHtml
     : `<label>${monthsQuantity(info.listing, renewal)}${controls.quantityHtml}</label>`;
-  return `${fixedPriceLabel(info, renewal)}${labelledQuantity}${remainingLabel(info)}${controls.priceHtml}${controls.termNote}${controls.childBlock}`;
+  return `${labelledQuantity}${remainingLabel(info)}${controls.priceHtml}${controls.termNote}${controls.childBlock}`;
 };
 
 /** Render the per-listing rows (with their child blocks). A single-listing page

@@ -100,10 +100,11 @@ describe("fixedPriceLabel and priced rows", () => {
     assertStringIncludes(html, '<span class="ticket-price">£12.50</span>');
   });
 
-  test("shows the price on a single-listing page", () => {
-    assertStringIncludes(
-      renderRows({ isSingleListing: true, listings: [priced(1250)] }),
-      '<span class="ticket-price">£12.50</span>',
+  test("leaves the single-listing controls bare (the header shows it)", () => {
+    assert(
+      !hasPrice(
+        renderRows({ isSingleListing: true, listings: [priced(1250)] }),
+      ),
     );
   });
 

@@ -42,6 +42,7 @@ export const TicketPageHeader = ({
   listingAttributes,
   singleListing,
   pastDays,
+  priceHtml = "",
 }: {
   headerName: string;
   headerDescription: string | null | undefined;
@@ -50,6 +51,8 @@ export const TicketPageHeader = ({
   listingAttributes: AttributeWithOptions[] | undefined;
   singleListing: ListingWithCount | null;
   pastDays: number | null;
+  /** The single listing's fixed price, shown right-aligned on the title row. */
+  priceHtml?: string;
 }): JSX.Element => (
   <>
     {/* The full CSS gallery when the header entity has images; otherwise the
@@ -61,7 +64,14 @@ export const TicketPageHeader = ({
       headerImage && <Raw html={renderListingImage(headerImage)} />
     )}
     <div class="prose">
-      <h1>{headerName}</h1>
+      {priceHtml ? (
+        <div class="ticket-row-head ticket-title-row">
+          <h1>{headerName}</h1>
+          <Raw html={priceHtml} />
+        </div>
+      ) : (
+        <h1>{headerName}</h1>
+      )}
       {headerDescription && (
         <div class="description">
           <Raw html={renderMarkdown(headerDescription)} />

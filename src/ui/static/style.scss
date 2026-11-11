@@ -3254,8 +3254,18 @@ a.cal-day-selected:active {
   white-space: nowrap;
 }
 
-:not(.ticket-row-head) > .ticket-price {
-  display: block;
+// On a single-listing page the price shares the title's row, smaller than it.
+.ticket-title-row {
+  max-inline-size: var(--width-card-wide);
+  margin-block-end: var(--space-s);
+
+  h1 {
+    margin: 0;
+  }
+
+  .ticket-price {
+    font-size: 1.25rem;
+  }
 }
 
 .tickets-remaining {
