@@ -72,14 +72,7 @@ export const Layout = ({
               <link
                 as="font"
                 crossorigin=""
-                href="/fonts/bricolage-grotesque-latin-wght-normal.woff2"
-                rel="preload"
-                type="font/woff2"
-              />
-              <link
-                as="font"
-                crossorigin=""
-                href="/fonts/atkinson-hyperlegible-next-latin-400-normal.woff2"
+                href="/fonts/figtree-latin-wght-normal.woff2"
                 rel="preload"
                 type="font/woff2"
               />

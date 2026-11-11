@@ -55,9 +55,7 @@ export const handleIframeResizerChildJs = staticHandler(
 /** Self-hosted WOFF2 files for the public pages. Only names listed here are
  * ever read from disk, so the route can't be used to walk the filesystem. */
 export const FONT_FILES: readonly string[] = [
-  "atkinson-hyperlegible-next-latin-400-normal.woff2",
-  "atkinson-hyperlegible-next-latin-700-normal.woff2",
-  "bricolage-grotesque-latin-wght-normal.woff2",
+  "figtree-latin-wght-normal.woff2",
 ];
 
 const fontCache = new Map<string, Uint8Array<ArrayBuffer>>();

@@ -13,26 +13,10 @@
 @mixin styles {
   @font-face {
     font-display: swap;
-    font-family: "Bricolage Grotesque";
+    font-family: "Figtree";
     font-style: normal;
-    font-weight: 200 800;
-    src: url("/fonts/bricolage-grotesque-latin-wght-normal.woff2") format("woff2");
-  }
-
-  @font-face {
-    font-display: swap;
-    font-family: "Atkinson Hyperlegible Next";
-    font-style: normal;
-    font-weight: 400;
-    src: url("/fonts/atkinson-hyperlegible-next-latin-400-normal.woff2") format("woff2");
-  }
-
-  @font-face {
-    font-display: swap;
-    font-family: "Atkinson Hyperlegible Next";
-    font-style: normal;
-    font-weight: 700;
-    src: url("/fonts/atkinson-hyperlegible-next-latin-700-normal.woff2") format("woff2");
+    font-weight: 300 900;
+    src: url("/fonts/figtree-latin-wght-normal.woff2") format("woff2");
   }
 
   body[data-page-family="public"] {
@@ -48,8 +32,8 @@
     --rule: #cfc3d4;
     --field-radius: 0.5rem;
     --stub-w: 7.5rem;
-    --font-display: "Bricolage Grotesque", "Atkinson Hyperlegible Next", system-ui, sans-serif;
-    --font-body: "Atkinson Hyperlegible Next", system-ui, -apple-system, "Segoe UI", sans-serif;
+    --font-display: "Figtree", system-ui, -apple-system, "Segoe UI", sans-serif;
+    --font-body: "Figtree", system-ui, -apple-system, "Segoe UI", sans-serif;
 
     // Feed the base stylesheet's variables so links, notes and the rest of the
     // chrome follow the flyer palette without a rule each.
@@ -103,13 +87,13 @@
     h3,
     legend {
       font-family: var(--font-display);
-      letter-spacing: -0.015em;
+      letter-spacing: -0.01em;
       line-height: 1.1;
     }
 
     h1 {
       font-size: clamp(2rem, 7vw, 3rem);
-      font-weight: 800;
+      font-weight: 650;
       margin-block: 0 0.5rem;
       text-wrap: balance;
     }
@@ -131,7 +115,7 @@
     // ---- Event details line -------------------------------------------------
     .event-meta {
       color: var(--ink);
-      font-weight: 700;
+      font-weight: 600;
       margin-block: 0.25rem 0.75rem;
 
       p {
@@ -166,7 +150,7 @@
     label:has(> textarea) {
       display: flex;
       flex-direction: column;
-      font-weight: 700;
+      font-weight: 600;
       gap: 0.35rem;
       margin: 0;
     }
@@ -222,7 +206,7 @@
     legend {
       color: var(--ink);
       font-size: 1.25rem;
-      font-weight: 700;
+      font-weight: 600;
       margin-block-end: 0.5rem;
       padding: 0;
     }
@@ -245,16 +229,11 @@
     .custom-question .radio-label,
     fieldset.custom-question label {
       align-items: center;
-      border-block-end: 1px solid var(--rule);
       display: flex;
       font-weight: 400;
       gap: 0.6rem;
       margin: 0;
-      padding: 0.55rem 0;
-    }
-
-    fieldset.custom-question label:last-of-type {
-      border-block-end: 0;
+      padding: 0.4rem 0;
     }
 
     fieldset.custom-question input[type="radio"],
@@ -275,7 +254,7 @@
     label.terms-agree {
       align-items: center;
       display: flex;
-      font-weight: 700;
+      font-weight: 600;
       gap: 0.6rem;
     }
 
@@ -291,8 +270,8 @@
       grid-template-columns: minmax(0, 1fr) var(--stub-w);
       margin: 0;
       mask:
-        radial-gradient(circle 0.55rem at calc(100% - var(--stub-w)) 0, #0000 97%, #000) top / 100% 51% no-repeat,
-        radial-gradient(circle 0.55rem at calc(100% - var(--stub-w)) 100%, #0000 97%, #000) bottom / 100% 51% no-repeat;
+        radial-gradient(circle 0.3rem at calc(100% - var(--stub-w)) 0, #0000 97%, #000) top / 100% 51% no-repeat,
+        radial-gradient(circle 0.3rem at calc(100% - var(--stub-w)) 100%, #0000 97%, #000) bottom / 100% 51% no-repeat;
       padding: 0;
       position: relative;
     }
@@ -308,7 +287,7 @@
     .ticket-name {
       font-family: var(--font-display);
       font-size: 1.15rem;
-      font-weight: 700;
+      font-weight: 600;
       line-height: 1.2;
     }
 
@@ -331,13 +310,13 @@
     .ticket-price {
       font-family: var(--font-display);
       font-size: 1.4rem;
-      font-weight: 800;
+      font-weight: 650;
       line-height: 1;
     }
 
     .ticket-price-open {
       font-size: 0.95rem;
-      font-weight: 700;
+      font-weight: 600;
     }
 
     .tickets-remaining {
@@ -433,7 +412,7 @@
       display: flex;
       flex-direction: row;
       flex-wrap: wrap;
-      font-weight: 700;
+      font-weight: 600;
       gap: 0.5rem 0.75rem;
       margin-block-start: 0.5rem;
     }
@@ -462,7 +441,7 @@
 
     .sold-out-label {
       color: var(--muted);
-      font-weight: 700;
+      font-weight: 600;
     }
 
     .ticket-package {
@@ -494,7 +473,7 @@
       cursor: pointer;
       font-family: var(--font-display);
       font-size: 1.1rem;
-      font-weight: 700;
+      font-weight: 600;
       inline-size: 100%;
       padding: 0.85rem 1.25rem;
       text-align: center;
@@ -524,7 +503,7 @@
       color: var(--plum);
       cursor: pointer;
       font: inherit;
-      font-weight: 700;
+      font-weight: 600;
       inline-size: auto;
       padding: 0;
       text-align: start;
@@ -537,9 +516,13 @@
       border: 1.5px solid var(--rule);
       border-radius: var(--field-radius);
       mask:
-        radial-gradient(circle 0.55rem at 0 50%, #0000 97%, #000) left / 51% 100% no-repeat,
-        radial-gradient(circle 0.55rem at 100% 50%, #0000 97%, #000) right / 51% 100% no-repeat;
+        radial-gradient(circle 0.3rem at 0 50%, #0000 97%, #000) left / 51% 100% no-repeat,
+        radial-gradient(circle 0.3rem at 100% 50%, #0000 97%, #000) right / 51% 100% no-repeat;
       padding: 0.9rem 1.25rem;
+    }
+
+    .order-summary-output:has(.order-summary-message) {
+      mask: none;
     }
 
     .order-summary-message {
@@ -567,7 +550,7 @@
       border-block-start: 2px dashed var(--rule);
       font-family: var(--font-display);
       font-size: 1.25rem;
-      font-weight: 800;
+      font-weight: 650;
       padding-block-start: 0.5rem;
     }
 
@@ -596,7 +579,7 @@
       display: flex;
       font-family: var(--font-display);
       font-size: 1.6rem;
-      font-weight: 800;
+      font-weight: 650;
       inline-size: 3rem;
       justify-content: center;
     }
@@ -628,7 +611,7 @@
     .ticket-card-name {
       font-family: var(--font-display);
       font-size: 1.6rem;
-      font-weight: 800;
+      font-weight: 650;
       line-height: 1.1;
     }
 
@@ -636,7 +619,7 @@
     .ticket-card-location {
       color: var(--ink);
       font-style: normal;
-      font-weight: 700;
+      font-weight: 600;
     }
 
     // The perforation: a dashed rule with a paper-coloured bite out of each edge.
@@ -650,20 +633,20 @@
     .ticket-card-qr::before,
     .ticket-card-qr::after {
       background: var(--paper);
-      block-size: 1.4rem;
+      block-size: 0.9rem;
       border-radius: 50%;
       content: "";
-      inline-size: 1.4rem;
-      inset-block-start: -0.8rem;
+      inline-size: 0.9rem;
+      inset-block-start: -0.5rem;
       position: absolute;
     }
 
     .ticket-card-qr::before {
-      inset-inline-start: -0.8rem;
+      inset-inline-start: -0.5rem;
     }
 
     .ticket-card-qr::after {
-      inset-inline-end: -0.8rem;
+      inset-inline-end: -0.5rem;
     }
 
     .ticket-card-token {

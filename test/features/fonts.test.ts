@@ -25,7 +25,7 @@ describeWithEnv("GET /fonts/:file", { db: true }, () => {
     for (const name of [
       "nope.woff2",
       "..%2Fstyle.css",
-      "LICENSE-bricolage-grotesque.txt",
+      "LICENSE-figtree.txt",
     ]) {
       const response = await handleRequest(mockRequest(`/fonts/${name}`));
       assert(response.status === 404, name);
