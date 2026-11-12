@@ -110,7 +110,7 @@ const unattributedRefundGroups = async (
 ): Promise<string[]> => {
   const orphans: string[] = [];
   let after = cursorOf("");
-  for (;;) {
+  while (true) {
     const page = await eventGroupsPage(
       pageSize,
       `kind GLOB '${REFUND_KIND_GLOB}' AND reverses_group = '' AND event_group > ?`,
@@ -172,7 +172,7 @@ export const backfillReversesGroup = async (
   }
   let after = await readCursor();
   if (after === CURSOR_COMPLETE) return;
-  for (;;) {
+  while (true) {
     const bookingGroups = await eventGroupsPage(
       pageSize,
       `kind NOT GLOB '${REFUND_KIND_GLOB}' AND event_group > ?`,

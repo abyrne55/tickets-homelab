@@ -50,7 +50,7 @@ const sameFileAt = async (
  * and takes the lock again until it has the one at the path.
  */
 export const withFileLock: PathLockHolder = async (path, body) => {
-  for (;;) {
+  while (true) {
     await Deno.mkdir(dirname(path), { recursive: true });
     const file = await openLockFileOrNull(path);
     if (file !== null) {

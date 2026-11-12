@@ -121,7 +121,7 @@ const childFlowBound = (
   let flow = 0;
   // Edmonds-Karp: augment along breadth-first paths until the sink is cut
   // off. The graph has a handful of nodes, so the bound never bites.
-  for (;;) {
+  while (true) {
     const where = breadthFirstPath(capacity, sink);
     if (where[sink] === -1) return flow;
     flow += augmentAlongPath(capacity, where, sink);
