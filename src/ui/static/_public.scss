@@ -339,6 +339,16 @@
       border-width: 2px;
     }
 
+    // The chosen card's border thickens to 2px, so the notches move out to
+    // match; at -1.5px a sliver of the card border showed across each one.
+    .ticket-choice:has(.ticket-choice-input:checked)::before {
+      inset-block-start: -2px;
+    }
+
+    .ticket-choice:has(.ticket-choice-input:checked)::after {
+      inset-block-end: -2px;
+    }
+
     .ticket-row.sold-out::before,
     .ticket-row.sold-out::after,
     .ticket-row.package-member::before,
