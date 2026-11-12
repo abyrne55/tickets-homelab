@@ -113,7 +113,7 @@
   "settings.advanced.external_order": "Enable external order buttons?",
   "settings.advanced.external_order_hint": "Lets you turn links on other websites into add-to-cart buttons via /order.js. This publishes your public listing catalogue (names, slugs and prices) to the allowed embed hosts, so only enable it if you are happy for that list to be readable on those sites.",
   "settings.advanced.custom_css": "Custom CSS",
-  "settings.advanced.custom_css_hint": "Extra CSS served from /custom.css and loaded on every page after the default stylesheet. Use it to tweak colours, fonts and spacing. Your changes appear as soon as you save.",
+  "settings.advanced.custom_css_hint": "Extra CSS served from /custom.css and loaded on every page after the default stylesheet. Use it to tweak colours, fonts and spacing. Your changes appear as soon as you save. Colours you set on body or :root apply to the light theme. Visitors who see the dark theme (Dark, or Auto on a device set to dark) keep the dark colours so text stays readable. To restyle dark too, repeat your colour rules under :root[data-theme=\"dark\"] and, for Auto, under :root[data-theme=\"auto\"] inside @media (prefers-color-scheme: dark). Or set the theme to Light.",
   "settings.advanced.custom_css_label": "CSS",
   "settings.advanced.custom_css_placeholder": "e.g. body '{' font-family: serif; '}'",
   "settings.advanced.save_custom_css": "Save Custom CSS",
