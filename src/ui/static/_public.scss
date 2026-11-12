@@ -408,9 +408,10 @@
       transition: border-color 0.15s, background-color 0.15s;
     }
 
+    // No `position` here: the radio and the name label's overlay anchor to
+    // the card (.ticket-row), so the overlay covers the price stub too.
     .ticket-choice .ticket-body {
       padding-inline-start: 2.6rem;
-      position: relative;
     }
 
     .ticket-choice-input {
@@ -435,8 +436,19 @@
       position: absolute;
     }
 
-    .ticket-choice .pay-more,
-    .ticket-choice a {
+    // Every control in the card must sit above the overlay, or a click on it
+    // only re-picks the radio: the pay-what-you-like box, links, and a
+    // parent's child-option selects, their labels and child questions.
+    .ticket-choice
+      :is(
+        a,
+        .pay-more,
+        label:not(.ticket-choice-name),
+        fieldset,
+        input:not(.ticket-choice-input),
+        select,
+        textarea
+      ) {
       position: relative;
       z-index: 1;
     }
