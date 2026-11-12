@@ -289,10 +289,11 @@ describe("settings form schema", () => {
     ).toEqual(["addressLookupProvider", "addressLookupApiKeyConfigured"]);
   });
 
-  test("offers the theme as light or dark, on checkboxes", () => {
+  test("offers the theme as auto, light or dark, on checkboxes", () => {
     const [theme, links] = SETTINGS_FORMS.theme.fields;
 
     expect(theme.options.map((option) => option.value)).toEqual([
+      "auto",
       "light",
       "dark",
     ]);

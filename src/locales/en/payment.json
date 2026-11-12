@@ -18,7 +18,7 @@
   "payment.success.heading_paid": "Payment Successful!",
   "payment.success.heading_free": "Ticket reserved successfully.",
   "payment.success.thank_you": "Thank you for your payment. Your ticket has been confirmed.",
-  "payment.success.email_notice": "Your ticket will be sent from {fromEmail} — please check your Junk/Spam folder.",
+  "payment.success.email_notice": "Your ticket will be sent from {fromEmail}. If it does not arrive, check your junk or spam folder.",
   "payment.success.view_ticket": "View your ticket",
   "payment.success.view_tickets": "View your tickets",
   "payment.success.redirecting": "You will be redirected shortly...",

@@ -115,11 +115,7 @@ describe("successPage", () => {
 
   test("renders ticket link with plural text for multiple tickets", () => {
     const html = successPage({ paid: true, ticketUrl: "/t/abc123+def456" });
-    expectIncludesAll(html, [
-      'href="/t/abc123+def456"',
-      'target="_blank"',
-      "View your tickets",
-    ]);
+    expectIncludesAll(html, ['href="/t/abc123+def456"', "View your tickets"]);
   });
 
   test("renders ticket link with singular text for single ticket", () => {
@@ -171,6 +167,20 @@ describe("successPage", () => {
     });
   });
 
+  test("opens the ticket in the top window in iframe mode", async () => {
+    await withRequestContext(() => {
+      detectIframeMode(new URL("https://example.com/?iframe=true"));
+      const html = successPage({ ticketUrl: "/t/abc123" });
+      assertStringIncludes(html, 'href="/t/abc123" target="_top"');
+    });
+  });
+
+  test("opens the ticket in the same tab outside iframe mode", () => {
+    const html = successPage({ ticketUrl: "/t/abc123" });
+    assertStringIncludes(html, 'href="/t/abc123"');
+    assert(!html.includes("target="));
+  });
+
   test("excludes scroll-into-view marker when not in iframe mode", () => {
     const html = successPage({ ticketUrl: "/t/abc123" });
     assert(!html.includes("data-scroll-into-view"));
@@ -182,24 +192,24 @@ describe("successPage", () => {
       paid: true,
       ticketUrl: "/t/abc123",
     });
-    expectIncludesAll(html, ["tickets@example.com", "Junk/Spam"]);
+    expectIncludesAll(html, ["tickets@example.com", "junk or spam"]);
   });
 
   test("does not show email notice when fromEmail is empty", () => {
     const html = successPage({ paid: true, ticketUrl: "/t/abc123" });
-    assert(!html.includes("Junk/Spam"));
+    assert(!html.includes("junk or spam"));
   });
   test("shows email notice for reservation when fromEmail is provided", () => {
     const html = successPage({
       fromEmail: "tickets@example.com",
       ticketUrl: "/t/abc123",
     });
-    expectIncludesAll(html, ["tickets@example.com", "Junk/Spam"]);
+    expectIncludesAll(html, ["tickets@example.com", "junk or spam"]);
   });
 
   test("does not show email notice for reservation when fromEmail is empty", () => {
     const html = successPage({ ticketUrl: "/t/abc123" });
-    assert(!html.includes("Junk/Spam"));
+    assert(!html.includes("junk or spam"));
   });
 });
 

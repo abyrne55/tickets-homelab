@@ -50,7 +50,7 @@ import {
   resolveDayCountPriceFor,
   splitChildQuestions,
 } from "./day-config.ts";
-import { TicketPageForm, TicketPageHeader } from "./form.tsx";
+import { type SharedWhen, TicketPageForm, TicketPageHeader } from "./form.tsx";
 import { buildPageListingRows, fixedPriceLabel } from "./listing-rows.ts";
 import { ticketPageHeadExtra } from "./og-tags.ts";
 import type { TicketPageOptions } from "./types.ts";
@@ -110,6 +110,32 @@ const resolveTicketHeader = ({
     title: headerName || t("public.multi.title"),
   };
 };
+
+/** The date and location every listing on a group page agrees on. A field
+ * shows only when each listing has the same non-empty value, so a group of
+ * differing dates or venues leaves it to the listing rows rather than guess. */
+export const sharedWhen = (listings: readonly TicketListing[]): SharedWhen => {
+  const same = (pick: (l: TicketListing["listing"]) => string): string => {
+    const [first, ...rest] = listings.map((e) => pick(e.listing));
+    return first && rest.every((v) => v === first) ? first : "";
+  };
+  return {
+    date: same((l) => l.date),
+    location: same((l) => l.location),
+  };
+};
+
+/** The shared line for a group page, or none on a single-listing page (the
+ * listing shows its own) and on a page with a package that hides its
+ * listings (a member's date or place must not leak through the shared line). */
+const groupSharedWhen = (
+  singleListing: ListingWithCount | null,
+  packages: readonly PagePackage[],
+  listings: readonly TicketListing[],
+): SharedWhen | undefined =>
+  singleListing || packages.some((p) => p.hideListings)
+    ? undefined
+    : sharedWhen(listings);
 
 /** The page's cart conflict notes. Drop a name only when every page path that
  * offers the listing conceals it. */
@@ -289,7 +315,7 @@ export const ticketPage = ({
     <Layout
       beforeContent={!inIframe && nav ? <PublicNav {...nav} /> : undefined}
       bodyClass={inIframe ? "iframe" : undefined}
-      contentClassName="public-page"
+      contentClassName="public-page ticket-flow"
       family="public"
       headExtra={headExtra}
       title={title}
@@ -307,6 +333,7 @@ export const ticketPage = ({
               ? fixedPriceLabel(rows[0].info, renewal === true)
               : ""
           }
+          sharedWhen={groupSharedWhen(singleListing, packages, listings)}
           singleListing={singleListing}
         />
       )}

@@ -96,7 +96,7 @@ export const data: SettingsData = {
   phone_prefix: "+44",
   show_public_api: false,
   square_sandbox: false,
-  theme: "light",
+  theme: "auto",
   timezone: DEFAULT_TIMEZONE,
   underline_links: false,
   welcome_enabled: false,

@@ -67,6 +67,17 @@ export const Layout = ({
             name="viewport"
           />
           <title>{title}</title>
+          {family === "public" && (
+            <>
+              <link
+                as="font"
+                crossorigin=""
+                href="/fonts/figtree-latin-wght-normal.woff2"
+                rel="preload"
+                type="font/woff2"
+              />
+            </>
+          )}
           <link href={CSS_PATH} rel="stylesheet" />
           {/* Operator-supplied custom CSS, served from the cached /custom.css
               route. Cache-busted by the settings version (bumped on every

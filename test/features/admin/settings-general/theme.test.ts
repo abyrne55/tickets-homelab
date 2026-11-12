@@ -83,8 +83,8 @@ describeAdminSettings(() => {
     });
 
     test("theme setting persists in database", async () => {
-      // Initially should be "light"
-      expect(settings.theme).toBe("light");
+      // Initially follows the device
+      expect(settings.theme).toBe("auto");
 
       // Update to dark
       await postTheme({ theme: "dark" });

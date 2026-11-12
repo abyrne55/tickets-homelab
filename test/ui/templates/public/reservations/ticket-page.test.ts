@@ -124,7 +124,7 @@ describe("ticketPage — packages", () => {
       });
       expectIncludesAll(html, [
         '<body class="iframe" data-page-family="public">',
-        'class="page-regions public-page"',
+        'class="page-regions public-page ticket-flow"',
       ]);
       assert(!html.includes("<h1>Iframe-only heading</h1>"));
     });
@@ -152,7 +152,7 @@ describe("ticketPage — packages", () => {
     });
     assertStringIncludes(
       html,
-      '<fieldset class="ticket-listings"><legend>Select Tickets</legend>',
+      '<fieldset class="ticket-listings"><legend>Choose your ticket</legend>',
     );
   });
 

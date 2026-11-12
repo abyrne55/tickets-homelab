@@ -24,7 +24,11 @@ export const paymentPage = (
   formattedPrice: string,
 ): string =>
   String(
-    <Layout family="public" title={t("payment.title")}>
+    <Layout
+      contentClassName="ticket-flow"
+      family="public"
+      title={t("payment.title")}
+    >
       <h1>{t("payment.complete_your_payment")}</h1>
       <aside>
         <LabelledParas
@@ -61,6 +65,7 @@ export const successPage = ({
   return String(
     <Layout
       {...(inIframe ? { bodyClass: "iframe" } : {})}
+      contentClassName="ticket-flow"
       family="public"
       {...(thankYouUrl
         ? {
@@ -72,9 +77,13 @@ export const successPage = ({
       title={t("payment.success.title")}
     >
       <div
+        class="confirmation"
         data-payment-result={paid ? "success" : undefined}
         data-scroll-into-view={inIframe || undefined}
       >
+        <div aria-hidden="true" class="confirmation-mark">
+          ✓
+        </div>
         <div class="prose">
           <h1>{t("payment.success.heading")}</h1>
           {fromEmail ? (
@@ -86,14 +95,20 @@ export const successPage = ({
           ) : null}
         </div>
         {ticketUrl ? (
-          <p>
-            <NewTabLink href={ticketUrl}>
+          <p class="actions">
+            {/* /t/ refuses framing, so inside an embed the ticket replaces the
+                host page instead of loading into the iframe. */}
+            <a
+              class="btn"
+              href={ticketUrl}
+              {...(inIframe ? { target: "_top" } : {})}
+            >
               {t(
                 ticketUrl.includes("+")
                   ? "payment.success.view_tickets"
                   : "payment.success.view_ticket",
               )}
-            </NewTabLink>
+            </a>
           </p>
         ) : null}
         {thankYouUrl ? (
@@ -128,7 +143,11 @@ export const paymentCancelPage = (
   ticketUrl: string | null,
 ): string =>
   String(
-    <Layout family="public" title={t("payment.cancel.title")}>
+    <Layout
+      contentClassName="ticket-flow"
+      family="public"
+      title={t("payment.cancel.title")}
+    >
       <div data-payment-result="cancel">
         <div class="prose">
           <h1>{t("payment.cancel.heading")}</h1>
@@ -252,7 +271,12 @@ export const paymentErrorPage = (
  */
 export const checkoutPopupPage = (checkoutUrl: string): string =>
   String(
-    <Layout bodyClass="iframe" family="public" title={t("payment.popup.title")}>
+    <Layout
+      bodyClass="iframe"
+      contentClassName="ticket-flow"
+      family="public"
+      title={t("payment.popup.title")}
+    >
       <div
         data-checkout-popup={escapeHtml(checkoutUrl)}
         data-scroll-into-view

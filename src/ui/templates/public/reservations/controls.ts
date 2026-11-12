@@ -144,7 +144,7 @@ export const renderPayMoreInput = (
   const saved = savedFormValue(fieldName);
   const value = saved !== "" ? saved : toMajorUnits(prefillValue);
   return (
-    `<label>${rangeHint}` +
+    `<label class="pay-more">${rangeHint}` +
     renderPriceSlider(minPrice, maxPrice, prefillValue) +
     `<input type="text" inputmode="decimal"${
       maxPrice > minPrice ? ' class="price-slider-box"' : ""

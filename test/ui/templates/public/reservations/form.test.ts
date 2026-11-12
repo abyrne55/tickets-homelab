@@ -319,7 +319,7 @@ describe("ticketPage — fields & form", () => {
     const html = ticketPage({ listings, slugs: ["ab12c"] });
     expect(hasInputWithValue(html, "quantity_1", "1")).toBe(true);
     assert(!html.includes("<select"));
-    assert(!html.includes("Select Tickets"));
+    assert(!html.includes("Choose your ticket"));
   });
 
   test("shows quantity selector for single listing with max quantity above 1", () => {
@@ -363,7 +363,7 @@ describe("ticketPage — fields & form", () => {
     expectIncludesAll(html, [
       "<select",
       '<form action="/ticket/ab12c+cd34e" autocomplete="off" method="POST">',
-      '<fieldset class="ticket-listings"><legend>Select Tickets</legend>',
+      '<fieldset class="ticket-listings"><legend>Choose your ticket</legend>',
       'formaction="/calculate/ab12c+cd34e"',
     ]);
   });
@@ -381,7 +381,7 @@ describe("ticketPage — fields & form", () => {
     ];
     const html = ticketPage({ listings, slugs: ["ab12c", "cd34e"] });
     expect(hasInputWithValue(html, "quantity_1", "1")).toBe(true);
-    assert(!html.includes("Select Tickets"));
+    assert(!html.includes("Choose your ticket"));
   });
 
   test("does not group package rows as independent listings", () => {

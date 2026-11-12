@@ -52,6 +52,29 @@ export const handleIframeResizerChildJs = staticHandler(
   JS,
 );
 
+/** Self-hosted WOFF2 files for the public pages. Only names listed here are
+ * ever read from disk, so the route can't be used to walk the filesystem. */
+export const FONT_FILES: readonly string[] = [
+  "figtree-latin-wght-normal.woff2",
+];
+
+const fontCache = new Map<string, Uint8Array<ArrayBuffer>>();
+const fontBody = (file: string): Uint8Array<ArrayBuffer> => {
+  const cached = fontCache.get(file);
+  if (cached) return cached;
+  const bytes = Deno.readFileSync(join(staticDir, "fonts", file));
+  fontCache.set(file, bytes);
+  return bytes;
+};
+
+/** Serve one allow-listed font file with the immutable year-long cache. */
+export const handleFont = (file: string): Response =>
+  FONT_FILES.includes(file)
+    ? new Response(fontBody(file), {
+        headers: { "content-type": "font/woff2", ...CACHE_HEADERS },
+      })
+    : new Response("Not found", { status: 404 });
+
 /** The raw ESM body of the external-order widget (`/order.js`). Exposed here —
  * rather than read in the handler — so the edge build inlines it the same way
  * it inlines the other static assets. The dynamic `/order.js` route prepends

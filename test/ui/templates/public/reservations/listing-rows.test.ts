@@ -88,7 +88,7 @@ describe("fixedPriceLabel and priced rows", () => {
   test("shows the price on a multi-listing row", () => {
     const html = renderRows({ listings: [priced(1250)] });
     assertStringIncludes(html, '<span class="ticket-price">£12.50</span>');
-    assertStringIncludes(html, 'class="ticket-row-head"');
+    assertStringIncludes(html, 'class="ticket-stub"');
   });
 
   test("shows the price on a radio card", () => {
@@ -98,6 +98,20 @@ describe("fixedPriceLabel and priced rows", () => {
     });
     assertStringIncludes(html, "ticket-choice-input");
     assertStringIncludes(html, '<span class="ticket-price">£12.50</span>');
+  });
+
+  test("a radio card keeps its pay-more control out of the card label", () => {
+    const html = renderRows({
+      listings: [priced(500, { can_pay_more: true, max_price: 5000 })],
+      singleTicket: true,
+    });
+    // The card is a div; only the name label points at the radio.
+    assertStringIncludes(html, '<div class="ticket-row ticket-choice">');
+    assertStringIncludes(html, 'for="ticket-choice-1"');
+    assertStringIncludes(html, 'id="ticket-choice-1"');
+    assertStringIncludes(html, '<label class="pay-more">');
+    assert(!/<label[^>]*>(?:(?!<\/label>).)*<label/s.test(html));
+    assertStringIncludes(html, "You choose");
   });
 
   test("leaves the single-listing controls bare (the header shows it)", () => {
@@ -235,13 +249,14 @@ describe("buildPageListingRows", () => {
       ],
     });
     expectIncludesAll(html, [
-      '<label>Listing A<select name="quantity_1">',
-      '<label>Listing B<select name="quantity_2">',
+      '<label class="ticket-name" for="ticket-quantity-1">Listing A</label>',
+      '<label class="ticket-name" for="ticket-quantity-2">Listing B</label>',
+      '<select id="ticket-quantity-1" name="quantity_1">',
+      '<select id="ticket-quantity-2" name="quantity_2">',
     ]);
     expect(occurrences(html, 'class="ticket-row"')).toBe(2);
     // The rows are joined edge to edge, and nothing renders in a row's
     // accessory slots (image, description, price, add-on selector).
-    assertStringIncludes(html, '</div>\n  \n    <div class="ticket-row">');
     assert(!html.includes("mutated"));
   });
 
@@ -333,7 +348,7 @@ describe("buildPageListingRows", () => {
       prefill,
     });
     expectIncludesAll(html, [
-      '<label>Number of Tickets<select name="quantity_1">',
+      '<label>Number of Tickets<select id="ticket-quantity-1" name="quantity_1">',
       '<option value="3" selected>',
     ]);
     assert(!html.includes("Listing A"));
@@ -350,7 +365,7 @@ describe("buildPageListingRows", () => {
       '<input type="hidden" name="quantity_1" value="1" />',
     );
     assert(!html.includes("Number of"));
-    assert(!html.includes('<select name="quantity_1">'));
+    assert(!html.includes('<select id="ticket-quantity-1" name="quantity_1">'));
   });
 
   test("a hidden quantity still states the term a plan grants", () => {
@@ -387,7 +402,7 @@ describe("buildPageListingRows", () => {
     expectIncludesAll(planHtml, [
       '<option value="1">3 months</option>',
       '<option value="2">6 months</option>',
-      '<label>Number of months<select name="quantity_1">',
+      '<label>Number of months<select id="ticket-quantity-1" name="quantity_1">',
     ]);
     assert(!planHtml.includes("Number of Tickets"));
     assert(!planHtml.includes('">2</option>'));
@@ -397,7 +412,7 @@ describe("buildPageListingRows", () => {
       listings: [rowListing(1, "Listing A", "ab12c")],
     });
     expectIncludesAll(ordinaryHtml, [
-      '<label>Number of Tickets<select name="quantity_1">',
+      '<label>Number of Tickets<select id="ticket-quantity-1" name="quantity_1">',
       '<option value="2">2</option>',
     ]);
     assert(!ordinaryHtml.includes("Number of months"));
@@ -417,7 +432,7 @@ describe("buildPageListingRows", () => {
       renewal: true,
     });
     expectIncludesAll(html, [
-      '<label>Number of months<select name="quantity_1">',
+      '<label>Number of months<select id="ticket-quantity-1" name="quantity_1">',
       // Fulfillment extends the site by months per unit: two units of a
       // one-month-per-unit tier are two months.
       '<option value="2">2 months</option>',

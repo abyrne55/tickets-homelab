@@ -151,8 +151,10 @@ export const selectOptionsFromHtml = (
   html: string,
   selectName: string,
 ): string => {
-  const needle = `<select name="${selectName}"`;
-  const start = html.indexOf(needle);
+  // The quantity selects carry an id before their name.
+  const start = html.search(
+    new RegExp(`<select(?: id="[^"]*")? name="${selectName}"`),
+  );
   if (start === -1) {
     throw new Error(`No <select name="${selectName}"> found in HTML`);
   }

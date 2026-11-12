@@ -81,7 +81,7 @@ const SPECIAL_APPLIERS: Record<string, (raw: string | undefined) => void> = {
     applyCountryDerived(getCountry(country));
   },
   [CONFIG_KEYS.THEME]: (raw) => {
-    data.theme = raw === "dark" ? "dark" : "light";
+    data.theme = raw === "dark" || raw === "light" ? raw : "auto";
   },
   [CONFIG_KEYS.UNDERLINE_LINKS]: boolApply("underline_links"),
   [CONFIG_KEYS.SHOW_PUBLIC_API]: boolApply("show_public_api"),

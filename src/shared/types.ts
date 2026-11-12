@@ -88,7 +88,7 @@ export type ContactFields = Pick<ContactInfo, "name" | "email"> &
   Partial<Pick<ContactInfo, "phone" | "address" | "special_instructions">>;
 
 /** UI theme */
-export type Theme = "light" | "dark";
+export type Theme = "light" | "dark" | "auto";
 
 /** Schema for supported payment provider identifiers */
 export const PaymentProviderSchema = v.picklist(["stripe", "square", "sumup"]);

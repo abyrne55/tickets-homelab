@@ -99,6 +99,7 @@ export const SETTINGS_FORM_DEFINITIONS = [
         fieldName: "theme",
         kind: "radios",
         options: [
+          { labelKey: "settings.theme_auto", value: "auto" },
           { labelKey: "settings.theme_light", value: "light" },
           { labelKey: "settings.theme_dark", value: "dark" },
         ],
