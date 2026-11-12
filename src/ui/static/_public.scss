@@ -555,6 +555,22 @@
       font-weight: 400;
     }
 
+    // A parent's child options are quantity-per-item rows too: a compact
+    // select, then the option's name. Stacked, each name fell between two
+    // selects and read as the label of the one below it.
+    .child-selector .child-option {
+      align-items: center;
+      flex-direction: row;
+      font-weight: 400;
+      gap: 0.75rem;
+    }
+
+    .child-selector .child-option > select {
+      flex: none;
+      inline-size: auto;
+      min-inline-size: 4.5rem;
+    }
+
     // ---- Submit and running total ---------------------------------------------
     button[type="submit"],
     .btn {
