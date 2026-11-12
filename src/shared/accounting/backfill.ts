@@ -176,7 +176,7 @@ export const backfillTransfers = async (
   pageSize: number = ATTENDEE_PAGE,
 ): Promise<void> => {
   let afterId = 0;
-  for (;;) {
+  while (true) {
     const attendeeIds = await nextPaidAttendeeIds(afterId, pageSize);
     if (attendeeIds.length === 0) return;
     const ledgered = await alreadyLedgered(attendeeIds);

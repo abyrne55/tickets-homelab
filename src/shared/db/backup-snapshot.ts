@@ -108,7 +108,7 @@ export const exportTable = async (
   let cursor = 0;
   let suppliedPage = firstPage;
 
-  for (;;) {
+  while (true) {
     const rows =
       suppliedPage ?? (await read(tablePageStatement(table, cursor, pageSize)));
     suppliedPage = undefined;

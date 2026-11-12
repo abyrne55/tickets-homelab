@@ -14,7 +14,7 @@ const PORT_FLAG = "-http-port";
  * work, so the accept loop is what keeps the mock alive. */
 const holdPort = async (port: number): Promise<never> => {
   const listener = Deno.listen({ hostname: "127.0.0.1", port });
-  for (;;) {
+  while (true) {
     (await listener.accept()).close();
   }
 };
