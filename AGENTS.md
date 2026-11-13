@@ -1,12 +1,12 @@
 ## What this is
 
-A slimmed, security-focused fork of [Chobble Tickets](https://github.com/chobbledotcom/tickets): a Deno + libsql (SQLite/Turso) booking and ticketing server. This fork ships only as a hardened container image (Hummingbird base, `deno compile` single binary) for rootless Podman Quadlets. Upstream's Nix/devenv, Bunny edge build and deploy tooling, `cli/`, `docs/`, Cucumber, TLA models, and mutation testing were removed on purpose. Do not reintroduce them. Comments and some code (`bunny-*.ts`) still refer to upstream platforms.
+A slimmed, security-focused fork of [Chobble Tickets](https://github.com/chobbledotcom/tickets): a Deno + libsql (SQLite/Turso) booking and ticketing server. This fork ships only as a hardened container image (Hummingbird base, `deno compile` single binary) for rootless Podman Quadlets. Upstream's own tooling and docs (Nix, Bunny deploy, `cli/`, `docs/`, Cucumber, TLA, mutation testing) were removed on purpose. Do not reintroduce them. Comments and some code (`bunny-*.ts`) still refer to upstream platforms.
 
 ## Getting oriented
 
 Before exploring the source, run `repomix` and read `repomix-output.xml`. It is a repo map of about 7k tokens that costs far less than browsing directories one by one. Then, when you need to understand a whole area, pack just that area with `repomix -c repomix.code.config.json --include "<glob>"` and read `repomix-code.xml` instead of opening its files one at a time. Sizes are in the table under Commands. For a specific symbol or a file you already know, `grep` and a direct read are cheaper than a pack.
 
-Repomix runs on the host, not through `./dev`. If `repomix` is not installed, use `npx repomix` in its place. Rerun it rather than trusting an old output file, since nothing regenerates the packs.
+Repomix runs on the host, not through `./dev` (use `npx repomix` if it is not installed). Nothing regenerates its output, so rerun it rather than trusting an old file.
 
 ## Commands
 
@@ -66,7 +66,7 @@ For code, pack only the area you are working on with the second config, which wr
 | `src/ui/client/**` | 9k |
 | `scripts/**` | 8k |
 
-Without `--include` it packs everything, about 456k tokens, which is too large to load whole. For sizes of other directories, run it with `--token-count-tree 5000`. Nothing regenerates either file automatically; rerun the command if it looks stale.
+Without `--include` it packs everything (about 456k tokens, too large to load). Run it with `--token-count-tree 5000` for other directories' sizes.
 
 ### Seeding a local instance
 
@@ -77,11 +77,10 @@ deno run --allow-net --allow-env scripts/seed-instance.ts [--url http://localhos
 ```
 
 - Start the image first with `DB_URL=file:/data/tickets.db`, a `DB_ENCRYPTION_KEY` (keep it: without it the volume cannot be read), a `/data` volume and `/tmp` mounted `exec`.
-- It drives the HTML forms for setup (country US, so USD), login, the `api-keys` and `questions` features, and an API key, then seeds through the typed admin API. It prints the URL, username, the password when generated, and the API key.
 - `TICKETS_URL`, `ADMIN_USERNAME` and `ADMIN_PASSWORD` override the defaults. It exits non-zero with "already set up" on an instance that has been through `/setup`, so re-seeding needs a new volume.
 - Listing names are unique across the instance. A request with an empty `Cookie:` header gets a 503.
 
-**To add listings, groups, or questions while testing, use the API key the seed script printed.** Do not re-run the script, re-run `/setup`, or edit the database directly. Send `Authorization: Bearer <key>` to `/api/admin/groups`, `/api/admin/listings` and `/api/admin/questions`, with `curl` or the typed client in `src/shared/admin-api-client.ts`. Group and listing bodies have no schema in `ADMIN_API_RESOURCES`: take field names from `groupCatalogFields` and `listingCatalogFields` in `src/shared/catalog-fields/fields.ts`. Record the key when the script prints it, since it is shown once. If it is lost, log in at `/admin/login` with the admin credentials and create another at `/admin/api-keys`.
+**To add listings, groups, or questions while testing, use the API key the seed script printed** (it is shown once; keep it). Do not re-run the script, re-run `/setup`, or edit the database directly. Send `Authorization: Bearer <key>` to `/api/admin/groups`, `/listings` and `/questions`, with `curl` or `src/shared/admin-api-client.ts`. Group and listing bodies have no schema in `ADMIN_API_RESOURCES`: take field names from `groupCatalogFields` and `listingCatalogFields` in `src/shared/catalog-fields/fields.ts`.
 
 ## Things the code won't tell you quickly
 
@@ -116,4 +115,4 @@ These shape what code can do at runtime (see `Containerfile`):
 - The runtime image has no shell and runs as UID 65532. Nothing can shell out.
 - Files read at runtime must be listed with `--include` in the `deno compile` step. A new runtime asset directory or a native/WASM codec needs a matching flag.
 - The root filesystem may be read-only. libsql unpacks its native library into `/tmp`, which must be mounted `exec`.
-- Deno, Biome, and stripe-mock versions are ARGs in `Containerfile` and `Containerfile.dev`. Renovate bumps them. The build verifies each download against the checksum the release publishes (the GitHub asset digest for Biome), so no hashes are stored. The Deno version must match in both files. `renovate.json5` holds the deliberate version holds (stripe, stripe-mock, libsql, Sentry; see PR #12) and is where to lift them.
+- Deno, Biome, and stripe-mock versions are ARGs in `Containerfile` and `Containerfile.dev`, bumped by Renovate and checksum-verified at build time. The Deno version must match in both files. `renovate.json5` holds the deliberate version holds (stripe, stripe-mock, libsql, Sentry; see PR #12) and is where to lift them.
