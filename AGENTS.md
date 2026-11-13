@@ -85,12 +85,16 @@ Without `--include` it packs everything, about 456k tokens, which is too large t
 
 ## Seeding a local instance
 
-There is no seed script. To browse the UI with data:
+`scripts/seed-instance.ts` fills a **fresh** container (not yet through `/setup`) with sample groups, listings and questions. Run it from the host:
 
-- Run the image with `DB_URL=file:/data/tickets.db` and a `DB_ENCRYPTION_KEY`, and keep the key: without it the volume cannot be read.
-- Complete `/setup`, enable API keys at `/admin/features/api-keys`, then create a key at `/admin/api-keys`.
-- Seed through the JSON admin API with `Authorization: Bearer <key>`: `POST /api/admin/groups` and `/api/admin/listings`. Listing fields include `single_ticket_per_order`, `group_ids`, `child_listing_ids`, `can_pay_more` and `max_price`. Prices are in minor units (cents).
-- These routes live in `src/features/admin/api-*.ts`, not under `src/features/api/`.
+```bash
+deno run --allow-net --allow-env scripts/seed-instance.ts [--url http://localhost:3000]
+```
+
+- Start the image first with `DB_URL=file:/data/tickets.db`, a `DB_ENCRYPTION_KEY` (keep it: without it the volume cannot be read), a `/data` volume and `/tmp` mounted `exec`.
+- It drives the HTML forms for setup (country US, so USD), login, the `api-keys` and `questions` features, and an API key, then seeds through the typed admin API. It prints the URL, username, the password when generated, and the API key.
+- `TICKETS_URL`, `ADMIN_USERNAME` and `ADMIN_PASSWORD` override the defaults. It exits non-zero with "already set up" on an instance that has been through `/setup`, so re-seeding needs a new volume.
+- Listing names are unique across the instance. A request with an empty `Cookie:` header gets a 503.
 
 ## Container constraints
 
