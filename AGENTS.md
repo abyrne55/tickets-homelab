@@ -83,6 +83,7 @@ Without `--include` it packs everything, about 456k tokens, which is too large t
 These shape what code can do at runtime (see `Containerfile`):
 
 - The binary is compiled with `--allow-write=/data` only. Any new write path must be under `/data`.
+- `healthcheck/` is a Rust crate with no dependencies (keep it that way). Only the `Containerfile` builds it, and the dev image does not. It is the `HealthCmd` probe, and `scripts/container-check.sh` exercises it.
 - The runtime image has no shell and runs as UID 65532. Nothing can shell out.
 - Files read at runtime must be listed with `--include` in the `deno compile` step. A new runtime asset directory or a native/WASM codec needs a matching flag.
 - The root filesystem may be read-only. libsql unpacks its native library into `/tmp`, which must be mounted `exec`.

@@ -102,10 +102,20 @@ step below runs as your normal user, not as root.
    PublishPort=3000:3000
    Volume=tickets-data.volume:/data
    Secret=tickets-db-key,type=env,target=DB_ENCRYPTION_KEY
+   HealthCmd=/usr/local/bin/healthcheck
+   HealthInterval=30s
+   HealthStartPeriod=30s
+   HealthOnFailure=kill
+
+   [Service]
+   Restart=always
 
    [Install]
    WantedBy=default.target
    ```
+
+   `HealthOnFailure=kill` makes Podman kill the container when the health check
+   fails, and `Restart=always` in `[Service]` makes systemd start it again.
 
    Because `Volume=` names the `.volume` unit, systemd creates the volume before
    it starts the container.
@@ -122,10 +132,15 @@ step below runs as your normal user, not as root.
 
 ## The container image
 
-The `Containerfile` has two stages. The build stage compiles the server into a
-single binary with `deno compile`. The runtime stage is
-`quay.io/hummingbird/curl:8`, which has no shell and no init process. The
-server:
+The `Containerfile` has three stages. The build stage compiles the server into a
+single binary with `deno compile`. A second stage builds `healthcheck`, a small
+dependency-free Rust program. The runtime stage is
+`quay.io/hummingbird/core-runtime:2` with its shell removed, so the image has no
+shell and no init process. `/usr/local/bin/healthcheck` requests
+`http://127.0.0.1:$PORT/health` (`PORT` defaults to 3000) and exits 0 only on a
+healthy answer. Use it as `HealthCmd`, as in the Quadlet above. The RPM database
+still lists bash, so image scanners may report bash CVEs that no longer apply.
+The server:
 
 - Runs as the unprivileged user 65532.
 - Can write only under `/data`. A bind mount must belong to user 65532
