@@ -4,7 +4,7 @@ A slimmed, security-focused fork of [Chobble Tickets](https://github.com/chobble
 
 ## Getting oriented
 
-Before exploring the source, run `repomix` and read `repomix-output.xml`. It is a repo map of about 7k tokens that costs far less than browsing directories one by one. Then, when you need to understand a whole area, pack just that area with `repomix -c repomix.code.config.json --include "<glob>"` and read `repomix-code.xml` instead of opening its files one at a time. Sizes and details are under Commands. For a specific symbol or a file you already know, `grep` and a direct read are cheaper than a pack.
+Before exploring the source, run `repomix` and read `repomix-output.xml`. It is a repo map of about 7k tokens that costs far less than browsing directories one by one. Then, when you need to understand a whole area, pack just that area with `repomix -c repomix.code.config.json --include "<glob>"` and read `repomix-code.xml` instead of opening its files one at a time. Sizes are in the table under Commands. For a specific symbol or a file you already know, `grep` and a direct read are cheaper than a pack.
 
 Repomix runs on the host, not through `./dev`. If `repomix` is not installed, use `npx repomix` in its place. Rerun it rather than trusting an old output file, since nothing regenerates the packs.
 
@@ -27,7 +27,7 @@ podman build -t tickets-dev -f Containerfile.dev .
 ```
 
 - Run tests through `scripts/test.sh`, not bare `deno test`. It builds static assets, starts stripe-mock on a free port, exports a test `DB_ENCRYPTION_KEY`, and preloads `test/test-utils/preload.ts`.
-- Deno's `--filter` cannot see a nested `it`, and reports success with zero tests run. Filter by name with the `TICKETS_TEST_FILTER` environment variable instead (a substring, or `/regex/`). Other arguments to `scripts/test.sh` pass through to `deno test`.
+- Never use Deno's `--filter`: it cannot see a nested `it` and reports success with zero tests run. Set `TICKETS_TEST_FILTER` (a substring, or `/regex/`) instead. Other arguments to `scripts/test.sh` pass through to `deno test`.
 - Tests run with `--no-check`, so a passing test run says nothing about types. Run typecheck separately.
 - In CI, call `biome` directly rather than `deno task lint:ci`: with a fresh Deno cache the task resolves to a broken npm copy of Biome.
 - `CONTAINER_ENGINE=docker` switches `./dev` and `scripts/container-check.sh` to Docker.
@@ -41,9 +41,17 @@ CONTAINER_IMAGE=localhost/tickets scripts/container-check.sh   # serves, exits 0
 
 CI (`.github/workflows/pr.yml`) runs typecheck, Biome, the test suite, and the image build plus `container-check.sh`. A push to `main` publishes `ghcr.io/abyrne55/tickets-homelab:main` for amd64 and arm64. Actions are pinned by commit SHA; keep it that way.
 
-If your shell commands run in a sandbox, `git` and `gh` commands typically need to run outside it. `git commit` triggers the prek hooks, which write a log under `~/.cache/prek`, and `gh` fails TLS verification through a filtering proxy. `git push` can also fail to set upstream tracking. Read-only commands such as `git status` and `git log` work inside the sandbox. Don't work around a hook failure with `--no-verify`.
+### Running from a sandboxed shell
 
-`prek.toml` defines the pre-commit hooks (built-in checks only). Running `repomix` produces `repomix-output.xml` (gitignored): a repo map, meaning the directory tree and no file contents, at about 7k tokens. It is small enough to read at session start. `.repomixignore` leaves out tests, locales, templates, styles, migrations, and lockfiles, so read those directly.
+If your shell commands run in a sandbox:
+
+- `git` and `gh` commands typically need to run outside it. `git commit` triggers the prek hooks, which write a log under `~/.cache/prek`, and `gh` fails TLS verification through a filtering proxy. `git push` can also fail to set upstream tracking. Read-only commands such as `git status` and `git log` work inside it. Don't work around a hook failure with `--no-verify`.
+- `podman` and any request to a container's published localhost port (`curl`, `scripts/seed-instance.ts`, `scripts/container-check.sh`) also need to run outside it.
+- Check `podman images` before building: `localhost/tickets` is often already there.
+
+### Repo packs
+
+`prek.toml` defines the pre-commit hooks (built-in checks only). `.repomixignore` leaves `repomix-output.xml` without tests, locales, templates, styles, migrations, and lockfiles, so read those directly.
 
 For code, pack only the area you are working on with the second config, which writes `repomix-code.xml` (gitignored) with comments stripped and bodies compressed: `repomix -c repomix.code.config.json --include "<glob>"`. Any glob or comma-separated list of globs works, so pick the narrowest directory that covers the task. Approximate sizes:
 
@@ -60,6 +68,21 @@ For code, pack only the area you are working on with the second config, which wr
 
 Without `--include` it packs everything, about 456k tokens, which is too large to load whole. For sizes of other directories, run it with `--token-count-tree 5000`. Nothing regenerates either file automatically; rerun the command if it looks stale.
 
+### Seeding a local instance
+
+`scripts/seed-instance.ts` fills a **fresh** container (not yet through `/setup`) with sample groups, listings and questions. Run it from the host:
+
+```bash
+deno run --allow-net --allow-env scripts/seed-instance.ts [--url http://localhost:3000]
+```
+
+- Start the image first with `DB_URL=file:/data/tickets.db`, a `DB_ENCRYPTION_KEY` (keep it: without it the volume cannot be read), a `/data` volume and `/tmp` mounted `exec`.
+- It drives the HTML forms for setup (country US, so USD), login, the `api-keys` and `questions` features, and an API key, then seeds through the typed admin API. It prints the URL, username, the password when generated, and the API key.
+- `TICKETS_URL`, `ADMIN_USERNAME` and `ADMIN_PASSWORD` override the defaults. It exits non-zero with "already set up" on an instance that has been through `/setup`, so re-seeding needs a new volume.
+- Listing names are unique across the instance. A request with an empty `Cookie:` header gets a 503.
+
+**To add listings, groups, or questions while testing, use the API key the seed script printed.** Do not re-run the script, re-run `/setup`, or edit the database directly. Send `Authorization: Bearer <key>` to `/api/admin/groups`, `/api/admin/listings` and `/api/admin/questions`, with `curl` or the typed client in `src/shared/admin-api-client.ts`. Group and listing bodies have no schema in `ADMIN_API_RESOURCES`: take field names from `groupCatalogFields` and `listingCatalogFields` in `src/shared/catalog-fields/fields.ts`. Record the key when the script prints it, since it is shown once. If it is lost, log in at `/admin/login` with the admin credentials and create another at `/admin/api-keys`.
+
 ## Things the code won't tell you quickly
 
 - `src/index.ts` is the only entry point the image uses. `handleRequest` in `src/features/app/request.ts` (alias `#routes`) is the request pipeline, and it dispatches on the first path segment through the prefix table in `src/features/app/prefixes.ts`.
@@ -73,6 +96,7 @@ Without `--include` it packs everything, about 456k tokens, which is too large t
 - i18n copy lives in `src/locales/en/*.json`, split into groups. A route must declare the groups it needs (`src/locales/groups.ts`, `withMessageGroups`) before `t()` can read them.
 - Use the `#` import aliases from `deno.json` (`#db/`, `#shared/`, `#routes/`, `#fp`, `#test-utils/`, ...) rather than relative paths across directories.
 - The code is written in the curried, pipe-friendly style of `src/fp.ts`. Biome bans `forEach`, accumulating spreads, and `console`, rejects focused and skipped tests and files over 1000 lines, and warns on cognitive complexity above 12 in `src/`. CI treats warnings as errors.
+- `exactOptionalPropertyTypes` is on: assigning `undefined` to an optional property (`{ body: maybeUndefined }`, `slug?: string` given `string | undefined`) fails typecheck. Declare `prop?: T | undefined`, or spread conditionally (`...(x === undefined ? {} : { x })`).
 - `test/test-utils/` is a large library of factories, fixtures, and stubs. Look there before writing a new helper.
 - In happy-dom tests, `dispatchEvent` only reaches listeners if the test passes `["Event"]` to `createDomInstaller`. Query with `requireElement<T>()`: `querySelector<HTMLInputElement>` fails typecheck against happy-dom's types.
 - To change the schema, follow the header comment in `src/shared/db/migrations.ts`, including bumping `LATEST_UPDATE`.
@@ -82,19 +106,6 @@ Without `--include` it packs everything, about 456k tokens, which is too large t
 - `@std/testing/bdd` is remapped in `deno.json` to `test/test-utils/bdd.ts`. Import `describe`/`it` from `@std/testing/bdd` as usual.
 - A test file containing the comment `test-groups: run-alone` runs serially in a second pass. Use it for happy-dom tests whose timers outlive the test.
 - `// effects: pure` on the first line marks a module as free of side effects. Keep the marker truthful when editing such a file.
-
-## Seeding a local instance
-
-`scripts/seed-instance.ts` fills a **fresh** container (not yet through `/setup`) with sample groups, listings and questions. Run it from the host:
-
-```bash
-deno run --allow-net --allow-env scripts/seed-instance.ts [--url http://localhost:3000]
-```
-
-- Start the image first with `DB_URL=file:/data/tickets.db`, a `DB_ENCRYPTION_KEY` (keep it: without it the volume cannot be read), a `/data` volume and `/tmp` mounted `exec`.
-- It drives the HTML forms for setup (country US, so USD), login, the `api-keys` and `questions` features, and an API key, then seeds through the typed admin API. It prints the URL, username, the password when generated, and the API key.
-- `TICKETS_URL`, `ADMIN_USERNAME` and `ADMIN_PASSWORD` override the defaults. It exits non-zero with "already set up" on an instance that has been through `/setup`, so re-seeding needs a new volume.
-- Listing names are unique across the instance. A request with an empty `Cookie:` header gets a 503.
 
 ## Container constraints
 
