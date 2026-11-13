@@ -49,9 +49,26 @@ stop_cleanly() {
   echo "Container stopped on SIGTERM (exit $exit_code)."
 }
 
+check_probe() {
+  if ! "$engine" exec "$container" /usr/local/bin/healthcheck; then
+    echo "The healthcheck binary failed against a healthy server." >&2
+    exit 1
+  fi
+  if "$engine" exec -e PORT=1 "$container" /usr/local/bin/healthcheck 2>/dev/null; then
+    echo "The healthcheck binary passed against a closed port." >&2
+    exit 1
+  fi
+  if "$engine" exec "$container" /bin/sh -c true >/dev/null 2>&1; then
+    echo "The image contains a working /bin/sh; it should have none." >&2
+    exit 1
+  fi
+  echo "Healthcheck passed and failed as expected; the image has no shell."
+}
+
 start
 wait_for_health
 echo "Server answered /health."
+check_probe
 home="$(status /)"
 setup="$(status /setup)"
 if [ "$home" != "503" ] || [ "$setup" != "200" ]; then
@@ -74,5 +91,6 @@ stop_cleanly
 # the /tmp mount must allow programs to run. Docker mounts tmpfs as noexec.
 start --read-only --tmpfs /tmp:rw,exec,mode=1777
 wait_for_health
+check_probe
 echo "Server restarted on the same volume with a read-only root."
 stop_cleanly

@@ -34,9 +34,22 @@ RUN deno compile --no-check --frozen --node-modules-dir=auto \
       --output /out/tickets src/index.ts
 RUN mkdir -p /rootfs/data
 
-FROM quay.io/hummingbird/curl:8
+# Tiny dependency-free probe for Quadlet's HealthCmd (the image has no shell).
+FROM quay.io/hummingbird/rust:1.99 AS healthcheck
+WORKDIR /src
+COPY healthcheck ./
+RUN cargo test --release --locked --offline \
+ && cargo build --release --locked --offline
+
+FROM quay.io/hummingbird/core-runtime:2
+USER 0
+# core-runtime ships bash; the server never shells out, so remove it.
+RUN rm -f /usr/bin/bash /usr/bin/sh /usr/bin/bashbug /usr/bin/bashbug-64
 COPY --from=build --chown=65532:0 /out/tickets /usr/local/bin/tickets
 COPY --from=build --chown=65532:0 /rootfs/data /data
+COPY --from=healthcheck --chown=0:0 --chmod=0755 /src/target/release/healthcheck /usr/local/bin/healthcheck
+# There is no HEALTHCHECK instruction on purpose: Podman's default OCI format
+# drops it. The Quadlet sets HealthCmd=/usr/local/bin/healthcheck instead.
 ENV DB_URL=file:/data/tickets.db \
     PORT=3000
 WORKDIR /data

@@ -9,3 +9,4 @@ test
 *.db*
 .db-key
 .env
+healthcheck/target
