@@ -66,10 +66,15 @@ Without `--include` it packs everything, about 456k tokens, which is too large t
 - Route params are typed by name (`src/features/router.ts`): `id` and `*Id` are parsed as numbers, everything else is a string.
 - Templates in `src/ui/templates/` are TSX on the project's own JSX runtime (`src/shared/jsx/`). This is not React.
 - `src/ui/static/*.js` and `style.css` are gitignored build output from `scripts/build-static-assets.ts`, embedded in the compiled binary. Edit `src/ui/client/` instead.
+- `src/ui/client/admin.ts` is the client entry for every page, public booking pages included, despite its name. Put a behaviour for any page in `src/ui/client/admin/` and wire it up in `admin.ts`.
+- `/style.css` and `/admin.js` are served `immutable` with a one-year cache, so a browser keeps the old files after a rebuild and a working fix can look broken. In the page, run `fetch(path, {cache: "reload"})` for each file, then reload.
+- The CSP blocks an injected `<style>` element, so testing a CSS override that way silently does nothing. Use `new CSSStyleSheet()` with `document.adoptedStyleSheets`.
+- Operator `/custom.css` loads after `style.css` and must keep overriding it. Put public-page variables on `:root` at the base stylesheet's specificity, as `_public.scss` does, and do not wrap the public styles in a cascade layer: the unlayered base would beat them.
 - i18n copy lives in `src/locales/en/*.json`, split into groups. A route must declare the groups it needs (`src/locales/groups.ts`, `withMessageGroups`) before `t()` can read them.
 - Use the `#` import aliases from `deno.json` (`#db/`, `#shared/`, `#routes/`, `#fp`, `#test-utils/`, ...) rather than relative paths across directories.
 - The code is written in the curried, pipe-friendly style of `src/fp.ts`. Biome bans `forEach`, accumulating spreads, and `console`, rejects focused and skipped tests and files over 1000 lines, and warns on cognitive complexity above 12 in `src/`. CI treats warnings as errors.
 - `test/test-utils/` is a large library of factories, fixtures, and stubs. Look there before writing a new helper.
+- In happy-dom tests, `dispatchEvent` only reaches listeners if the test passes `["Event"]` to `createDomInstaller`. Query with `requireElement<T>()`: `querySelector<HTMLInputElement>` fails typecheck against happy-dom's types.
 - To change the schema, follow the header comment in `src/shared/db/migrations.ts`, including bumping `LATEST_UPDATE`.
 - An N+1 query guard (`#db/query-log.ts`) throws in dev and test, so a test can fail because a handler repeats a query.
 - Settings load on demand per path prefix (`src/features/settings-bundles.ts`). In dev and test, a route that reads a setting its prefix bundle does not declare fails an assertion at the end of the request.
@@ -77,6 +82,15 @@ Without `--include` it packs everything, about 456k tokens, which is too large t
 - `@std/testing/bdd` is remapped in `deno.json` to `test/test-utils/bdd.ts`. Import `describe`/`it` from `@std/testing/bdd` as usual.
 - A test file containing the comment `test-groups: run-alone` runs serially in a second pass. Use it for happy-dom tests whose timers outlive the test.
 - `// effects: pure` on the first line marks a module as free of side effects. Keep the marker truthful when editing such a file.
+
+## Seeding a local instance
+
+There is no seed script. To browse the UI with data:
+
+- Run the image with `DB_URL=file:/data/tickets.db` and a `DB_ENCRYPTION_KEY`, and keep the key: without it the volume cannot be read.
+- Complete `/setup`, enable API keys at `/admin/features/api-keys`, then create a key at `/admin/api-keys`.
+- Seed through the JSON admin API with `Authorization: Bearer <key>`: `POST /api/admin/groups` and `/api/admin/listings`. Listing fields include `single_ticket_per_order`, `group_ids`, `child_listing_ids`, `can_pay_more` and `max_price`. Prices are in minor units (cents).
+- These routes live in `src/features/admin/api-*.ts`, not under `src/features/api/`.
 
 ## Container constraints
 
