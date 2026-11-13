@@ -1,12 +1,12 @@
 ## What this is
 
-A slimmed, security-focused fork of [Chobble Tickets](https://github.com/chobbledotcom/tickets): a Deno + libsql (SQLite/Turso) booking and ticketing server. This fork ships only as a hardened container image (Hummingbird base, `deno compile` single binary) for rootless Podman Quadlets. Upstream's Nix/devenv, Bunny edge build and deploy tooling, `cli/`, `docs/`, Cucumber, TLA models, and mutation testing were removed on purpose. Do not reintroduce them. Comments and some code (`bunny-*.ts`) still refer to upstream platforms.
+A slimmed, security-focused fork of [Chobble Tickets](https://github.com/chobbledotcom/tickets): a Deno + libsql (SQLite/Turso) booking and ticketing server. This fork ships only as a hardened container image (Hummingbird base, `deno compile` single binary) for rootless Podman Quadlets. Upstream's own tooling and docs (Nix, Bunny deploy, `cli/`, `docs/`, Cucumber, TLA, mutation testing) were removed on purpose. Do not reintroduce them. Comments and some code (`bunny-*.ts`) still refer to upstream platforms.
 
 ## Getting oriented
 
-Before exploring the source, run `repomix` and read `repomix-output.xml`. It is a repo map of about 7k tokens that costs far less than browsing directories one by one. Then, when you need to understand a whole area, pack just that area with `repomix -c repomix.code.config.json --include "<glob>"` and read `repomix-code.xml` instead of opening its files one at a time. Sizes and details are under Commands. For a specific symbol or a file you already know, `grep` and a direct read are cheaper than a pack.
+Before exploring the source, run `repomix` and read `repomix-output.xml`. It is a repo map of about 7k tokens that costs far less than browsing directories one by one. Then, when you need to understand a whole area, pack just that area with `repomix -c repomix.code.config.json --include "<glob>"` and read `repomix-code.xml` instead of opening its files one at a time. Sizes are in the table under Commands. For a specific symbol or a file you already know, `grep` and a direct read are cheaper than a pack.
 
-Repomix runs on the host, not through `./dev`. If `repomix` is not installed, use `npx repomix` in its place. Rerun it rather than trusting an old output file, since nothing regenerates the packs.
+Repomix runs on the host, not through `./dev` (use `npx repomix` if it is not installed). Nothing regenerates its output, so rerun it rather than trusting an old file.
 
 ## Commands
 
@@ -27,7 +27,7 @@ podman build -t tickets-dev -f Containerfile.dev .
 ```
 
 - Run tests through `scripts/test.sh`, not bare `deno test`. It builds static assets, starts stripe-mock on a free port, exports a test `DB_ENCRYPTION_KEY`, and preloads `test/test-utils/preload.ts`.
-- Deno's `--filter` cannot see a nested `it`, and reports success with zero tests run. Filter by name with the `TICKETS_TEST_FILTER` environment variable instead (a substring, or `/regex/`). Other arguments to `scripts/test.sh` pass through to `deno test`.
+- Never use Deno's `--filter`: it cannot see a nested `it` and reports success with zero tests run. Set `TICKETS_TEST_FILTER` (a substring, or `/regex/`) instead. Other arguments to `scripts/test.sh` pass through to `deno test`.
 - Tests run with `--no-check`, so a passing test run says nothing about types. Run typecheck separately.
 - In CI, call `biome` directly rather than `deno task lint:ci`: with a fresh Deno cache the task resolves to a broken npm copy of Biome.
 - `CONTAINER_ENGINE=docker` switches `./dev` and `scripts/container-check.sh` to Docker.
@@ -41,9 +41,17 @@ CONTAINER_IMAGE=localhost/tickets scripts/container-check.sh   # serves, exits 0
 
 CI (`.github/workflows/pr.yml`) runs typecheck, Biome, the test suite, and the image build plus `container-check.sh`. A push to `main` publishes `ghcr.io/abyrne55/tickets-homelab:main` for amd64 and arm64. Actions are pinned by commit SHA; keep it that way.
 
-If your shell commands run in a sandbox, `git` and `gh` commands typically need to run outside it. `git commit` triggers the prek hooks, which write a log under `~/.cache/prek`, and `gh` fails TLS verification through a filtering proxy. `git push` can also fail to set upstream tracking. Read-only commands such as `git status` and `git log` work inside the sandbox. Don't work around a hook failure with `--no-verify`.
+### Running from a sandboxed shell
 
-`prek.toml` defines the pre-commit hooks (built-in checks only). Running `repomix` produces `repomix-output.xml` (gitignored): a repo map, meaning the directory tree and no file contents, at about 7k tokens. It is small enough to read at session start. `.repomixignore` leaves out tests, locales, templates, styles, migrations, and lockfiles, so read those directly.
+If your shell commands run in a sandbox:
+
+- `git` and `gh` commands typically need to run outside it. `git commit` triggers the prek hooks, which write a log under `~/.cache/prek`, and `gh` fails TLS verification through a filtering proxy. `git push` can also fail to set upstream tracking. Read-only commands such as `git status` and `git log` work inside it. Don't work around a hook failure with `--no-verify`.
+- `podman` and any request to a container's published localhost port (`curl`, `scripts/seed-instance.ts`, `scripts/container-check.sh`) also need to run outside it.
+- Check `podman images` before building: `localhost/tickets` is often already there.
+
+### Repo packs
+
+`prek.toml` defines the pre-commit hooks (built-in checks only). `.repomixignore` leaves `repomix-output.xml` without tests, locales, templates, styles, migrations, and lockfiles, so read those directly.
 
 For code, pack only the area you are working on with the second config, which writes `repomix-code.xml` (gitignored) with comments stripped and bodies compressed: `repomix -c repomix.code.config.json --include "<glob>"`. Any glob or comma-separated list of globs works, so pick the narrowest directory that covers the task. Approximate sizes:
 
@@ -58,7 +66,21 @@ For code, pack only the area you are working on with the second config, which wr
 | `src/ui/client/**` | 9k |
 | `scripts/**` | 8k |
 
-Without `--include` it packs everything, about 456k tokens, which is too large to load whole. For sizes of other directories, run it with `--token-count-tree 5000`. Nothing regenerates either file automatically; rerun the command if it looks stale.
+Without `--include` it packs everything (about 456k tokens, too large to load). Run it with `--token-count-tree 5000` for other directories' sizes.
+
+### Seeding a local instance
+
+`scripts/seed-instance.ts` fills a **fresh** container (not yet through `/setup`) with sample groups, listings and questions. Run it from the host:
+
+```bash
+deno run --allow-net --allow-env scripts/seed-instance.ts [--url http://localhost:3000]
+```
+
+- Start the image first with `DB_URL=file:/data/tickets.db`, a `DB_ENCRYPTION_KEY` (keep it: without it the volume cannot be read), a `/data` volume and `/tmp` mounted `exec`.
+- `TICKETS_URL`, `ADMIN_USERNAME` and `ADMIN_PASSWORD` override the defaults. It exits non-zero with "already set up" on an instance that has been through `/setup`, so re-seeding needs a new volume.
+- Listing names are unique across the instance. A request with an empty `Cookie:` header gets a 503.
+
+**To add listings, groups, or questions while testing, use the API key the seed script printed** (it is shown once; keep it). Do not re-run the script, re-run `/setup`, or edit the database directly. Send `Authorization: Bearer <key>` to `/api/admin/groups`, `/listings` and `/questions`, with `curl` or `src/shared/admin-api-client.ts`. Group and listing bodies have no schema in `ADMIN_API_RESOURCES`: take field names from `groupCatalogFields` and `listingCatalogFields` in `src/shared/catalog-fields/fields.ts`.
 
 ## Things the code won't tell you quickly
 
@@ -66,10 +88,16 @@ Without `--include` it packs everything, about 456k tokens, which is too large t
 - Route params are typed by name (`src/features/router.ts`): `id` and `*Id` are parsed as numbers, everything else is a string.
 - Templates in `src/ui/templates/` are TSX on the project's own JSX runtime (`src/shared/jsx/`). This is not React.
 - `src/ui/static/*.js` and `style.css` are gitignored build output from `scripts/build-static-assets.ts`, embedded in the compiled binary. Edit `src/ui/client/` instead.
+- `src/ui/client/admin.ts` is the client entry for every page, public booking pages included, despite its name. Put a behaviour for any page in `src/ui/client/admin/` and wire it up in `admin.ts`.
+- `/style.css` and `/admin.js` are served `immutable` with a one-year cache, so a browser keeps the old files after a rebuild and a working fix can look broken. In the page, run `fetch(path, {cache: "reload"})` for each file, then reload.
+- The CSP blocks an injected `<style>` element, so testing a CSS override that way silently does nothing. Use `new CSSStyleSheet()` with `document.adoptedStyleSheets`.
+- Operator `/custom.css` loads after `style.css` and must keep overriding it. Put public-page variables on `:root` at the base stylesheet's specificity, as `_public.scss` does, and do not wrap the public styles in a cascade layer: the unlayered base would beat them.
 - i18n copy lives in `src/locales/en/*.json`, split into groups. A route must declare the groups it needs (`src/locales/groups.ts`, `withMessageGroups`) before `t()` can read them.
 - Use the `#` import aliases from `deno.json` (`#db/`, `#shared/`, `#routes/`, `#fp`, `#test-utils/`, ...) rather than relative paths across directories.
 - The code is written in the curried, pipe-friendly style of `src/fp.ts`. Biome bans `forEach`, accumulating spreads, and `console`, rejects focused and skipped tests and files over 1000 lines, and warns on cognitive complexity above 12 in `src/`. CI treats warnings as errors.
+- `exactOptionalPropertyTypes` is on: assigning `undefined` to an optional property (`{ body: maybeUndefined }`, `slug?: string` given `string | undefined`) fails typecheck. Declare `prop?: T | undefined`, or spread conditionally (`...(x === undefined ? {} : { x })`).
 - `test/test-utils/` is a large library of factories, fixtures, and stubs. Look there before writing a new helper.
+- In happy-dom tests, `dispatchEvent` only reaches listeners if the test passes `["Event"]` to `createDomInstaller`. Query with `requireElement<T>()`: `querySelector<HTMLInputElement>` fails typecheck against happy-dom's types.
 - To change the schema, follow the header comment in `src/shared/db/migrations.ts`, including bumping `LATEST_UPDATE`.
 - An N+1 query guard (`#db/query-log.ts`) throws in dev and test, so a test can fail because a handler repeats a query.
 - Settings load on demand per path prefix (`src/features/settings-bundles.ts`). In dev and test, a route that reads a setting its prefix bundle does not declare fails an assertion at the end of the request.
@@ -87,4 +115,4 @@ These shape what code can do at runtime (see `Containerfile`):
 - The runtime image has no shell and runs as UID 65532. Nothing can shell out.
 - Files read at runtime must be listed with `--include` in the `deno compile` step. A new runtime asset directory or a native/WASM codec needs a matching flag.
 - The root filesystem may be read-only. libsql unpacks its native library into `/tmp`, which must be mounted `exec`.
-- Deno, Biome, and stripe-mock versions are ARGs in `Containerfile` and `Containerfile.dev`. Renovate bumps them. The build verifies each download against the checksum the release publishes (the GitHub asset digest for Biome), so no hashes are stored. The Deno version must match in both files. `renovate.json5` holds the deliberate version holds (stripe, stripe-mock, libsql, Sentry; see PR #12) and is where to lift them.
+- Deno, Biome, and stripe-mock versions are ARGs in `Containerfile` and `Containerfile.dev`, bumped by Renovate and checksum-verified at build time. The Deno version must match in both files. `renovate.json5` holds the deliberate version holds (stripe, stripe-mock, libsql, Sentry; see PR #12) and is where to lift them.
