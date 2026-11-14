@@ -40,6 +40,11 @@
       groupName: 'sentry',
     },
     {
+      description: 'Wait 3 days after release before proposing npm/jsr updates',
+      matchManagers: ['deno'],
+      minimumReleaseAge: '3 days',
+    },
+    {
       description: 'Automerge non-major updates; majors stay manual',
       matchUpdateTypes: ['minor', 'patch', 'digest'],
       automerge: true,
