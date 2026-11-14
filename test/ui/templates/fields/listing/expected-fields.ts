@@ -8,7 +8,7 @@
 // hint, bound, flag, or choice fails here instead of moving along with it.
 export const LISTING_FIELDS = [
   {
-    hint: "Displayed to attendees on the ticket page",
+    hint: 'Displayed to attendees on the ticket page. If the listing belongs to a group, start the name with the group name (e.g. "Car Show 2026 VIP"): names must be unique, and the group page shows just the part after the group name.',
     label: "Listing name",
     name: "name",
     placeholder: "Village Quiz Night",

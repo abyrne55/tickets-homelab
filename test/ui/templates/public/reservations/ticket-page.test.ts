@@ -433,3 +433,37 @@ describe("ticketPage — packages", () => {
     expectIncludesAll(html, ["Beginner", "Advanced"]);
   });
 });
+
+describe("ticketPage — group listing names", () => {
+  beforeAll(setupAdminPageTest);
+  registerPublicTemplateHooks();
+
+  const listings = () => [
+    ticketListing({ id: 1, name: "Car Show 2026 Regular", slug: "reg01" }),
+    ticketListing({ id: 2, name: "Car Show 2026 VIP", slug: "vip01" }),
+  ];
+
+  test("drops the group prefix from row names but not the header", () => {
+    const html = ticketPage({
+      groupName: "Car Show 2026",
+      listingNamePrefix: "Car Show 2026",
+      listings: listings(),
+      slugs: ["car-show"],
+    });
+    expect(html).toContain("<h1>Car Show 2026</h1>");
+    expect(html).toContain("Regular");
+    expect(html).toContain("VIP");
+    expect(html).not.toContain("Car Show 2026 Regular");
+    expect(html).not.toContain("Car Show 2026 VIP");
+    expect(html).toContain('name="quantity_1"');
+  });
+
+  test("keeps full names without a prefix", () => {
+    const html = ticketPage({
+      groupName: "Renew site",
+      listings: listings(),
+      slugs: ["car-show"],
+    });
+    expect(html).toContain("Car Show 2026 Regular");
+  });
+});

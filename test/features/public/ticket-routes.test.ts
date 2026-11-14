@@ -175,8 +175,9 @@ describeWithEnv("public ticket routes", { db: true }, () => {
     const response = await handleRequest(mockRequest(`/ticket/${group.slug}`));
     expect(response.status).toBe(200);
     const html = await response.text();
-    expectIncludesAll(html, ["Surf Society Lesson 0", "Surf Society Lesson 1"]);
-    assert(!html.includes("Surf Society Secret Tier"));
+    // Group pages drop the group-name prefix from member names.
+    expectIncludesAll(html, ["Lesson 0", "Lesson 1"]);
+    assert(!html.includes("Secret Tier"));
 
     // A crafted quantity field cannot book the hidden tier either: the
     // submission prices the page's own listing set, which no longer has it.
@@ -245,14 +246,14 @@ describeWithEnv("public ticket routes", { db: true }, () => {
     });
 
     const shown = await handleRequest(mockRequest(`/ticket/${group.slug}`));
-    assertStringIncludes(await shown.text(), "Board Game Club Secret Tier");
+    assertStringIncludes(await shown.text(), "Secret Tier");
 
     await updateTestGroup(group.id, { showHiddenListings: false });
     const cleared = await handleRequest(
       mockRequest(`/ticket/${group.slug}?q_${publicTier.id}=1`),
     );
     expect(cleared.status).toBe(200);
-    assert(!(await cleared.text()).includes("Board Game Club Secret Tier"));
+    assert(!(await cleared.text()).includes("Secret Tier"));
   });
 
   /** Book one purchase-only listing and read its reserved page. */

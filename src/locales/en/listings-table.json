@@ -213,7 +213,7 @@
   "listings_table.template_requires_logistics": "Requires logistics (disabled)",
   "listings_table.date_required_for_one_off": "A date is required for one-off events — please enter the event date",
   "fields.listing.name": "Listing name",
-  "fields.listing.name_hint": "Displayed to attendees on the ticket page",
+  "fields.listing.name_hint": "Displayed to attendees on the ticket page. If the listing belongs to a group, start the name with the group name (e.g. \"Car Show 2026 VIP\"): names must be unique, and the group page shows just the part after the group name.",
   "fields.listing.name_placeholder": "Village Quiz Night",
   "fields.listing.type": "Listing type",
   "fields.listing.type_hint": "Daily listings require attendees to select a specific date when booking",
