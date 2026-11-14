@@ -35,7 +35,7 @@ RUN deno compile --no-check --frozen --node-modules-dir=auto \
 RUN mkdir -p /rootfs/data
 
 # Tiny dependency-free probe for Quadlet's HealthCmd (the image has no shell).
-FROM quay.io/hummingbird/rust:1.99 AS healthcheck
+FROM quay.io/hummingbird/rust:1.100 AS healthcheck
 WORKDIR /src
 COPY healthcheck ./
 RUN cargo test --release --locked --offline \
