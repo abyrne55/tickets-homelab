@@ -20,7 +20,6 @@ describe("built site maintenance panel", () => {
   test("offers provisioning when the site has no scheduled key", () => {
     const html = String(
       MaintenancePanel({
-        monitor: { kind: "unconfigured" },
         site: testBuiltSite({ id: 42, scheduledTaskKey: null }),
       }),
     );
@@ -28,7 +27,6 @@ describe("built site maintenance panel", () => {
     expectIncludesAll(html, [
       "/admin/built-sites/42/provision-scheduler",
       "Set up scheduled maintenance",
-      "on the builder",
       '<div class="prose">',
     ]);
     assert(!html.includes("stage-scheduler"));
@@ -38,7 +36,6 @@ describe("built site maintenance panel", () => {
   test("shows the site key with a resend action", () => {
     const html = String(
       MaintenancePanel({
-        monitor: { kind: "missing" },
         site: testBuiltSite({
           id: 42,
           scheduledTaskKey: TEST_SCHEDULED_KEY,
@@ -54,92 +51,6 @@ describe("built site maintenance panel", () => {
     ]);
     assert(!html.includes("stage-scheduler"));
     assert(!html.includes("promote-scheduler"));
-    expectIncludesAll(html, [
-      "No Uptime Kuma monitor exists for this site",
-      "/admin/built-sites/42/add-uptime-monitor",
-    ]);
-  });
-
-  test("shows monitor details without exposing its request headers", () => {
-    const html = String(
-      MaintenancePanel({
-        monitor: {
-          kind: "found",
-          monitor: {
-            active: true,
-            group: "Chobble Tickets",
-            id: 17,
-            intervalSeconds: 900,
-            method: "POST",
-            name: "A child",
-            url: "https://child.example.test/scheduled",
-          },
-        },
-        site: testBuiltSite({ scheduledTaskKey: TEST_SCHEDULED_KEY }),
-      }),
-    );
-
-    expectIncludesAll(html, [
-      "A child",
-      "Chobble Tickets",
-      "Every 15 minutes",
-      "POST",
-      "Active",
-    ]);
-    assert(!html.includes("Authorization"));
-    assert(!html.includes("add-uptime-monitor"));
-  });
-
-  test("shows Kuma connection errors", () => {
-    const html = String(
-      MaintenancePanel({
-        monitor: { error: "connection refused", kind: "error" },
-        site: testBuiltSite({ scheduledTaskKey: TEST_SCHEDULED_KEY }),
-      }),
-    );
-
-    expectIncludesAll(html, [
-      "Uptime Kuma could not be checked",
-      "connection refused",
-    ]);
-    assert(!html.includes("add-uptime-monitor"));
-  });
-
-  test("asks for the site key before offering a missing monitor", () => {
-    const html = String(
-      MaintenancePanel({
-        monitor: { kind: "missing" },
-        site: testBuiltSite({ scheduledTaskKey: null }),
-      }),
-    );
-
-    assertStringIncludes(
-      html,
-      "Set up scheduled maintenance before you add the monitor",
-    );
-    assert(!html.includes("add-uptime-monitor"));
-  });
-
-  test("shows paused monitors with a seconds interval", () => {
-    const html = String(
-      MaintenancePanel({
-        monitor: {
-          kind: "found",
-          monitor: {
-            active: false,
-            group: "Chobble Tickets",
-            id: 18,
-            intervalSeconds: 45,
-            method: "POST",
-            name: "Paused child",
-            url: "https://paused.example.test/scheduled",
-          },
-        },
-        site: testBuiltSite({ scheduledTaskKey: TEST_SCHEDULED_KEY }),
-      }),
-    );
-
-    expectIncludesAll(html, ["Paused", "Every 45 seconds"]);
   });
 });
 
