@@ -51,6 +51,7 @@ import {
   splitChildQuestions,
 } from "./day-config.ts";
 import { type SharedWhen, TicketPageForm, TicketPageHeader } from "./form.tsx";
+import { withShortNames } from "./listing-name.ts";
 import { buildPageListingRows, fixedPriceLabel } from "./listing-rows.ts";
 import { ticketPageHeadExtra } from "./og-tags.ts";
 import type { TicketPageOptions } from "./types.ts";
@@ -180,6 +181,7 @@ export const ticketPage = ({
   questionListingMap,
   baseUrl,
   groupName,
+  listingNamePrefix,
   groupDescription,
   groupImage,
   singleTicketGroupId,
@@ -287,7 +289,7 @@ export const ticketPage = ({
     prefill,
     // A renewal page prices its tiers by months per unit, not tickets.
     renewal: renewal === true,
-    rows,
+    rows: withShortNames(listingNamePrefix, rows),
     singlePackagePage,
     singleTicket: singleTicketGroupId !== undefined,
     standaloneRowIds,

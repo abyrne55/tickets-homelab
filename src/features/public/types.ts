@@ -43,6 +43,8 @@ export type TicketSharedContext = {
    * daily children. Per selectable parent span ({@link ChildDatesByDayCount}). */
   childDatesById: Map<string, ChildDatesByDayCount>;
   groupName?: string;
+  /** Set on a group's page only: member names drop this prefix for display. */
+  listingNamePrefix?: string | undefined;
   /** The group whose page this is, when it allows one ticket per order. */
   singleTicketGroupId?: number;
   groupDescription?: string;

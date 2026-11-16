@@ -20,7 +20,7 @@ import {
   createTestListing,
   deactivateTestListing,
 } from "#test-utils/db-helpers/listings.ts";
-import { mockRequest } from "#test-utils/mocks.ts";
+import { mockRequest, testPageHtml } from "#test-utils/mocks.ts";
 import { countDatabaseCalls } from "#test-utils/subrequest-budget.ts";
 import type { Group } from "#types";
 
@@ -154,5 +154,35 @@ describeWithEnv("cart package resolution", { db: true }, () => {
     const listing = await createTestListing({ name: "Not a package" });
 
     expect(await coldCartCalls([listing.slug, "unknown-slug"])).toBe(1);
+  });
+});
+
+describeWithEnv("group page listing names", { db: true }, () => {
+  test("shortens member names on the group page only", async () => {
+    const group = await createTestGroup({ name: "Car Show 2026" });
+    const listing = await createTestListing({
+      groupId: group.id,
+      maxAttendees: 10,
+      name: "Car Show 2026 Regular",
+      unitPrice: 500,
+    });
+    await createTestListing({
+      groupId: group.id,
+      maxAttendees: 10,
+      name: "Car Show 2026 VIP",
+      unitPrice: 900,
+    });
+
+    const groupHtml = await (
+      await handleGroupTicketBySlug(
+        mockRequest(`/ticket/${group.slug}`),
+        group.slug,
+      )
+    ).text();
+    expect(groupHtml).toContain("Regular");
+    expect(groupHtml).not.toContain("Car Show 2026 Regular");
+
+    const listingHtml = await testPageHtml(`/ticket/${listing.slug}`);
+    expect(listingHtml).toContain("Car Show 2026 Regular");
   });
 });

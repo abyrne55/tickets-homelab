@@ -231,6 +231,12 @@ const GROUPS: { slug: string; body: Seed }[] = [
     },
     slug: "board-game-night",
   },
+  {
+    // Members are named "<group> <tier>" to stay unique; the group page shows
+    // just the tier, while single-listing pages and tickets show the full name.
+    body: { name: "Car Show 2026" },
+    slug: "car-show-2026",
+  },
 ];
 
 type ListingSeed = {
@@ -267,14 +273,14 @@ const LISTINGS: ListingSeed[] = [
   ),
   listing("cookie-decorating", 21, "The Gingerbread Kitchen, 12 Oak Lane", {
     max_attendees: 20,
-    name: "Regular Ticket",
+    name: "Holiday Cookie Decorating Regular Ticket",
     unit_price: 2500,
   }),
   listing("cookie-decorating", 21, "The Gingerbread Kitchen, 12 Oak Lane", {
     description:
       "Limited availability: a small number of reduced-price tickets for anyone who needs them.",
     max_attendees: 5,
-    name: "Scholarship Ticket",
+    name: "Holiday Cookie Decorating Scholarship Ticket",
     unit_price: 500,
   }),
   listing("cookie-decorating", 21, "The Gingerbread Kitchen, 12 Oak Lane", {
@@ -283,19 +289,19 @@ const LISTINGS: ListingSeed[] = [
       "Pay a little extra: the additional funds pay for scholarship tickets.",
     max_attendees: 10,
     max_price: 10000,
-    name: "Supporter Ticket",
+    name: "Holiday Cookie Decorating Supporter Ticket",
     unit_price: 2500,
   }),
   listing("pwyc-concert", 28, "Riverside Bandstand", {
     can_pay_more: true,
     max_attendees: 50,
     max_price: 10000,
-    name: "General Admission",
+    name: "Pay What You Can Concert General Admission",
     unit_price: 1000,
   }),
   listing("board-game-night", 28, "The Dice & Dragon Cafe", {
     max_attendees: 40,
-    name: "RSVP",
+    name: "Free Board Game Night RSVP",
     show_remaining: false,
     unit_price: 0,
   }),
@@ -304,10 +310,23 @@ const LISTINGS: ListingSeed[] = [
     description: "Helps cover snacks and new games for the shelf.",
     max_attendees: 10,
     max_price: 5000,
-    // Listing names are unique across the instance, so this one differs.
-    name: "Snack Supporter Ticket",
+    name: "Free Board Game Night Snack Supporter Ticket",
     unit_price: 500,
   }),
+  listing(
+    "car-show-2026",
+    30,
+    "Riverside Fairground",
+    { max_attendees: 100, name: "Car Show 2026 Regular", unit_price: 0 },
+    "car-show-regular",
+  ),
+  listing(
+    "car-show-2026",
+    30,
+    "Riverside Fairground",
+    { max_attendees: 20, name: "Car Show 2026 VIP", unit_price: 0 },
+    "car-show-vip",
+  ),
 ];
 
 type QuestionSeed = {

@@ -427,6 +427,7 @@ export const getTicketContext = async (
       groupDescription: group.description,
       groupImage: groupImage!,
       groupName: group.name,
+      listingNamePrefix: group.name,
       ...singleTicketContext(group),
     }),
   };

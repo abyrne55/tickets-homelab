@@ -91,6 +91,8 @@ export type TicketPageOptions = GroupAvailability & {
   questionListingMap?: QuestionListingMap;
   baseUrl?: string;
   groupName?: string;
+  /** Set on a group's page only: member names drop this prefix for display. */
+  listingNamePrefix?: string | undefined;
   groupDescription?: string;
   groupImage?: ItemImageColumns;
   /** Set on the public page of a group that allows one ticket per order: its
