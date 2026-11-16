@@ -6,8 +6,6 @@ import {
   type SiteSecretsView,
 } from "#shared/site-secrets.ts";
 import type { BuiltSiteUpdateState } from "#shared/site-update.ts";
-import type { UptimeKumaMonitorDetails } from "#shared/uptime-kuma/matching.ts";
-import type { UptimeKumaMonitorState } from "#shared/uptime-kuma/monitors.ts";
 import {
   ConfirmActionButton,
   SiteActionForm,
@@ -37,89 +35,11 @@ export const TabErrorNote = ({ children }: ChildProps): JSX.Element => (
   </Prose>
 );
 
-const formatMonitorInterval = (seconds: number): string =>
-  seconds % 60 === 0
-    ? t("built_sites.kuma_interval_minutes", {
-        minutes: String(seconds / 60),
-      })
-    : t("built_sites.kuma_interval_seconds", { seconds: String(seconds) });
-
-const KumaMonitorDetails = ({
-  monitor,
-}: {
-  monitor: UptimeKumaMonitorDetails;
-}): JSX.Element => {
-  const details: Array<readonly [string, string]> = [
-    ["built_sites.kuma_monitor_id", String(monitor.id)],
-    ["built_sites.kuma_monitor_name", monitor.name],
-    ["built_sites.kuma_group", monitor.group],
-    [
-      "built_sites.kuma_status",
-      t(
-        monitor.active
-          ? "built_sites.kuma_status_active"
-          : "built_sites.kuma_status_paused",
-      ),
-    ],
-    ["built_sites.kuma_target", monitor.url],
-    ["built_sites.kuma_method", monitor.method],
-    [
-      "built_sites.kuma_interval",
-      formatMonitorInterval(monitor.intervalSeconds),
-    ],
-  ];
-  return (
-    <dl>
-      {details.map(([labelKey, value]) => (
-        <div>
-          <dt>{t(labelKey)}</dt>
-          <dd>{value}</dd>
-        </div>
-      ))}
-    </dl>
-  );
-};
-
-type MaintenancePanelProps = {
-  monitor: UptimeKumaMonitorState;
-  site: BuiltSite;
-};
-
-const KumaMonitorPanel = ({
-  monitor,
-  site,
-}: MaintenancePanelProps): JSX.Element => {
-  if (monitor.kind === "unconfigured") {
-    return <p>{t("built_sites.kuma_unconfigured")}</p>;
-  }
-  if (monitor.kind === "error") {
-    return (
-      <ErrorNote>
-        {t("built_sites.kuma_error", { error: monitor.error })}
-      </ErrorNote>
-    );
-  }
-  if (monitor.kind === "found") {
-    return <KumaMonitorDetails monitor={monitor.monitor} />;
-  }
-  return (
-    <>
-      <p>{t("built_sites.kuma_missing")}</p>
-      {site.scheduledTaskKey ? (
-        <SiteActionForm action="add-uptime-monitor" siteId={site.id}>
-          <TranslatedSubmitButton icon="plus" labelKey="built_sites.kuma_add" />
-        </SiteActionForm>
-      ) : (
-        <p>{t("built_sites.kuma_needs_key")}</p>
-      )}
-    </>
-  );
-};
-
 export const MaintenancePanel = ({
-  monitor,
   site,
-}: MaintenancePanelProps): JSX.Element => (
+}: {
+  site: BuiltSite;
+}): JSX.Element => (
   <div class="prose">
     <p>{t("built_sites.maintenance_intro")}</p>
     {site.scheduledTaskKey && (
@@ -138,8 +58,6 @@ export const MaintenancePanel = ({
         }
       />
     </SiteActionForm>
-    <h3>{t("built_sites.kuma_title")}</h3>
-    <KumaMonitorPanel monitor={monitor} site={site} />
   </div>
 );
 

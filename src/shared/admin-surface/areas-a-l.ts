@@ -126,7 +126,6 @@ export const AREAS_A_L = {
     },
     write: {
       builtSiteAddSecrets: "/admin/built-sites/:id/add-secrets",
-      builtSiteAddUptimeMonitor: "/admin/built-sites/:id/add-uptime-monitor",
       builtSiteBumpDeadline: "/admin/built-sites/:id/bump-deadline",
       builtSiteDelete: "/admin/built-sites/:id/delete",
       builtSiteEdit: {

@@ -21,7 +21,6 @@ import { savedFormValueOrNull } from "#shared/forms/saved-data.ts";
 import { loadSiteSecretsStatus } from "#shared/site-secrets.ts";
 import { loadSiteSupportMessage } from "#shared/site-support-message.ts";
 import { loadBuiltSiteUpdateState } from "#shared/site-update.ts";
-import { uptimeKumaMonitorService } from "#shared/uptime-kuma/monitors.ts";
 import { BuiltSitesGuideFooter } from "#templates/admin/built-sites/list-parts.tsx";
 import {
   MaintenancePanel,
@@ -40,7 +39,7 @@ const renewalTab = panelTab<BuiltSite>(
 );
 
 /** A tab whose panel loads its own data: the read-then-render shape the
- * Secrets, Update, Maintenance, and Support message tabs share. */
+ * Secrets, Update, and Support message tabs share. */
 const loadedPanelTab = <Data,>(
   slug: string,
   labelKey: string,
@@ -65,11 +64,10 @@ const updateTab = loadedPanelTab(
   (site, state) => <UpdatePanel site={site} state={state} />,
 );
 
-const maintenanceTab = loadedPanelTab(
+const maintenanceTab = panelTab<BuiltSite>(
   "maintenance",
   "built_sites.maintenance_title",
-  (site) => uptimeKumaMonitorService.load(site),
-  (site, monitor) => <MaintenancePanel monitor={monitor} site={site} />,
+  (site) => Promise.resolve(<MaintenancePanel site={site} />),
 );
 
 const supportMessageTab = loadedPanelTab(

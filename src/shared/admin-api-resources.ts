@@ -152,10 +152,7 @@ export const AttendeeRowSchema = v.looseObject({
   quantity: v.number(),
 });
 
-/** The writable fields one site-page update carries, including the parent.
- *  The field list repeats the shape uptime-kuma's own schemas spell. The two
- *  domains share nothing, so the matcher's finding is marked. */
-/* jscpd:ignore-start */
+/** The writable fields one site-page update carries, including the parent. */
 const SitePageUpdateFields = {
   content: v.string(),
   hidden: v.boolean(),
@@ -165,7 +162,6 @@ const SitePageUpdateFields = {
   parent: v.nullable(v.number()),
   slug: v.string(),
 };
-/* jscpd:ignore-end */
 
 /** The body a site-page update accepts: every writable field optional. */
 export const UpdateSitePageBodySchema = v.partial(

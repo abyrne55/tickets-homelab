@@ -41,7 +41,6 @@ import {
   deployLatestReleaseToDeno,
   deployLatestReleaseToScript,
 } from "#shared/update.ts";
-import { uptimeKumaMonitorService } from "#shared/uptime-kuma/monitors.ts";
 import {
   adminBuiltSiteDeletePage,
   adminBuiltSiteNewPage,
@@ -118,25 +117,6 @@ const handleProvisionSiteScheduler = builtSiteFormPost(
       await provisionSiteScheduler(site.id),
       t("built_sites.maintenance_provisioned"),
     ),
-);
-
-const handleAddUptimeMonitor = builtSiteFormPost(
-  async (site, _session, _form, _request) => {
-    const result = await uptimeKumaMonitorService.add(site);
-    if (result.ok && result.value.created) {
-      await logActivity(`Added Uptime Kuma monitor for '${site.name}'`);
-    }
-    return answerTab(
-      "maintenance",
-      site.id,
-      result,
-      t(
-        result.ok && result.value.created
-          ? "built_sites.kuma_added"
-          : "built_sites.kuma_already_exists",
-      ),
-    );
-  },
 );
 
 const runSiteUpdate = async (
@@ -281,7 +261,6 @@ export const adminHandlers = gateOnBuilder(
     ...entityTabRoutes(adminPattern("builtSite"), builtSitePage),
     "GET /admin/built-sites": handleBuiltSitesListGet,
     "POST /admin/built-sites/:id/add-secrets": handleAddSecrets,
-    "POST /admin/built-sites/:id/add-uptime-monitor": handleAddUptimeMonitor,
     "POST /admin/built-sites/:id/bump-deadline": handleBumpDeadline,
     "POST /admin/built-sites/:id/override-deadline": handleOverrideDeadline,
     "POST /admin/built-sites/:id/provision-renewal": handleProvisionRenewal,
