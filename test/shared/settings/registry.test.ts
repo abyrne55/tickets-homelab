@@ -25,8 +25,6 @@ const lines = (text: string): string[] =>
     .map((line) => line.trim());
 
 const EXPECTED_CONFIG_KEY_NAMES = lines(`
-  ADDRESS_LOOKUP_API_KEY
-  ADDRESS_LOOKUP_PROVIDER
   APPLE_WALLET_PASS_TYPE_ID
   APPLE_WALLET_SIGNING_CERT
   APPLE_WALLET_SIGNING_KEY
@@ -111,8 +109,6 @@ const EXPECTED_SETTING_ROWS = [
   ["TERMS_AND_CONDITIONS", "plaintext", "terms"],
   ["BULK_EMAIL_DRAFT", "plaintext", "bulkEmailDraft"],
   ["EMAIL_PROVIDER", "plaintext", null],
-  ["ADDRESS_LOOKUP_PROVIDER", "plaintext", null],
-  ["ADDRESS_LOOKUP_API_KEY", "encrypted", null],
   ["ENABLED_FEATURES", "plaintext", null],
   ["TAX", "plaintext", null],
   ["CUSTOM_CSS", "plaintext", "customCss"],

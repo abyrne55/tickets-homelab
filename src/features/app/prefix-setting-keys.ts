@@ -80,13 +80,11 @@ export const BOOKING_FLOW_SETTINGS: readonly string[] = [
   ...EMAIL_SETTINGS,
 ];
 
-/** The booking flow plus the two keys an embeddable form reads. Ticket pages
- * are embeddable, so the security headers read embed_hosts. The form render
- * checks the address-lookup provider for its postcode search box. */
+/** The booking flow plus the key an embeddable form reads. Ticket pages
+ * are embeddable, so the security headers read embed_hosts. */
 export const EMBEDDABLE_BOOKING_SETTINGS: readonly string[] = [
   ...BOOKING_FLOW_SETTINGS,
   CONFIG_KEYS.EMBED_HOSTS,
-  CONFIG_KEYS.ADDRESS_LOOKUP_PROVIDER,
 ];
 
 /**

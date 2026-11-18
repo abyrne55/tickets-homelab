@@ -1,7 +1,6 @@
 import { assertStringIncludes } from "@std/assert";
 import { expect } from "@std/expect";
 import { describe, it as test } from "@std/testing/bdd";
-import { settings } from "#db/settings.ts";
 import { requireValue } from "#shared/required-value.ts";
 import {
   expectManualAddWebhook,
@@ -132,33 +131,6 @@ describeWithEnv("server (admin attendees) > add attendee", { db: true }, () => {
         "555-7777",
         "9 Persistence Way",
         "Aisle seat",
-      );
-    });
-
-    test("pre-fills the postcode search box from an address ending in a postcode", async () => {
-      settings.setForTest({
-        address_lookup_api_key: "test-api-key",
-        address_lookup_provider: "easypostcodes",
-      });
-      const { listing, cookie, csrfToken } = await setupListingAndLogin({
-        fields: "address",
-        maxAttendees: 100,
-      });
-
-      const response = await submitAddAttendee(listing.id, cookie, csrfToken, {
-        address: "1 High Street, London, SW1A 1AA",
-        name: "Postcode Person",
-        quantity: "1",
-      });
-      expect(response.status).toBe(302);
-
-      const [added] = await getAttendeesRaw(listing.id);
-      const edit = await adminGet(`/admin/attendees/${added!.id}/edit`);
-      const html = await edit.text();
-      // The lookup panel's search box starts filled with the saved postcode.
-      assertStringIncludes(
-        html,
-        'data-address-search type="text" value="SW1A 1AA"',
       );
     });
 

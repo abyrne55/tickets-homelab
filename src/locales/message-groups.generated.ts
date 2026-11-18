@@ -2,7 +2,6 @@
 
 export const MESSAGE_GROUPS = [
   "activity-log",
-  "address-lookup",
   "admin-shell",
   "attendees",
   "attributes",

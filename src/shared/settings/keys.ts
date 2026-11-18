@@ -1,7 +1,5 @@
 /* jscpd:ignore-start -- a list of strings, not code */
 export const CONFIG_KEY_NAMES = [
-  "ADDRESS_LOOKUP_API_KEY",
-  "ADDRESS_LOOKUP_PROVIDER",
   "APPLE_WALLET_PASS_TYPE_ID",
   "APPLE_WALLET_SIGNING_CERT",
   "APPLE_WALLET_SIGNING_KEY",

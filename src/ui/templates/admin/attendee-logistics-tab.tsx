@@ -24,7 +24,7 @@ import { defineTable } from "#shared/tables/definition.ts";
 import { LogisticsSection } from "#templates/admin/attendee-form/logistics.tsx";
 import { TitledSection } from "#templates/admin/entity-pages.tsx";
 import { SaveActions } from "#templates/components/actions.tsx";
-import { AddressFieldWithLookup } from "#templates/components/address-field.tsx";
+import { AddressField } from "#templates/components/address-field.tsx";
 import { SectionFieldset } from "#templates/components/aggregate-sections.tsx";
 import { ErrorAlert } from "#templates/components/error.tsx";
 import { linkCell } from "#templates/components/link-cell.tsx";
@@ -164,7 +164,7 @@ export const AttendeeLogisticsPanel = ({
         legend={t("attendee_logistics.address_heading")}
       >
         {data.addressError && <ErrorAlert>{data.addressError}</ErrorAlert>}
-        <AddressFieldWithLookup address={data.values.address} />
+        <AddressField address={data.values.address} />
         <output
           class="warning"
           data-address-diff

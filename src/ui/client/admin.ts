@@ -7,7 +7,6 @@
  * themselves against missing DOM elements so they are safe to run on
  * every admin page. */
 
-import { initAddressLookup } from "./admin/address-lookup.ts";
 import { initAttendeeDates } from "./admin/attendee-dates.ts";
 import { initAvailabilityChecker } from "./admin/availability-checker.ts";
 import { initCharCounters } from "./admin/char-counter.ts";
@@ -74,5 +73,4 @@ initDurationWarning();
 initPairedControls();
 initTicketQuantityRequired();
 initSingleTicketPayMore();
-initAddressLookup();
 initSchemaAtlas();

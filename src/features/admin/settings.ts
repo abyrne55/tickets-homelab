@@ -4,7 +4,6 @@ import { defineAdminRoutes } from "#routes/admin/route-tables.ts";
  * from the per-feature settings-*.ts modules into a single route table.
  */
 
-import { handleAddressLookupPost } from "#routes/admin/settings-address-lookup.ts";
 import {
   handleCustomDomainPost,
   handleCustomDomainValidatePost,
@@ -72,7 +71,6 @@ export const adminHandlers = defineAdminRoutes({
   "POST /admin/features/:slug": handleFeaturePost,
   "POST /admin/listing-defaults": handleListingDefaultsPost,
   "POST /admin/settings": handleAdminSettingsPost,
-  "POST /admin/settings/address-lookup": handleAddressLookupPost,
   "POST /admin/settings/apple-wallet": handleAppleWalletPost,
   "POST /admin/settings/attendee-column-order": handleAttendeeColumnOrderPost,
   "POST /admin/settings/booking-fee": handleBookingFeePost,

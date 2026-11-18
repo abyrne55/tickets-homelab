@@ -10,7 +10,6 @@ import { ErrorCode, errorCodeLabel } from "#shared/logger.ts";
 describe("error codes", () => {
   test("every code keeps its wire string", () => {
     expect(ErrorCode).toEqual({
-      ADDRESS_LOOKUP: "E_ADDRESS_LOOKUP",
       AUTH_CSRF_MISMATCH: "E_AUTH_CSRF_MISMATCH",
       AUTH_EXPIRED: "E_AUTH_EXPIRED",
       AUTH_INVALID_SESSION: "E_AUTH_INVALID_SESSION",
@@ -60,7 +59,6 @@ describe("error codes", () => {
 
   test("every wire string keeps its label", () => {
     expect(errorCodeLabel).toEqual({
-      E_ADDRESS_LOOKUP: "Address lookup failed",
       E_AUTH_CSRF_MISMATCH: "CSRF mismatch",
       E_AUTH_EXPIRED: "Session expired",
       E_AUTH_INVALID_SESSION: "Invalid session",

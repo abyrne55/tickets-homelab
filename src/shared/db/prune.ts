@@ -1,7 +1,6 @@
 /** Fixed-size database pruning used by the maintenance task and owner actions. */
 
 import { decrypt } from "#crypto/encryption.ts";
-import { addressCachePruneStatement } from "#db/address-cache.ts";
 import { attendeeRemovalStatements } from "#db/attendees/delete.ts";
 import {
   executeBatchWithResults,
@@ -163,7 +162,6 @@ const pruneStatements = (): PruneStatement[] => [
     (bind) =>
       `used_count = 0 AND created < ${bind(isoBefore(PRUNE_UNUSED_STRINGS_RETENTION_MS))}`,
   ),
-  addressCachePruneStatement(),
   boundedDelete(
     "sessions",
     (bind) => `expires < ${bind(nowMs() - PRUNE_SESSIONS_RETENTION_MS)}`,

@@ -146,7 +146,6 @@ export const AREAS_M_Z = {
       settingsAdvanced: "/admin/settings-advanced",
     },
     write: {
-      settingsAddressLookup: "/admin/settings/address-lookup",
       settingsAppleWallet: "/admin/settings/apple-wallet",
       settingsAttendeeColumnOrder: "/admin/settings/attendee-column-order",
       settingsBookingFee: "/admin/settings/booking-fee",

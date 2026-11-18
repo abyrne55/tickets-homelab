@@ -9,7 +9,7 @@ import { CONFIG_KEYS } from "#shared/settings/keys.ts";
 import { configurableTableLayouts } from "#shared/tables/configurable.ts";
 import { allEnglishMessages } from "#test-utils/i18n.ts";
 
-const en = await allEnglishMessages(["settings", "address-lookup", "sms"]);
+const en = await allEnglishMessages(["settings", "sms"]);
 
 type FormName = keyof typeof SETTINGS_FORMS;
 type Page = "main" | "advanced";
@@ -180,14 +180,6 @@ const EXPECTED_FORM_ROWS = [
     "Public API",
     "showPublicApi",
   ),
-  multi(
-    "addressLookup",
-    "advanced",
-    "/admin/settings/address-lookup",
-    "settings-address-lookup",
-    ["address_lookup_provider", "address_lookup_api_key"],
-    "Address lookup",
-  ),
   single(
     "externalOrder",
     "advanced",
@@ -282,11 +274,6 @@ describe("settings form schema", () => {
     expect(
       SETTINGS_FORMS.calendarFeeds.fields.map((field) => field.stateField),
     ).toEqual(["calendarFeedsEnabled", "calendarFeedsGroupBy"]);
-    expect(
-      SETTINGS_FORMS.addressLookup.fields.map((field) =>
-        "stateField" in field ? field.stateField : field.configuredStateField,
-      ),
-    ).toEqual(["addressLookupProvider", "addressLookupApiKeyConfigured"]);
   });
 
   test("offers the theme as auto, light or dark, on checkboxes", () => {
@@ -308,17 +295,6 @@ describe("settings form schema", () => {
       "attendees",
       "listings",
     ]);
-  });
-
-  test("puts no provider ahead of the address lookup providers", () => {
-    const provider = SETTINGS_FORMS.addressLookup.fields[0];
-    const options = provider.options();
-
-    expect(options[0]).toEqual({
-      label: en["address_lookup.settings.provider_none"],
-      value: "none",
-    });
-    expect(options.slice(1).length).toBeGreaterThan(0);
   });
 
   test("bounds the booking fee between 0 and 10 in steps of 0.1", () => {

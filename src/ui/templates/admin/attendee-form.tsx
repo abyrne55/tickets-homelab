@@ -35,7 +35,7 @@ import type {
 } from "#templates/admin/attendee-form/types.ts";
 import { EditQuestions } from "#templates/admin/attendees.tsx";
 import { SaveActions } from "#templates/components/actions.tsx";
-import { AddressFieldWithLookup } from "#templates/components/address-field.tsx";
+import { AddressField } from "#templates/components/address-field.tsx";
 import {
   type FormSection,
   FormSections,
@@ -209,7 +209,7 @@ const ContactDetailFields = ({ data }: AttendeeFormProps): JSX.Element => (
       />
     </label>
 
-    <AddressFieldWithLookup address={data.parsed.address || ""} />
+    <AddressField address={data.parsed.address || ""} />
 
     <label for="special_instructions">
       {t("common.special_instructions")}

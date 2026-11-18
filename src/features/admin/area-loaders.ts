@@ -63,15 +63,7 @@ export const ADMIN_AREA_LOADERS: Record<AdminAreaId, AdminAreaLoader> = {
   ),
   attendeeNotes: area(
     () => import("#routes/admin/attendee-notes.ts"),
-    [
-      "address-lookup",
-      "attendees",
-      "entity-pages",
-      "ledger",
-      "logistics",
-      "notes",
-      "validation",
-    ],
+    ["attendees", "entity-pages", "ledger", "logistics", "notes", "validation"],
   ),
   attendeeRefunds: area(
     () => import("#routes/admin/attendee-refunds.ts"),
@@ -80,7 +72,6 @@ export const ADMIN_AREA_LOADERS: Record<AdminAreaId, AdminAreaLoader> = {
   attendees: area(
     () => import("#routes/admin/attendees.ts"),
     [
-      "address-lookup",
       "attendees",
       "capacity",
       "csv",
@@ -294,7 +285,6 @@ export const ADMIN_AREA_LOADERS: Record<AdminAreaId, AdminAreaLoader> = {
   settings: area(
     () => import("#routes/admin/settings.ts"),
     [
-      "address-lookup",
       "attendees",
       "calendar",
       "features",

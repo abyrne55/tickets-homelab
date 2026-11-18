@@ -115,8 +115,6 @@ const getAdvancedSettingsPageState = async (
   const cdnResult = bunnyCdnConfigured ? await getCdnHostname() : null;
   const existingPaymentProvider = existingPaymentProviderState();
   return {
-    addressLookupApiKeyConfigured: settings.addressLookup.hasKey,
-    addressLookupProvider: settings.addressLookup.provider,
     adminTemplates,
     appleWalletConfigured: settings.appleWallet.hasDbConfig,
     appleWalletPassTypeId: settings.appleWallet.passTypeId,

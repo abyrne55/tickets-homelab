@@ -1789,23 +1789,6 @@ fieldset.inset {
   padding: var(--space-m);
 }
 
-/* Postcode search row: the label (with its input) and the Find button sit on
-   one line. The button stays a sibling of the label — not a child — so it never
-   pollutes the input's accessible name. */
-.address-lookup-search {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: flex-end;
-  gap: var(--space-s);
-}
-
-/* The input only needs room for a postcode, so cap it and let the button
-   follow on the same row. */
-.address-lookup-search label > input[type="text"] {
-  flex: 0 0 auto;
-  width: 8rem;
-}
-
 .ticket-listings {
   @include stack-tight;
 }
@@ -3126,12 +3109,6 @@ a.cal-day-selected:active {
   transform: rotate(-45deg);
   transform-origin: center;
   box-shadow: 0 1px 4px rgba(0, 0, 0, 0.4);
-}
-
-/* The parts of the chosen lookup address that differ from the typed one. */
-[data-address-diff] mark {
-  background: var(--color-bg-secondary);
-  font-weight: bold;
 }
 
 /* System map (/admin/schema): the derived state-machine diagrams */

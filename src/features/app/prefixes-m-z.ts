@@ -119,8 +119,6 @@ export const PREFIXES_M_Z = {
     handler: readOnlyInfoHandler,
     settings: [],
   },
-  // Renewal renders the same booking form, whose contact-field builder checks
-  // the address-lookup provider.
   renew: {
     handler: getPostRoute(
       () => import("#routes/public/renewal.ts"),
@@ -129,14 +127,13 @@ export const PREFIXES_M_Z = {
       "renew",
     ),
     messageGroups: publicMessageGroups(
-      "address-lookup",
       "payment",
       "public-site",
       "renewal",
       "tickets",
       "validation",
     ),
-    settings: [...BOOKING_FLOW_SETTINGS, CONFIG_KEYS.ADDRESS_LOOKUP_PROVIDER],
+    settings: BOOKING_FLOW_SETTINGS,
   },
   // The setup router owns these paths before app routing. The entry declares
   // the bundle only, so the settings read stays infra-only.
@@ -174,13 +171,10 @@ export const PREFIXES_M_Z = {
     settings: PUBLIC_NAV_SETTINGS,
   },
   // Booking flows (form + checkout + emails). Ticket pages are embeddable, so
-  // applySecurityHeaders reads embed_hosts. The form render checks the
-  // address-lookup provider to decide whether the address field gets a
-  // postcode search box.
+  // applySecurityHeaders reads embed_hosts.
   ticket: {
     handler: ticketRoutes,
     messageGroups: publicMessageGroups(
-      "address-lookup",
       "availability",
       "date-picker",
       "modifiers",

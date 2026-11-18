@@ -41,11 +41,6 @@ export const STRING_SETTING_DEFINITIONS = [
     storage: "plaintext",
   }),
   definition({ key: CONFIG_KEYS.EMAIL_PROVIDER, storage: "plaintext" }),
-  definition({
-    key: CONFIG_KEYS.ADDRESS_LOOKUP_PROVIDER,
-    storage: "plaintext",
-  }),
-  definition({ key: CONFIG_KEYS.ADDRESS_LOOKUP_API_KEY, storage: "encrypted" }),
   definition({ key: CONFIG_KEYS.ENABLED_FEATURES, storage: "plaintext" }),
   definition({ key: CONFIG_KEYS.TAX, storage: "plaintext" }),
   // Custom CSS is served verbatim as a public stylesheet at /custom.css, so it

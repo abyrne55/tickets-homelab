@@ -3,7 +3,6 @@
  */
 
 import { t } from "#i18n";
-import type { AddressLookupSetting } from "#shared/address-lookup/types.ts";
 import { SETTINGS_FORMS } from "#shared/settings/forms.ts";
 import { AppleWalletForm } from "#templates/admin/settings/apple-wallet.tsx";
 import { CustomDomainForm } from "#templates/admin/settings/custom-domain.tsx";
@@ -20,8 +19,6 @@ import type { EmailContent } from "#templates/email/shared.ts";
 import type { AdminSession, PaymentProviderType, Theme } from "#types";
 
 export type AdvancedSettingsPageState = {
-  addressLookupProvider: AddressLookupSetting;
-  addressLookupApiKeyConfigured: boolean;
   showPublicApi: boolean;
   externalOrderEnabled: boolean;
   emailProvider: string;
@@ -96,7 +93,6 @@ export const adminAdvancedSettingsPage = (
       {GoogleWalletForm(s)}
       {AppleWalletForm(s)}
       {SmsGatewayForm(s)}
-      {settingsForm(SETTINGS_FORMS.addressLookup, s)}
 
       <article class="prose">
         <h2>{t("settings.advanced.scheduled_title")}</h2>

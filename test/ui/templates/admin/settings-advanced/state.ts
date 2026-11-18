@@ -1,8 +1,6 @@
 import type { AdvancedSettingsPageState } from "#templates/admin/settings-advanced.tsx";
 
 export const advancedDefaultState: AdvancedSettingsPageState = {
-  addressLookupApiKeyConfigured: false,
-  addressLookupProvider: "none",
   adminTemplates: { html: "", subject: "", text: "" },
   appleWalletConfigured: false,
   appleWalletPassTypeId: "",

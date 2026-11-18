@@ -1,34 +1,23 @@
 /**
- * The address textarea with the postcode search panel above it — the one
- * address-entry block the admin attendee forms share (Edit tab and Logistics
- * tab). The panel renders only while a lookup provider is configured. The
- * textarea always stays editable.
+ * The address textarea the admin attendee forms share (Edit tab and Logistics
+ * tab).
  */
 
 import { t } from "#i18n";
-import { Raw } from "#jsx/jsx-runtime.ts";
-import { renderAddressLookupPanel } from "#templates/components/address-lookup.tsx";
 import { textareaBody } from "#templates/components/textarea.tsx";
 import { CONTACT_TEXTAREA_LIMIT } from "#templates/fields/validators.ts";
 
-export const AddressFieldWithLookup = ({
-  address,
-}: {
-  address: string;
-}): JSX.Element => (
-  <>
-    <Raw html={renderAddressLookupPanel(address)} />
-    <label for="address">
-      {t("common.address")}
-      <textarea
-        autocomplete="off"
-        id="address"
-        maxlength={CONTACT_TEXTAREA_LIMIT}
-        name="address"
-        rows={3}
-      >
-        {textareaBody(address)}
-      </textarea>
-    </label>
-  </>
+export const AddressField = ({ address }: { address: string }): JSX.Element => (
+  <label for="address">
+    {t("common.address")}
+    <textarea
+      autocomplete="off"
+      id="address"
+      maxlength={CONTACT_TEXTAREA_LIMIT}
+      name="address"
+      rows={3}
+    >
+      {textareaBody(address)}
+    </textarea>
+  </label>
 );

@@ -153,9 +153,6 @@ describeWithEnv("server (admin guide)", { db: true }, () => {
         "Question answer",
         "not from their postcode",
         "Max times per order",
-        "How do customers fill in their delivery address?",
-        "Address lookup",
-        "The customer does not set the map pin",
       );
     });
 

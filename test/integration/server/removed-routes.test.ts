@@ -54,4 +54,21 @@ describeWithEnv("removed routes", { db: true }, () => {
       expect(response.status).toBe(404);
     });
   });
+
+  describe("address lookup", () => {
+    test("GET /address-lookup is a 404", async () => {
+      const response = await handleRequest(
+        mockRequest("/address-lookup?q=SW1A1AA"),
+      );
+      expect(response.status).toBe(404);
+    });
+
+    test("POST /admin/settings/address-lookup is a 404 for an owner", async () => {
+      const { response } = await adminFormPost(
+        "/admin/settings/address-lookup",
+        { address_lookup_provider: "easypostcodes" },
+      );
+      expect(response.status).toBe(404);
+    });
+  });
 });
