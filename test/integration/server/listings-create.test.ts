@@ -1,6 +1,6 @@
 import { assertArrayIncludes, assertStringIncludes } from "@std/assert";
 import { expect } from "@std/expect";
-import { afterEach, describe, it as test } from "@std/testing/bdd";
+import { describe, it as test } from "@std/testing/bdd";
 import { stub } from "@std/testing/mock";
 import { listingGroups } from "#db/groups/table.ts";
 import {
@@ -10,7 +10,6 @@ import {
 } from "#db/listings/records.ts";
 import { settings } from "#db/settings.ts";
 import { handleRequest } from "#routes";
-import { setDemoModeForTest } from "#shared/demo/mode.ts";
 import {
   expectFlashRedirect,
   expectHtmlResponse,
@@ -31,10 +30,6 @@ import { featureSetting } from "#test-utils/settings.ts";
 import { expectTemporaryError } from "#test-utils/temporary-error.ts";
 
 describeWithEnv("server listings > create", { db: true }, () => {
-  afterEach(() => {
-    setDemoModeForTest(false);
-  });
-
   describe("POST /admin/listing", () => {
     testRequiresAuth("/admin/listing", {
       body: {
@@ -154,23 +149,6 @@ describeWithEnv("server listings > create", { db: true }, () => {
       // The row really was written (the stub only affected the replica read path).
       const listing = await getListingWithCount(1);
       expect(listing?.name).toBe("Lagged Listing");
-    });
-
-    test("clears webhook URL when creating listing in demo mode", async () => {
-      setDemoModeForTest(true);
-
-      const { response } = await adminMultipartPost("/admin/listing", {
-        max_attendees: "50",
-        max_quantity: "1",
-        name: "Demo Listing",
-        webhook_url: "https://example.com/webhook",
-      });
-      await expectFlashRedirect("/admin", "Listing created")(response);
-
-      // Verify webhook_url was cleared
-      const listing = await getListingWithCount(1);
-      expect(listing).not.toBeNull();
-      expect(listing?.webhook_url).toBe("");
     });
 
     test("creates listing with group_id when provided", async () => {

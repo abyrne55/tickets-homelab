@@ -1,12 +1,11 @@
 import { assert, assertArrayIncludes, assertStringIncludes } from "@std/assert";
 import { expect } from "@std/expect";
-import { afterEach, beforeEach, describe, it as test } from "@std/testing/bdd";
+import { describe, it as test } from "@std/testing/bdd";
 import { execute } from "#db/client.ts";
 import { listingGroups } from "#db/groups/table.ts";
 import { t } from "#i18n";
 import { handleRequest } from "#routes";
 import { signCsrfToken } from "#shared/csrf.ts";
-import { setDemoModeForTest } from "#shared/demo/mode.ts";
 import {
   expectFlashRedirect,
   expectIncludesAll,
@@ -35,14 +34,6 @@ describeWithEnv(
   "server (admin groups) — tabs & add-listings",
   { db: true },
   () => {
-    beforeEach(() => {
-      setDemoModeForTest(false);
-    });
-
-    afterEach(() => {
-      setDemoModeForTest(false);
-    });
-
     describe("group entity page tabs", () => {
       test("renders a tab strip linking Overview, Attendees, Edit, and Actions", async () => {
         const group = await createTestGroup({ name: "Tabbed", slug: "tabbed" });

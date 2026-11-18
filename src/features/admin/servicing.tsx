@@ -46,10 +46,6 @@ import {
   pageGuardAt,
 } from "#routes/route-gates.ts";
 import type { TypedRouteHandler } from "#routes/router.ts";
-import {
-  applyDemoOverrides,
-  SERVICING_DEMO_FIELDS,
-} from "#shared/demo/overrides.ts";
 import type { FormParams } from "#shared/form-data.ts";
 import { validateForm } from "#shared/forms/validation.ts";
 import { nowIso } from "#shared/now.ts";
@@ -129,7 +125,6 @@ const handleServicingGet: TypedRouteHandler<"GET /admin/servicing/:id"> = (
   });
 
 const parseCreateInput = async (form: FormParams) => {
-  applyDemoOverrides(form, SERVICING_DEMO_FIELDS);
   // The rendered field schema bounds the submission (the day count's declared
   // minimum) before the attendee parser clamps a raw value into range.
   const checked = validateForm(form, buildServicingFieldSchema());

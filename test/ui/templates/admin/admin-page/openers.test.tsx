@@ -22,7 +22,7 @@ describe("the single-form page", () => {
   beforeAll(setupAdminPageTest);
 
   const page = flashFormPage(
-    "admin.seeds.title",
+    "catalog_transfer.page_title",
     "/admin/settings",
     (session) => <p>{session.adminLevel}</p>,
   );
@@ -32,7 +32,7 @@ describe("the single-form page", () => {
 
     expectIncludesAll(html, [
       "<p>owner</p>",
-      `<title>${t("admin.seeds.title")}</title>`,
+      `<title>${t("catalog_transfer.page_title")}</title>`,
     ]);
   });
 
@@ -48,18 +48,17 @@ describe("the single-form page", () => {
 describe("the other opener families", () => {
   beforeAll(setupAdminPageTest);
 
-  const seedsListPage = successListPage(
-    "admin.seeds.title",
+  const listPage = successListPage(
+    "catalog_transfer.page_title",
     "/admin/settings",
     () => ({ columns: [], empty: <p>Body</p>, items: [] }),
   );
 
   test("the opts-bag page shows the bag's notices in their channels", () => {
-    const html = flashOptsPage("admin.seeds.title", "/admin/settings")(
-      OWNER_SESSION,
-      { error: "Name is taken", success: "Saved" },
-      <p>Body</p>,
-    );
+    const html = flashOptsPage(
+      "catalog_transfer.page_title",
+      "/admin/settings",
+    )(OWNER_SESSION, { error: "Name is taken", success: "Saved" }, <p>Body</p>);
 
     expectIncludesAll(html, [
       '<div class="success" role="alert">Saved</div>',
@@ -69,7 +68,10 @@ describe("the other opener families", () => {
   });
 
   test("the error page shows its rejection over the body", () => {
-    const html = errorAdminPage("admin.seeds.title", "/admin/settings")(
+    const html = errorAdminPage(
+      "catalog_transfer.page_title",
+      "/admin/settings",
+    )(
       OWNER_SESSION,
       "Date clashes",
     )(<p>Body</p>);
@@ -78,7 +80,7 @@ describe("the other opener families", () => {
   });
 
   test("the list page shows only a write's success notice", () => {
-    const html = seedsListPage([], OWNER_SESSION, "Invited");
+    const html = listPage([], OWNER_SESSION, "Invited");
 
     assertStringIncludes(
       html,
@@ -88,7 +90,7 @@ describe("the other opener families", () => {
   });
 
   test("a family with no notices renders none", () => {
-    const html = seedsListPage([], OWNER_SESSION);
+    const html = listPage([], OWNER_SESSION);
 
     assert(!html.includes('role="alert"'));
   });

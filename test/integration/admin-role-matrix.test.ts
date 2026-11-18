@@ -243,7 +243,7 @@ describeWithEnv("admin role matrix", { db: true }, () => {
     // would otherwise make this suite pass by testing nothing.
     // The scanner's ticket-cache reads are record routes like their scanner
     // pages: the gate runs before the record lookup, so the matrix walks them.
-    expect(roleOnly.length).toBe(51);
+    expect(roleOnly.length).toBe(50);
     expect(recordPages.length).toBe(30);
   });
 
@@ -314,16 +314,16 @@ describeWithEnv("admin role matrix", { db: true }, () => {
   });
 
   test("covers the write routes the surface declares", () => {
-    expect(writableRoutes().length).toBe(203);
-    expect(insiderWritableRoutes().length).toBe(200);
+    expect(writableRoutes().length).toBe(201);
+    expect(insiderWritableRoutes().length).toBe(198);
     // The DELETE beside the confirmed POST deletes: each method's gate is
     // its own, so the walks above must ask both.
-    expect(writeMethodPairs()).toBe(205);
+    expect(writeMethodPairs()).toBe(203);
     // The writable routes whose GET serves a page at the same path — a
     // write's own form page, or a view page whose POST the walks ask too.
     // The refusal walk asks those GETs like the writes, so this pins their
     // number too.
-    expect(formPageRoutes().length).toBe(80);
+    expect(formPageRoutes().length).toBe(79);
   });
 });
 

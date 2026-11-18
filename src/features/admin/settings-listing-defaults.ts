@@ -15,7 +15,6 @@ import { settingsHandler } from "#routes/admin/settings-helpers.ts";
 import { authPageAt } from "#routes/route-gates.ts";
 import type { TypedRouteHandler } from "#routes/router.ts";
 import { VALID_DAY_NAMES } from "#shared/day-names.ts";
-import { isDemoMode } from "#shared/demo/mode.ts";
 import type { FormParams } from "#shared/form-data.ts";
 import {
   LISTING_DEFAULT_FIELDS,
@@ -67,10 +66,6 @@ const parseUrlField = (
   field: ListingDefaultField,
   form: FormParams,
 ): FieldParse => {
-  // Demo mode blanks per-listing webhook URLs so demo users cannot configure
-  // outbound callbacks. Refuse the webhook default the same way. Otherwise a
-  // Use-defaults listing can resolve it and fire registration webhooks.
-  if (field.field === "webhook_url" && isDemoMode()) return {};
   const raw = submitted(field, form);
   if (raw === "") return {};
   const error = validateSafeServerFetchUrl(

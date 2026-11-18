@@ -1,10 +1,10 @@
 /**
- * The attendee Logistics tab, part two: demo-mode masking, the failed save
+ * The attendee Logistics tab, part two: the failed save
  * keeping the submitted selectors, the Other attendees list, and the booked
  * window helpers. The tab's core GET/POST behaviour lives in `page.test.ts`.
  */
 
-import { assert, assertArrayIncludes, assertStringIncludes } from "@std/assert";
+import { assert, assertStringIncludes } from "@std/assert";
 import { expect } from "@std/expect";
 import { describe, it as test } from "@std/testing/bdd";
 import { getAttendeeOrNull } from "#db/attendees/queries.ts";
@@ -22,8 +22,6 @@ import {
   overlapsAnyInterval,
 } from "#routes/admin/attendee-logistics-tab.ts";
 import type { LoadedAttendee } from "#routes/admin/attendee-page-data.ts";
-import { setDemoModeForTest } from "#shared/demo/mode.ts";
-import { DEMO_ADDRESSES } from "#shared/demo/samples.ts";
 import { expectIncludesAll } from "#test-utils/assertions.ts";
 import { getTestPrivateKey } from "#test-utils/crypto.ts";
 import { describeWithEnv } from "#test-utils/db.ts";
@@ -38,29 +36,6 @@ import {
   makeAttendee,
 } from "#test-utils/logistics-tab.ts";
 import { adminFormPost } from "#test-utils/session.ts";
-
-describeWithEnv("attendee Logistics tab — demo mode", { db: true }, () => {
-  test("a demo instance masks the address and clears the pin before saving", async () => {
-    const listing = await createTestListing({ maxAttendees: 10 });
-    const id = await makeAttendee("Demo Person", [{ listingId: listing.id }]);
-    setDemoModeForTest(true);
-    try {
-      await adminFormPost(`/admin/attendees/${id}/logistics`, {
-        address: "1 Real Street, Realtown",
-        lat: "51.503396",
-        lng: "-0.127640",
-      });
-    } finally {
-      setDemoModeForTest(false);
-    }
-
-    const saved = (await getAttendeeOrNull(id, await getTestPrivateKey()))!;
-    expect(saved.address).not.toBe("1 Real Street, Realtown");
-    assertArrayIncludes(DEMO_ADDRESSES, [saved.address]);
-    expect(saved.lat).toBe("");
-    expect(saved.lng).toBe("");
-  });
-});
 
 describeWithEnv("the Edit tab and the Logistics pin", { db: true }, () => {
   /** Pin an attendee's address on the Logistics tab, then save the Edit tab

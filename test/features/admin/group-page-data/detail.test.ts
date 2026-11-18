@@ -1,9 +1,8 @@
 import { assert, assertStringIncludes } from "@std/assert";
-import { afterEach, beforeEach, describe, it as test } from "@std/testing/bdd";
+import { describe, it as test } from "@std/testing/bdd";
 import { MANUAL_LISTING_COST } from "#accounting/manual-entries.ts";
 import { postTransfers } from "#accounting/store.ts";
 import { setGroupPackageMembers } from "#db/groups.ts";
-import { setDemoModeForTest } from "#shared/demo/mode.ts";
 import { account } from "#shared/ledger/account.ts";
 import { requireValue } from "#shared/required-value.ts";
 import {
@@ -25,14 +24,6 @@ describeWithEnv(
   "server (admin groups) — detail & sharing",
   { db: true },
   () => {
-    beforeEach(() => {
-      setDemoModeForTest(false);
-    });
-
-    afterEach(() => {
-      setDemoModeForTest(false);
-    });
-
     describe("GET /admin/groups/:id — detail & sharing", () => {
       testRequiresAuth("/admin/groups/1");
 

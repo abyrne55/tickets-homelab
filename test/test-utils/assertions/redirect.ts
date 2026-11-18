@@ -45,8 +45,7 @@ export const assertFormRedirect = async (
 ): Promise<Response> => {
   const { adminFormPost } = await import("#test-utils/session.ts");
   const { response } = await adminFormPost(path, data);
-  // Cookie-only: callers include the database-reset flow, whose redirect target
-  // can't be followed (the reset wipes the DB and the admin session).
+  // Cookie-only: the redirect target is not followed.
   expectRedirectWithFlash(redirectTo, flashMessage)(response);
   return response;
 };

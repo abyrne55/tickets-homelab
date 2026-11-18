@@ -151,7 +151,7 @@ type FormRouteConfig<TValues, TParams, TContext> = AuthedBase<
   TParams,
   TContext
 > & {
-  /** Mutate the form before validation (demo overrides, secret triage, etc.). */
+  /** Mutate the form before validation (secret triage, etc.). */
   preprocessForm?: (form: FormParams, context: TContext) => void;
   /** Form validator — static, or built from the loaded context. */
   form:
@@ -237,9 +237,7 @@ type PublicFormRouteConfig<TValues, TParams> = {
 /** Render a public page that carries a form: sign a CSRF token for it, pick
  * up any flashed message, and return the page HTML. The join page renders the
  * site footer, so its images resolve like every other public page's. The
- * demo-reset page renders no footer and gains nothing from the lookup. The
- * GET-side partner of {@link createFormRoute} (the join and demo-reset pages
- * use both). */
+ * GET-side partner of {@link createFormRoute} (the join page uses both). */
 export const publicFormPage = async (
   request: Request,
   render: (flash: Flash) => string,

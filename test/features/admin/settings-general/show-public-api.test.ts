@@ -1,7 +1,6 @@
 import { expect } from "@std/expect";
-import { afterEach, describe, it as test } from "@std/testing/bdd";
+import { describe, it as test } from "@std/testing/bdd";
 import { handleRequest } from "#routes";
-import { setDemoModeForTest } from "#shared/demo/mode.ts";
 import {
   expectFlash,
   expectHtmlResponse,
@@ -15,10 +14,6 @@ describeWithEnv(
   "server (admin settings: show-public-api)",
   { db: true },
   () => {
-    afterEach(() => {
-      setDemoModeForTest(false);
-    });
-
     describe("POST /admin/settings/show-public-api", () => {
       testRequiresAuth("/admin/settings/show-public-api", {
         body: {

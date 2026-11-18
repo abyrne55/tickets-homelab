@@ -32,10 +32,6 @@ import { attendeeFormPost } from "#routes/admin/attendees-route-helpers.ts";
 import type { AuthSession } from "#routes/auth.ts";
 import { notFoundResponse, redirect } from "#routes/response.ts";
 import type { TypedRouteHandler } from "#routes/router.ts";
-import {
-  LOGISTICS_DEMO_FIELDS,
-  loadAfterDemoOverrides,
-} from "#shared/demo/overrides.ts";
 import type { FormParams } from "#shared/form-data.ts";
 import { parseCoordinatePair } from "#shared/validation/coordinates.ts";
 import { AttendeeLogisticsPanel } from "#templates/admin/attendee-logistics-tab.tsx";
@@ -98,11 +94,7 @@ const handleLogisticsSubmit = async (
   session: AuthSession,
   form: FormParams,
 ): Promise<Response> => {
-  // On demo instances the address is masked and the pin cleared before
-  // anything is parsed or stored, like the attendee form's own submitters.
-  const entity = await loadAfterDemoOverrides(form, LOGISTICS_DEMO_FIELDS, () =>
-    loadAttendeeForEdit(attendeeId),
-  );
+  const entity = await loadAttendeeForEdit(attendeeId);
   if (!entity) return notFoundResponse();
 
   const values: LogisticsFormValues = {

@@ -1,8 +1,7 @@
 import { assertStringIncludes } from "@std/assert";
 import { expect } from "@std/expect";
-import { afterEach, describe, it as test } from "@std/testing/bdd";
+import { describe, it as test } from "@std/testing/bdd";
 import { getCurrentSettingsVersion, settings } from "#db/settings.ts";
-import { setDemoModeForTest } from "#shared/demo/mode.ts";
 import { getAllActivityLog } from "#test-utils/activity-log.ts";
 import {
   expectFlash,
@@ -13,10 +12,6 @@ import { describeWithEnv } from "#test-utils/db.ts";
 import { adminFormPost } from "#test-utils/session.ts";
 
 describeWithEnv("server (admin settings)", { db: true }, () => {
-  afterEach(() => {
-    setDemoModeForTest(false);
-  });
-
   describe("POST /admin/settings/payment-provider (square)", () => {
     test("sets provider to square", async () => {
       const { response } = await adminFormPost(

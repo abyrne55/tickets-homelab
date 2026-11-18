@@ -15,7 +15,6 @@ import {
   buildUpdateListingResource,
 } from "#routes/admin/listings-form.ts";
 import { VALID_DAY_NAMES } from "#shared/day-names.ts";
-import { setDemoModeForTest } from "#shared/demo/mode.ts";
 import { describeWithEnv } from "#test-utils/db.ts";
 import {
   assignTestAttributeOptions,
@@ -173,23 +172,6 @@ describeWithEnv("listings form", { db: true }, () => {
 
       const off = await createListing({ name: "Own values" });
       expect(off.use_defaults).toBe(false);
-    });
-
-    test("demo mode drops the webhook address, normal mode keeps it", async () => {
-      const hook = "https://example.com/hook";
-      const real = await createListing({ webhook_url: hook });
-      expect(real.webhook_url).toBe(hook);
-
-      setDemoModeForTest(true);
-      try {
-        const demo = await createListing({
-          name: "Demo listing",
-          webhook_url: hook,
-        });
-        expect(demo.webhook_url).toBe("");
-      } finally {
-        setDemoModeForTest(false);
-      }
     });
 
     test("duplicating a listing copies the source's attribute choices", async () => {

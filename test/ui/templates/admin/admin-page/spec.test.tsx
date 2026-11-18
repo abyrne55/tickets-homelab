@@ -398,7 +398,7 @@ describe("pages built on the spec", () => {
   });
 
   /** The single-form shape: the page binds its body to the viewer and its
-   *  notices come back from the route (seeds, catalog import). */
+   *  notices come back from the route (catalog import). */
   const formPage = (
     session: AdminSession,
     error?: string,
@@ -409,7 +409,7 @@ describe("pages built on the spec", () => {
       body: <p>{session.adminLevel}</p>,
       flash: { error, success },
       session,
-      title: t("admin.seeds.title"),
+      title: t("catalog_transfer.page_title"),
     });
 
   test("hands the body the viewer and titles itself from the catalog", () => {
@@ -417,7 +417,7 @@ describe("pages built on the spec", () => {
 
     expectIncludesAll(html, [
       "<p>owner</p>",
-      `<title>${t("admin.seeds.title")}</title>`,
+      `<title>${t("catalog_transfer.page_title")}</title>`,
     ]);
   });
 

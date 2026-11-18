@@ -1,5 +1,5 @@
 import type { InStatement } from "@libsql/client";
-import { assertArrayIncludes, assertStringIncludes } from "@std/assert";
+import { assert, assertArrayIncludes, assertStringIncludes } from "@std/assert";
 import { expect } from "@std/expect";
 import { it as test } from "@std/testing/bdd";
 import { stub } from "@std/testing/mock";
@@ -13,7 +13,7 @@ import {
   resetDatabase,
   SCHEMA_HASH,
 } from "#db/migrations.ts";
-
+import { handleRequest } from "#routes";
 import { runWithSubrequestBudget } from "#shared/subrequest-budget.ts";
 import { setBuildCommitForTest } from "#shared/update.ts";
 import {
@@ -26,7 +26,7 @@ import {
   appliedMigrationIds,
   settingsValueOrNull,
 } from "#test-utils/migrations.ts";
-import { stubNtfyFetch } from "#test-utils/mocks.ts";
+import { mockRequest, stubNtfyFetch } from "#test-utils/mocks.ts";
 import { withRequestContext } from "#test-utils/request-context.ts";
 import { invalidateTestDbCache } from "#test-utils/test-state.ts";
 
@@ -376,6 +376,24 @@ describeWithEnv(
 
       expect(await settingsValueOrNull("db_schema_hash")).toBe(SCHEMA_HASH);
       expect(await settingsValueOrNull("latest_db_update")).toBe(LATEST_UPDATE);
+    });
+
+    test("GET / after the schema is dropped returns 503 not-activated without auto-refresh (regression: boot loop)", async () => {
+      // After a wipe the isolate retains module-level caches (initDb
+      // ready-client, settings snapshot, setup-complete gate). Without clearing
+      // them, the next request bypasses initDb's MissingSettingsTableError
+      // catch and reaches handleRoutingError, which returns a 503 *with*
+      // auto-refresh, creating a boot loop.
+      await resetDatabase();
+      invalidateTestDbCache();
+
+      // The next request must get the "not activated" page (503, no
+      // auto-refresh), not a boot-loop temporary error response.
+      const homeResponse = await handleRequest(mockRequest("/"));
+      const html = await homeResponse.text();
+      expect(homeResponse.status).toBe(503);
+      assertStringIncludes(html, "Not Activated");
+      assert(!html.includes("refresh"));
     });
   },
 );

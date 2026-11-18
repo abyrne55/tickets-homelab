@@ -33,11 +33,6 @@ import {
 import { isBuilderEnabled } from "#shared/config.ts";
 import { toMinorUnits } from "#shared/currency.ts";
 import { normalizeDatetime } from "#shared/dates.ts";
-import { isDemoMode } from "#shared/demo/mode.ts";
-import {
-  applyDemoOverrides,
-  LISTING_DEMO_FIELDS,
-} from "#shared/demo/overrides.ts";
 import type { FormParams } from "#shared/form-data.ts";
 import {
   generateUniqueListingSlug,
@@ -105,7 +100,6 @@ export const parseListingForm = (
   existing: EditorFormExisting,
 ): FormParams => {
   const form = formDataToParams(formData);
-  applyDemoOverrides(form, LISTING_DEMO_FIELDS);
   if (session.adminLevel === "editor") {
     for (const field of EDITOR_LOCKED_LISTING_FIELDS) {
       EDITOR_FORM_FREEZE[field]?.(form, existing);
@@ -200,7 +194,6 @@ const extractCommonFields = (
   form: FormParams,
   mode: ListingWriteMode,
 ) => {
-  const webhookUrl = isDemoMode() ? "" : values.webhook_url;
   const durationDays = values.duration_days ?? 1;
   const listingType = resolveListingType(values.listing_type);
   // Blank/invalid unit price ⇒ unset (the column defaults to 0 = free). A valid
@@ -232,7 +225,7 @@ const extractCommonFields = (
       settings.features.logistics,
       values.uses_logistics,
     ),
-    webhookUrl,
+    webhookUrl: values.webhook_url,
   };
 };
 

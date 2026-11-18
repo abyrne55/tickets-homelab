@@ -118,12 +118,6 @@ export const AREAS_M_Z = {
       schemaAtlas: "/admin/schema",
     },
   },
-  seeds: {
-    audience: OWNER_AUDIENCE,
-    view: {
-      seeds: "/admin/seeds",
-    },
-  },
   servicing: {
     audience: STAFF_ADMIN_LEVELS,
     view: {
@@ -177,7 +171,6 @@ export const AREAS_M_Z = {
       settingsPaymentProvider: "/admin/settings/payment-provider",
       settingsPaymentProviderRecovery:
         "/admin/settings/payment-provider-recovery",
-      settingsResetDatabase: "/admin/settings/reset-database",
       settingsShowPublicApi: "/admin/settings/show-public-api",
       settingsSiteFooter: "/admin/settings/site-footer",
       settingsSmsGateway: "/admin/settings/sms-gateway",

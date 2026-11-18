@@ -21,7 +21,7 @@ export type FeatureGate = ResponseHandler<[action: ResponseHandler]>;
 
 /** Build a page gate from a feature check. When the check passes, run the
  * caller's action. When it fails, return the blocked response instead: a 404
- * outside demo mode, a "storage is off" redirect, and so on. */
+ * for a disabled feature, a "storage is off" redirect, and so on. */
 export const featureGate =
   (
     isOn: () => boolean,

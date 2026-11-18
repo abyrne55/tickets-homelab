@@ -17,10 +17,6 @@ import {
 } from "#shared/checkout-pricing.ts";
 import { isPaymentsEnabled } from "#shared/config.ts";
 import { formatCurrency } from "#shared/currency.ts";
-import {
-  ATTENDEE_DEMO_FIELDS,
-  applyDemoOverrides,
-} from "#shared/demo/overrides.ts";
 import type { FormParams } from "#shared/form-data.ts";
 import type { CheckoutIntent } from "#shared/payments.ts";
 import {
@@ -85,7 +81,7 @@ const preparedOrderOr = async (
   return prepared.ok ? prepared : onError(prepared.error);
 };
 
-/** Process submitted form after CSRF and demo overrides. */
+/** Process submitted form after CSRF. */
 const processSubmission = async (
   request: Request,
   ctx: TicketCtx,
@@ -226,10 +222,7 @@ export const submitTicket = ticketFormRoute(
   // with — the page reloads with a fresh token). Field-level validation
   // errors instead re-render inline so the visitor keeps what they entered.
   (ctx) => (message) => errorRedirect(ticketPageUrl(ctx), message),
-  (request, ctx, form) => {
-    applyDemoOverrides(form, ATTENDEE_DEMO_FIELDS);
-    return processSubmission(request, ctx, form);
-  },
+  (request, ctx, form) => processSubmission(request, ctx, form),
 );
 
 /**

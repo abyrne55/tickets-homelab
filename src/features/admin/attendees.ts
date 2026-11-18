@@ -21,10 +21,6 @@ import type { TypedRouteHandler } from "#routes/router.ts";
 import { adminDestinationAt, adminPattern } from "#shared/admin-surface.ts";
 import { createAuthedFormRoute } from "#shared/app-forms.ts";
 import { createdBookingEntries } from "#shared/booking.ts";
-import {
-  ATTENDEE_DEMO_FIELDS,
-  applyDemoOverrides,
-} from "#shared/demo/overrides.ts";
 import type { EmailEntry } from "#shared/email.ts";
 import type { FormParams } from "#shared/form-data.ts";
 import { validateForm } from "#shared/forms/validation.ts";
@@ -225,7 +221,6 @@ const handleAddAttendee: TypedRouteHandler<"POST /admin/listing/:listingId/atten
         true,
       );
     },
-    preprocessForm: (form) => applyDemoOverrides(form, ATTENDEE_DEMO_FIELDS),
   });
 
 const handleAdminResendNotificationGet = attendeeActions[

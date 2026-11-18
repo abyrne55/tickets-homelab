@@ -176,7 +176,7 @@ export type AssignmentEditPage<Record, Item> = (
 
 /** Bind a single-form page to its title and nav highlight once; the renderer
  *  takes the viewer's session plus the error and success notices its route
- *  passes back — the shape the seeds and catalog-import pages share. */
+ *  passes back — the shape the catalog-import page shares. */
 export const flashFormPage =
   (
     titleKey: string,

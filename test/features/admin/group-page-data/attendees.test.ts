@@ -1,7 +1,6 @@
 import { assertStringIncludes } from "@std/assert";
-import { afterEach, beforeEach, describe, it as test } from "@std/testing/bdd";
+import { describe, it as test } from "@std/testing/bdd";
 import { listingAggregates } from "#db/listings/aggregates.ts";
-import { setDemoModeForTest } from "#shared/demo/mode.ts";
 import {
   expectHtmlResponse,
   expectIncludesAll,
@@ -14,14 +13,6 @@ import { createTestListing } from "#test-utils/db-helpers/listings.ts";
 import { adminGet } from "#test-utils/session.ts";
 
 describeWithEnv("server (admin groups) — attendee stats", { db: true }, () => {
-  beforeEach(() => {
-    setDemoModeForTest(false);
-  });
-
-  afterEach(() => {
-    setDemoModeForTest(false);
-  });
-
   describe("GET /admin/groups/:id — attendee stats", () => {
     test("shows attendee count and checked-in stats", async () => {
       const group = await createTestGroup({

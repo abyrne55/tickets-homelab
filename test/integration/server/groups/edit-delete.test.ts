@@ -1,11 +1,10 @@
 import { assertArrayIncludes, assertStringIncludes } from "@std/assert";
 import { expect } from "@std/expect";
-import { afterEach, beforeEach, describe, it as test } from "@std/testing/bdd";
+import { describe, it as test } from "@std/testing/bdd";
 import { stub } from "@std/testing/mock";
 import { listingGroups } from "#db/groups/table.ts";
 import { handleRequest } from "#routes";
 import { signCsrfToken } from "#shared/csrf.ts";
-import { setDemoModeForTest } from "#shared/demo/mode.ts";
 import { wasActivityLogged } from "#test-utils/activity-log.ts";
 import {
   expectFlash,
@@ -30,14 +29,6 @@ import {
 } from "#test-utils/session.ts";
 
 describeWithEnv("server (admin groups) — edit & delete", { db: true }, () => {
-  beforeEach(() => {
-    setDemoModeForTest(false);
-  });
-
-  afterEach(() => {
-    setDemoModeForTest(false);
-  });
-
   describe("GET /admin/groups/:id/edit", () => {
     test("shows edit form with pre-filled values", async () => {
       const group = await createTestGroup({

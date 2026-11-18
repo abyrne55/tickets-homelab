@@ -1,6 +1,6 @@
 /**
  * Admin "general" settings routes - the small single-field/toggle handlers
- * plus column-order configuration and database reset. Owner-only access
+ * plus column-order configuration. Owner-only access
  * enforced via the settings-helpers route wrappers.
  */
 
@@ -8,32 +8,18 @@ import { logActivity } from "#db/activity-log.ts";
 import { settings } from "#db/settings.ts";
 import { t } from "#i18n";
 import {
-  deleteStorageAndResetDatabase,
-  demoResetForm,
-} from "#routes/admin/database-reset.ts";
-import {
-  advancedSettingsRoute,
   settingsClearable,
   settingsHandler,
   settingsRoute,
   settingsToggle,
 } from "#routes/admin/settings-helpers.ts";
 import { redirect } from "#routes/response.ts";
-import { clearSessionCookie } from "#shared/cookies.ts";
-import {
-  applyDemoOverrides,
-  type DemoFieldMap,
-  FOOTER_DEMO_FIELDS,
-  TERMS_DEMO_FIELDS,
-} from "#shared/demo/overrides.ts";
 import { parseEmbedHosts, validateEmbedHosts } from "#shared/embed-hosts.ts";
 import { existingPaymentProviderState } from "#shared/existing-payment-provider.ts";
-import type { FormParams } from "#shared/form-data.ts";
 import {
   PAYMENT_PROVIDERS,
   providerCurrencyBlock,
 } from "#shared/payment-providers.ts";
-import { ok } from "#shared/response.ts";
 import type { RequestRoute } from "#shared/response-steps.ts";
 import type { SettingsFormConfig } from "#shared/settings/form-schema.ts";
 import { SETTINGS_FORMS } from "#shared/settings/forms.ts";
@@ -58,15 +44,6 @@ const formLocation = (definition: SingleFieldSettingsForm) => {
   const { label: _, ...location } = formRoute(definition);
   return location;
 };
-
-/** A settings extractor that masks the field's submitted value with demo
- * sample data when demo mode is on. */
-const demoExtract =
-  (fields: DemoFieldMap, fieldName: string) =>
-  (form: FormParams): string => {
-    applyDemoOverrides(form, fields);
-    return form.getString(fieldName);
-  };
 
 /** A settings save log line: the removed message when the value is empty,
  * the updated message otherwise. */
@@ -155,7 +132,7 @@ export const handleEmbedHostsPost = settingsHandler({
  */
 export const handleTermsPost = settingsHandler({
   ...formLocation(SETTINGS_FORMS.terms),
-  extract: demoExtract(TERMS_DEMO_FIELDS, SETTINGS_FORMS.terms.fieldName),
+  extract: (form) => form.getString(SETTINGS_FORMS.terms.fieldName),
   log: removedOrUpdated("success.terms_removed", "success.terms_updated"),
   save: (v) => settings.update.terms(v),
 });
@@ -165,7 +142,7 @@ export const handleTermsPost = settingsHandler({
  */
 export const handleSiteFooterPost = settingsHandler({
   ...formLocation(SETTINGS_FORMS.siteFooter),
-  extract: demoExtract(FOOTER_DEMO_FIELDS, SETTINGS_FORMS.siteFooter.fieldName),
+  extract: (form) => form.getString(SETTINGS_FORMS.siteFooter.fieldName),
   log: removedOrUpdated(
     "success.site_footer_removed",
     "success.site_footer_updated",
@@ -291,23 +268,3 @@ const columnOrderHandler = (kind: ConfigurableColumnLayoutKind) => {
 
 export const handleListingColumnOrderPost = columnOrderHandler("listing");
 export const handleAttendeeColumnOrderPost = columnOrderHandler("attendee");
-
-/**
- * Handle POST /admin/settings/reset-database - owner only
- */
-export const handleResetDatabasePost = advancedSettingsRoute(
-  async (form, errorPage) => {
-    const phraseResult = demoResetForm.validate(form);
-    if (!phraseResult.valid) {
-      return errorPage(phraseResult.error, "settings-reset-database");
-    }
-
-    // No activity-log line: the reset drops the table the line writes to.
-    await deleteStorageAndResetDatabase();
-
-    // Redirect to setup page since the database is now empty
-    return ok("/setup/", t("success.database_reset"), {
-      cookie: clearSessionCookie(),
-    });
-  },
-);

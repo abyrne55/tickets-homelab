@@ -3,7 +3,6 @@ import { expect } from "@std/expect";
 import { describe, it as test } from "@std/testing/bdd";
 import { getAllListings } from "#db/listings/records.ts";
 import { CONFIG_KEYS, settings } from "#db/settings.ts";
-import { setDemoModeForTest } from "#shared/demo/mode.ts";
 import {
   expectErrorFlash,
   expectFlash,
@@ -190,22 +189,6 @@ describeWithEnv("server (admin listing defaults)", { db: true }, () => {
       const stored = settings.getCachedRaw(CONFIG_KEYS.LISTING_DEFAULTS) ?? "";
       assert(!stored.includes("secret.example.com"));
       assert(!stored.includes("hook-xyz"));
-    });
-
-    test("refuses a webhook default in demo mode but keeps the thank-you url", async () => {
-      setDemoModeForTest(true);
-      await adminFormPost("/admin/listing-defaults", {
-        default_hidden: "1",
-        default_thank_you_url: "https://example.com/thanks",
-        default_webhook_url: "https://example.com/hook",
-      });
-      expect(settings.listingDefaults.hidden).toBe(true);
-      // Only the outbound webhook is blocked in demo mode — the thank-you
-      // redirect (no PII callback) still saves.
-      expect("webhookUrl" in settings.listingDefaults).toBe(false);
-      expect(settings.listingDefaults.thankYouUrl).toBe(
-        "https://example.com/thanks",
-      );
     });
   });
 

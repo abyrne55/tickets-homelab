@@ -56,8 +56,8 @@ export const HolidayTable = ({
 }): string =>
   String(renderTable(defineTable(holidayColumns()), holidays, { scrollClass }));
 
-/** Holiday create/edit form values. Kept as a public export because the
- *  demo/replay harness and tests read it directly. */
+/** Holiday create/edit form values. Kept as a public export because tests
+ *  read it directly. */
 export const holidayToFieldValues = (
   holiday?: Holiday,
 ): Record<string, string | number | null> =>

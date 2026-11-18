@@ -9,7 +9,6 @@ import {
   IFRAME_RESIZER_CHILD_JS_PATH,
   JS_PATH,
 } from "#shared/asset-paths.ts";
-import { setDemoModeForTest } from "#shared/demo/mode.ts";
 import { consumeFlash, setFlashContext } from "#shared/flash-context.ts";
 import { getImageProxyUrl } from "#shared/image-proxy-url.ts";
 import { detectIframeMode } from "#shared/request-context.ts";
@@ -42,12 +41,10 @@ const expectRenewalLink = async (): Promise<void> => {
 
 const setupLayoutTest = async (): Promise<void> => {
   await setupAdminPageTest();
-  setDemoModeForTest(false);
 };
 
 const resetLayoutTest = (): void => {
   settings.clearTestOverrides();
-  setDemoModeForTest(false);
 };
 
 describe("asset-paths", () => {
@@ -193,19 +190,6 @@ describe("Layout document shell", () => {
 
     assert(!html.includes("header-image"));
     assert(!html.includes(getImageProxyUrl("header.jpg")));
-  });
-
-  test("renders the demo banner only in demo mode", () => {
-    const normalHtml = String(
-      Layout({ children: "", family: "public", title: "Test" }),
-    );
-    setDemoModeForTest(true);
-    const demoHtml = String(
-      Layout({ children: "", family: "public", title: "Test" }),
-    );
-
-    assert(!normalHtml.includes('class="demo-banner"'));
-    assertStringIncludes(demoHtml, 'class="demo-banner"');
   });
 
   test("renders an unconsumed request flash before the page content", async () => {

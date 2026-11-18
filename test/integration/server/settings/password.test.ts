@@ -12,11 +12,10 @@
 
 import { assertStringIncludes } from "@std/assert";
 import { expect } from "@std/expect";
-import { afterEach, describe, it as test } from "@std/testing/bdd";
+import { describe, it as test } from "@std/testing/bdd";
 import { invalidateUsersCache } from "#db/users.ts";
 import { handleRequest } from "#routes";
 import { getSessionCookieName } from "#shared/cookies.ts";
-import { setDemoModeForTest } from "#shared/demo/mode.ts";
 import { getAllActivityLog } from "#test-utils/activity-log.ts";
 import {
   expectFlash,
@@ -34,10 +33,6 @@ import {
 } from "#test-utils/session.ts";
 
 describeWithEnv("server (admin settings)", { db: true }, () => {
-  afterEach(() => {
-    setDemoModeForTest(false);
-  });
-
   describe("POST /admin/settings", () => {
     testRequiresAuth("/admin/settings", {
       body: {
