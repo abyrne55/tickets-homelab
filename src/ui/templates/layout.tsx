@@ -9,7 +9,6 @@ import {
   IFRAME_RESIZER_CHILD_JS_PATH,
   JS_PATH,
 } from "#shared/asset-paths.ts";
-import { demoBanner, isDemoMode } from "#shared/demo/mode.ts";
 import { flashConsumed } from "#shared/flash-context.ts";
 import { requestFlash } from "#shared/forms/flash.tsx";
 import { getImageProxyUrl } from "#shared/image-proxy-url.ts";
@@ -88,7 +87,6 @@ export const Layout = ({
           <a class="skip-nav" href="#main-content">
             Skip to content
           </a>
-          {isDemoMode() && <Raw html={demoBanner()} />}
           <main id="main-content" tabindex="-1">
             {/* No header image in iframe embed mode: the host page already
                 carries its own branding, and the image request only

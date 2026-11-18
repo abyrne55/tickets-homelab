@@ -3,7 +3,6 @@ import { afterEach, beforeAll, describe, it as test } from "@std/testing/bdd";
 import { Window } from "happy-dom";
 import { settings } from "#db/settings.ts";
 import { t } from "#i18n";
-import { setDemoModeForTest } from "#shared/demo/mode.ts";
 import { buildForest, buildNavModel } from "#shared/site-pages/core.ts";
 import type { TargetMap } from "#shared/site-pages/types.ts";
 import { AdminPage } from "#templates/admin/admin-page-spec.tsx";
@@ -53,7 +52,6 @@ const closeWindows = async (): Promise<void> => {
 /** Clear the settings the tests changed. */
 const reset = (): void => {
   settings.clearTestOverrides();
-  setDemoModeForTest(false);
 };
 
 /** The selector of each guide example: the part before its rule block. */

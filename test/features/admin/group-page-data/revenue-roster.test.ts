@@ -1,7 +1,6 @@
 import { assert, assertStringIncludes } from "@std/assert";
-import { afterEach, beforeEach, describe, it as test } from "@std/testing/bdd";
+import { describe, it as test } from "@std/testing/bdd";
 import { setGroupPackageMembers } from "#db/groups.ts";
-import { setDemoModeForTest } from "#shared/demo/mode.ts";
 import { expectIncludesAll, expectStatus } from "#test-utils/assertions.ts";
 import { testDate } from "#test-utils/dates.ts";
 import { describeWithEnv } from "#test-utils/db.ts";
@@ -14,14 +13,6 @@ describeWithEnv(
   "server (admin groups) — revenue & roster decryption",
   { db: true },
   () => {
-    beforeEach(() => {
-      setDemoModeForTest(false);
-    });
-
-    afterEach(() => {
-      setDemoModeForTest(false);
-    });
-
     describe("GET /admin/groups/:id — revenue & roster", () => {
       test("decrypts the roster for a package whose member is paid only via its override", async () => {
         // A package member can be free on its own (unit_price 0) yet paid through

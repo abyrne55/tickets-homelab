@@ -1,9 +1,6 @@
-import { assertArrayIncludes } from "@std/assert";
 import { expect } from "@std/expect";
 import { describe, it as test } from "@std/testing/bdd";
 import { settings } from "#db/settings.ts";
-import { setDemoModeForTest } from "#shared/demo/mode.ts";
-import { DEMO_PAGE_TEXT } from "#shared/demo/samples.ts";
 import { MAX_TEXTAREA_LENGTH } from "#shared/limits.ts";
 import {
   expectFlash,
@@ -78,17 +75,6 @@ describeAdminSettings(() => {
       expectFlash(response, expect.stringContaining("Site footer removed"));
       await settingsAsStored();
       expect(settings.siteFooter).toBe("");
-    });
-
-    test("replaces a saved footer with sample text in demo mode", async () => {
-      setDemoModeForTest(true);
-      const { response } = await adminFormPost("/admin/settings/site-footer", {
-        site_footer: "Call Dana on 555-0139",
-      });
-
-      expect(response.status).toBe(302);
-      await settingsAsStored();
-      assertArrayIncludes(DEMO_PAGE_TEXT, [settings.siteFooter]);
     });
 
     test("settings page shows the Site footer section", async () => {

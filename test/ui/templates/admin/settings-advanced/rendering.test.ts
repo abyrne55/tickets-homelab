@@ -5,7 +5,6 @@ import {
   type AdvancedSettingsPageState,
   adminAdvancedSettingsPage,
 } from "#templates/admin/settings-advanced.tsx";
-import { expectIncludesAll } from "#test-utils/assertions.ts";
 import { setupTestEncryptionKey } from "#test-utils/env.ts";
 import { advancedDefaultState } from "./state.ts";
 
@@ -49,14 +48,5 @@ describe("admin advanced settings rendering contracts", () => {
       html,
       "No scheduled maintenance key is set on this site.",
     );
-  });
-
-  test("renders the reset form with its exact action and id", () => {
-    const html = render();
-
-    expectIncludesAll(html, [
-      'action="/admin/settings/reset-database"',
-      'id="settings-reset-database"',
-    ]);
   });
 });

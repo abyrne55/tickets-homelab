@@ -35,7 +35,6 @@ const settingsRoutes: ReadonlyArray<readonly [string, string]> = [
   ["POST", "/admin/settings/listing-column-order"],
   ["POST", "/admin/settings/payment-provider"],
   ["POST", "/admin/settings/payment-provider-recovery"],
-  ["POST", "/admin/settings/reset-database"],
   ["POST", "/admin/settings/show-public-api"],
   ["POST", "/admin/settings/sms-gateway"],
   ["POST", "/admin/settings/square"],

@@ -2,7 +2,6 @@
   "login.title": "Login",
   "login.submit": "Login",
   "login.password": "Password",
-  "login.reset_database": "Reset database",
   "join.set_password.title": "Set your password",
   "join.set_password.welcome": "Welcome, {username}",
   "join.set_password.instructions": "Set your password to complete your account setup.",

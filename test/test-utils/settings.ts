@@ -15,7 +15,6 @@ import {
   serializeEnabledFeatures,
   setFeatureEnabled,
 } from "#shared/admin-features.ts";
-import { setDemoModeForTest } from "#shared/demo/mode.ts";
 import { describeWithEnv } from "./db.ts";
 import { withMocks } from "./mocks.ts";
 import { insertModifier } from "./modifiers.ts";
@@ -29,16 +28,12 @@ export const settingsAsStored = async (): Promise<void> => {
 };
 
 /** The standard outer describe for admin-settings tests: scoped to
- *  `"server (admin settings)"` with a fresh test DB per spec and an
- *  `afterEach` that reverts any in-test demo-mode toggle. The
+ *  `"server (admin settings)"` with a fresh test DB per spec. The
  *  `test/lib/server-settings/*.test.ts` files all live under this umbrella —
  *  hoisting the wrapper here keeps the per-setting files focused on the
  *  behaviour they exercise instead of re-stating the same scaffold. */
 export const describeAdminSettings = (body: () => void): void =>
   describeWithEnv("server (admin settings)", { db: true }, () => {
-    afterEach(() => {
-      setDemoModeForTest(false);
-    });
     body();
   });
 

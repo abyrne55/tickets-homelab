@@ -1,8 +1,7 @@
 import { assertStringIncludes } from "@std/assert";
 import { expect } from "@std/expect";
-import { afterEach, beforeEach, describe, it as test } from "@std/testing/bdd";
+import { describe, it as test } from "@std/testing/bdd";
 import { handleRequest } from "#routes";
-import { setDemoModeForTest } from "#shared/demo/mode.ts";
 import {
   assertAdminHtml,
   expectFlash,
@@ -25,14 +24,6 @@ describeWithEnv(
   "server (admin groups) — actions & validation",
   { db: true },
   () => {
-    beforeEach(() => {
-      setDemoModeForTest(false);
-    });
-
-    afterEach(() => {
-      setDemoModeForTest(false);
-    });
-
     describe("redirect after create/edit", () => {
       test("create redirects to group detail page", async () => {
         const cookie = await testCookie();

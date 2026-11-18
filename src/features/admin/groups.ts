@@ -47,10 +47,6 @@ import {
   type GroupInput,
   groupCatalogFields,
 } from "#shared/catalog-fields/fields.ts";
-import {
-  GROUP_DEMO_FIELDS,
-  wrapResourceForDemo,
-} from "#shared/demo/overrides.ts";
 import { defineResource } from "#shared/rest/resource.ts";
 import { sitePageItemTargets } from "#shared/site-pages/target.ts";
 import { normalizeSlug } from "#shared/slug.ts";
@@ -257,11 +253,11 @@ const groupsResource = defineResource({
 // the destructive delete stays staff-only, from one bundle.
 const create = createCrudHandlers({
   ...crudConfig,
-  operations: wrapResourceForDemo(groupsCreateResource, GROUP_DEMO_FIELDS),
+  operations: groupsCreateResource,
 });
 const crud = createCrudHandlers({
   ...crudConfig,
-  operations: wrapResourceForDemo(groupsResource, GROUP_DEMO_FIELDS),
+  operations: groupsResource,
 });
 
 export const withGroup = withEntityLoader((id: number) => getGroupById(id));

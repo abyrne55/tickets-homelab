@@ -1,10 +1,9 @@
 import { assert, assertStringIncludes } from "@std/assert";
 import { expect } from "@std/expect";
-import { afterEach, describe, it as test } from "@std/testing/bdd";
+import { describe, it as test } from "@std/testing/bdd";
 import { MASK_SENTINEL } from "#db/settings/mask.ts";
 import { getCurrentSettingsVersion, settings } from "#db/settings.ts";
 import { handleRequest } from "#routes";
-import { setDemoModeForTest } from "#shared/demo/mode.ts";
 import { expectFlash } from "#test-utils/assertions.ts";
 import { describeWithEnv } from "#test-utils/db.ts";
 import { mockFormRequest } from "#test-utils/mocks.ts";
@@ -49,10 +48,6 @@ const expectRequiredError = (response: Response): void => {
 };
 
 describeWithEnv("server (admin settings)", { db: true }, () => {
-  afterEach(() => {
-    setDemoModeForTest(false);
-  });
-
   describe("sensitive field masking", () => {
     test("shows mask sentinel for configured Stripe key", async () => {
       await settings.update.paymentProvider("stripe");

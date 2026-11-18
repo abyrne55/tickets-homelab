@@ -11,10 +11,6 @@ import {
   entityTabRoutes,
 } from "#routes/admin/route-tables.ts";
 import { adminPattern } from "#shared/admin-surface.ts";
-import {
-  HOLIDAY_DEMO_FIELDS,
-  wrapResourceForDemo,
-} from "#shared/demo/overrides.ts";
 import type { FormValues } from "#shared/forms/definition.ts";
 import { defineResource } from "#shared/rest/resource.ts";
 import { parseDateStringOrThrow } from "#shared/validation/date-string.ts";
@@ -49,15 +45,12 @@ export const validateDateRange = (
   );
 
 /** Holidays resource for REST create/update operations */
-const holidaysResource = wrapResourceForDemo(
-  defineResource({
-    form: getHolidayForm(),
-    table: holidays.table,
-    toInput: extractHolidayInput,
-    validate: validateDateRange,
-  }),
-  HOLIDAY_DEMO_FIELDS,
-);
+const holidaysResource = defineResource({
+  form: getHolidayForm(),
+  table: holidays.table,
+  toInput: extractHolidayInput,
+  validate: validateDateRange,
+});
 
 export const holidaysCrud = createCrudHandlers({
   getAll: holidays.getAll,

@@ -1,8 +1,7 @@
 import { expect } from "@std/expect";
-import { afterEach, describe, it as test } from "@std/testing/bdd";
+import { describe, it as test } from "@std/testing/bdd";
 import { getListingWithCount } from "#db/listings/records.ts";
 import { handleRequest } from "#routes";
-import { setDemoModeForTest } from "#shared/demo/mode.ts";
 import {
   expectFlashRedirect,
   expectHtmlResponse,
@@ -14,10 +13,6 @@ import { mockFormRequest } from "#test-utils/mocks.ts";
 import { adminFormPost, setupListingAndLogin } from "#test-utils/session.ts";
 
 describeWithEnv("server listings > edit post basics", { db: true }, () => {
-  afterEach(() => {
-    setDemoModeForTest(false);
-  });
-
   describe("POST /admin/listing/:id/edit", () => {
     testRequiresAuth("/admin/listing/1/edit", {
       body: {
@@ -166,31 +161,6 @@ describeWithEnv("server listings > edit post basics", { db: true }, () => {
         400,
         "Total attendees ever must be 0 or greater",
       );
-    });
-
-    test("clears webhook URL when updating listing in demo mode", async () => {
-      setDemoModeForTest(true);
-
-      const { listing } = await setupListingAndLogin({
-        maxAttendees: 100,
-        webhookUrl: "https://example.com/original-webhook",
-      });
-
-      const { response } = await adminFormPost("/admin/listing/1/edit", {
-        max_attendees: "200",
-        max_quantity: "5",
-        name: listing.name,
-        slug: listing.slug,
-        webhook_url: "https://example.com/new-webhook",
-      });
-      await expectFlashRedirect(
-        "/admin/listing/1",
-        "Listing updated",
-      )(response);
-
-      // Verify webhook_url was cleared
-      const updated = await getListingWithCount(1);
-      expect(updated?.webhook_url).toBe("");
     });
   });
 });

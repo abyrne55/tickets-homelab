@@ -2361,11 +2361,6 @@ button.secondary,
 .scanner-confirm-actions .secondary {
   @include surface-colors;
 }
-/* Demo mode banner */
-.demo-banner {
-  @include banner-bar;
-}
-
 /* Read-only mode banner */
 .read-only-banner {
   background: #dc2626;

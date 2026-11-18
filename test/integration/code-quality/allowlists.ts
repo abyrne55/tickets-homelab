@@ -121,9 +121,6 @@ export const ALLOWED_TEST_HOOKS: string[] = [
   "shared/config.ts:setEffectiveDomainForTest",
   // Detach the global Sentry client between test files
   "shared/sentry.ts:resetSentryForTest",
-  // Reset cached demo mode between tests
-  "shared/demo/mode.ts:resetDemoMode",
-  "shared/demo/mode.ts:setDemoModeForTest",
   // Reset cached Liquid engine between tests (currency changes need fresh filters)
   "shared/liquid-engine.ts:resetLiquidEngines",
   // Skip login delay in tests without env var races

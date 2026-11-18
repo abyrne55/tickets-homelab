@@ -32,7 +32,6 @@
  * | [Utilities](../docs/utilities.ts) | FP helpers, formatting, caching |
  * | [Embed](../docs/embed.ts) | Widget embedding and CDN |
  * | [Webhooks](../docs/webhooks.ts) | Webhook delivery and API examples |
- * | [Demo](../docs/demo.ts) | Demo mode and seed data |
  *
  * ## Deployment Options
  *
@@ -46,7 +45,6 @@
 export * from "./docs/config.ts";
 export * from "./docs/crypto.ts";
 export * from "./docs/database.ts";
-export * from "./docs/demo.ts";
 export * from "./docs/email.ts";
 export * from "./docs/embed.ts";
 export * from "./docs/listings.ts";

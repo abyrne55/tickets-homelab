@@ -4,7 +4,6 @@
 
 import { t } from "#i18n";
 import { Raw } from "#jsx/jsx-runtime.ts";
-import { isDemoMode } from "#shared/demo/mode.ts";
 import { Flash } from "#shared/forms/flash.tsx";
 import { ReturnUrlField } from "#shared/return-url-field.tsx";
 import { flashProps } from "#templates/admin/admin-page-spec.tsx";
@@ -32,10 +31,5 @@ export const adminLoginPage = (
         <Raw html={getLoginForm().render()} />
         <ReturnUrlField returnUrl={returnPath ?? undefined} />
       </SaveForm>
-      {isDemoMode() && (
-        <p>
-          <a href="/demo/reset">{t("login.reset_database")}</a>
-        </p>
-      )}
     </>,
   );

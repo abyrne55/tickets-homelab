@@ -1,5 +1,5 @@
 /** The full-page shell for the admin pages that render without the admin
- * nav: the admin login page and the demo database-reset page. */
+ * nav, such as the admin login page. */
 import type { Child } from "#jsx/jsx-runtime.ts";
 import { Layout } from "#templates/layout.tsx";
 

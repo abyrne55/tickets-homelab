@@ -61,7 +61,6 @@ export const MESSAGE_GROUPS = [
   "questions",
   "renewal",
   "schema-atlas",
-  "seed-data",
   "servicing",
   "settings",
   "setup",

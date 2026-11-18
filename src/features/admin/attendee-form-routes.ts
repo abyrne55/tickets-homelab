@@ -48,10 +48,6 @@ import { formPolicyAt, pageGuardRun } from "#routes/route-gates.ts";
 import type { TypedRouteHandler } from "#routes/router.ts";
 import { getSearchParam } from "#routes/url.ts";
 
-import {
-  ATTENDEE_DEMO_FIELDS,
-  loadAfterDemoOverrides,
-} from "#shared/demo/overrides.ts";
 import type { FormParams } from "#shared/form-data.ts";
 import {
   selectedListingQuantities,
@@ -141,17 +137,21 @@ const handleSubmit =
     );
 
 /** Inner submit logic — parse, validate, then run the atomic create or edit. */
+const loadContextFor = (
+  mode: "create" | "edit",
+  attendeeId: number | null,
+): Promise<EditContext | null> =>
+  mode === "edit" && attendeeId !== null
+    ? loadEditContext(attendeeId)
+    : Promise.resolve(EMPTY_EDIT_CONTEXT);
+
 const handleSubmitInner = async (
   mode: "create" | "edit",
   attendeeId: number | null,
   session: AuthSession,
   form: FormParams,
 ): Promise<Response> => {
-  const edit = await loadAfterDemoOverrides(form, ATTENDEE_DEMO_FIELDS, () =>
-    mode === "edit" && attendeeId !== null
-      ? loadEditContext(attendeeId)
-      : Promise.resolve(EMPTY_EDIT_CONTEXT),
-  );
+  const edit = await loadContextFor(mode, attendeeId);
   if (edit === null) return notFoundResponse();
   const {
     atBooking,

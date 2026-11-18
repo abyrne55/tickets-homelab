@@ -30,7 +30,6 @@ import {
   handleListingColumnOrderPost,
   handlePaymentProviderPost,
   handlePaymentProviderRecoveryPost,
-  handleResetDatabasePost,
   handleShowPublicApiPost,
   handleSiteFooterPost,
   handleTermsPost,
@@ -99,7 +98,6 @@ export const adminHandlers = defineAdminRoutes({
   "POST /admin/settings/payment-provider": handlePaymentProviderPost,
   "POST /admin/settings/payment-provider-recovery":
     handlePaymentProviderRecoveryPost,
-  "POST /admin/settings/reset-database": handleResetDatabasePost,
   "POST /admin/settings/show-public-api": handleShowPublicApiPost,
   "POST /admin/settings/site-footer": handleSiteFooterPost,
   "POST /admin/settings/sms-gateway": handleSmsGatewayPost,

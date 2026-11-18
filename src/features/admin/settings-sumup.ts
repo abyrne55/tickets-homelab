@@ -6,7 +6,6 @@
 import { settings } from "#db/settings.ts";
 import { sumupConnectionAnswer } from "#routes/admin/settings-connection-lines.ts";
 import { defineProviderCredentialsRoute } from "#routes/admin/settings-provider-credentials.ts";
-import { isDemoMode } from "#shared/demo/mode.ts";
 import { providerCurrencyBlock } from "#shared/payment-providers.ts";
 import { sumupApi } from "#shared/sumup.ts";
 
@@ -30,7 +29,6 @@ export const sumupRoutes = defineProviderCredentialsRoute<SumupFields>({
   testFn: async () =>
     sumupConnectionAnswer(await sumupApi.testSumupConnection()),
   validate: ({ merchantCode }) => {
-    if (isDemoMode()) return "Cannot configure SumUp in demo mode";
     const currencyBlock = providerCurrencyBlock("sumup", settings.currency);
     if (currencyBlock) return currencyBlock;
     if (!merchantCode) return "Merchant code is required";

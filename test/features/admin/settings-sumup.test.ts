@@ -1,10 +1,9 @@
 import { assert, assertStringIncludes } from "@std/assert";
 import { expect } from "@std/expect";
-import { afterEach, describe, it as test } from "@std/testing/bdd";
+import { describe, it as test } from "@std/testing/bdd";
 import { stub } from "@std/testing/mock";
 import { MASK_SENTINEL } from "#db/settings/mask.ts";
 import { settings } from "#db/settings.ts";
-import { setDemoModeForTest } from "#shared/demo/mode.ts";
 import { sumupApi } from "#shared/sumup.ts";
 import { getAllActivityLog } from "#test-utils/activity-log.ts";
 import {
@@ -20,10 +19,6 @@ import { withMocks } from "#test-utils/mocks.ts";
 import { adminFormPost, adminGet } from "#test-utils/session.ts";
 
 describeWithEnv("server (admin settings)", { db: true }, () => {
-  afterEach(() => {
-    setDemoModeForTest(false);
-  });
-
   describe("POST /admin/settings/sumup", () => {
     testRequiresAuth("/admin/settings/sumup", {
       body: { sumup_api_key: "sk_test_1", sumup_merchant_code: "MC1" },
@@ -64,16 +59,6 @@ describeWithEnv("server (admin settings)", { db: true }, () => {
       } finally {
         settings.clearTestOverride("currency");
       }
-    });
-
-    test("refuses configuration in demo mode", async () => {
-      setDemoModeForTest(true);
-      const { response } = await adminFormPost("/admin/settings/sumup", {
-        sumup_api_key: "sk_test_1",
-        sumup_merchant_code: "MC1",
-      });
-      expect(response.status).toBe(302);
-      expectFlash(response, expect.stringContaining("demo mode"), false);
     });
 
     test("stores new credentials and selects SumUp as the provider", async () => {

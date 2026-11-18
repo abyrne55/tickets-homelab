@@ -127,19 +127,6 @@ export const PREFIXES_A_L = {
     handler: customCssPrefixHandler,
     settings: [CONFIG_KEYS.CUSTOM_CSS],
   },
-  demo: {
-    handler: routeFromModule(
-      () => import("#routes/admin/database-reset.ts"),
-      "routeDatabaseReset",
-    ),
-    messageGroups: [
-      ...ADMIN_SHELL_MESSAGE_GROUPS,
-      "login",
-      "settings",
-      "validation",
-    ],
-    settings: [],
-  },
   events: {
     getOnly: true,
     handler: legacyEventsRedirectHandler,

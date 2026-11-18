@@ -24,7 +24,6 @@ import {
   errorRedirect,
   redirect,
 } from "#routes/response.ts";
-import { isDemoMode } from "#shared/demo/mode.ts";
 import { slugify } from "#shared/slug.ts";
 import { adminCatalogImportPage } from "#templates/admin/catalog-transfer.tsx";
 import { CatalogExportError, exportGroup, exportListing } from "./export.ts";
@@ -96,14 +95,6 @@ const handleImportGet: TypedRouteHandler<"GET /admin/catalog/import"> =
 
 const handleImportPost: TypedRouteHandler<"POST /admin/catalog/import"> =
   contentMultipartRoute(async (session, formData) => {
-    // The interactive create paths scrub demo-mapped fields, and clear
-    // webhook URLs, as they parse the form. A raw import blob bypasses all
-    // of that. Disable catalog import entirely in demo mode rather than
-    // persist arbitrary names, descriptions, locations, or an external
-    // webhook into a public demo.
-    if (isDemoMode()) {
-      return errorRedirect(IMPORT_PATH, t("catalog_transfer.demo_disabled"));
-    }
     const file = requireUploadedFile(formData, "catalog_file", () =>
       errorRedirect(IMPORT_PATH, t("catalog_transfer.no_file")),
     );

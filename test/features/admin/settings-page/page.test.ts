@@ -1,10 +1,9 @@
 import { assert, assertStringIncludes } from "@std/assert";
 import { expect } from "@std/expect";
-import { afterEach, describe, it as test } from "@std/testing/bdd";
+import { describe, it as test } from "@std/testing/bdd";
 import { settings } from "#db/settings.ts";
 import type { bunnyCdnApi } from "#shared/bunny-cdn.ts";
 import { buildFlashCookie } from "#shared/cookies.ts";
-import { setDemoModeForTest } from "#shared/demo/mode.ts";
 import {
   expectHtml,
   expectHtmlResponse,
@@ -20,10 +19,6 @@ import { secureAdminCookie, secureAdminGet } from "#test-utils/secure-admin.ts";
 import { adminGet, testCookie } from "#test-utils/session.ts";
 
 describeWithEnv("server (admin settings)", { db: true }, () => {
-  afterEach(() => {
-    setDemoModeForTest(false);
-  });
-
   const expectSettingsFormFlash = async (
     path: string,
     formId: string,
@@ -387,7 +382,6 @@ describeWithEnv("server (admin settings)", { db: true }, () => {
         'id="settings-email-tpl-confirmation"',
         'id="settings-email-tpl-admin"',
         'id="settings-email"',
-        'id="settings-reset-database"',
       ]);
     });
 

@@ -40,9 +40,8 @@ type ProviderCredentialsConfig<T> = {
   unchangedMessage?: string;
   /** Extract the non-secret fields (location, merchant code, …). */
   extraFields?: (form: FormParams) => T;
-  /** Provider-specific validation (demo-mode guard, field/format checks).
-   * Receives the extra fields and the classified secret. Every provider has at
-   * least a demo-mode guard, so this is required. */
+  /** Provider-specific validation (field/format checks).
+   * Receives the extra fields and the classified secret. */
   validate: (
     fields: T,
     secret: SecretFieldResult,

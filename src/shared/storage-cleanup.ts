@@ -42,15 +42,6 @@ export const deleteListingAttachmentFile = async (
   }
 };
 
-/** Delete the full-size image and thumbnail files for a first-class image. */
-export const deleteImageStorageFiles = async (
-  image: ImageWithStorage,
-  reason: string,
-): Promise<void> => {
-  await tryDeleteFile(image.filename, image.id, reason);
-  await tryDeleteFile(image.filename_thumb, image.id, reason);
-};
-
 /** True for a "the file is already gone" deletion error from either backend, so
  * a retried delete treats an already-removed file as success. */
 const isAlreadyDeleted = (err: unknown): boolean =>
@@ -75,23 +66,3 @@ export const deleteImageStorageFilesStrict = async (
     .find((reason) => !isAlreadyDeleted(reason));
   if (failure) throw failure;
 };
-
-/** Turn a "delete one record's files" function into the whole-table sweep the
- * database reset runs. Both sweeps below are this one loop. */
-const deletesEveryFileFor =
-  <Record>(
-    deleteOne: (record: Record, reason: string) => Promise<void>,
-  ): ((records: readonly Record[]) => Promise<void>) =>
-  async (records: readonly Record[]): Promise<void> => {
-    for (const record of records) await deleteOne(record, "database reset");
-  };
-
-/** Delete all attachment files for a list of listings */
-export const deleteAllListingAttachmentFiles = deletesEveryFileFor(
-  deleteListingAttachmentFile,
-);
-
-/** Delete all first-class image files. */
-export const deleteAllImageStorageFiles = deletesEveryFileFor(
-  deleteImageStorageFiles,
-);

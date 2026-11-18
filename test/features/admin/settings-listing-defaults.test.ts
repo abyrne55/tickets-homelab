@@ -2,7 +2,6 @@ import { assert, assertStringIncludes } from "@std/assert";
 import { expect } from "@std/expect";
 import { describe, it as test } from "@std/testing/bdd";
 import { parseListingDefaultsForm } from "#routes/admin/settings-listing-defaults.ts";
-import { setDemoModeForTest } from "#shared/demo/mode.ts";
 import { FormParams } from "#shared/form-data.ts";
 
 const parse = (query: string, hasLogistics = true) =>
@@ -59,22 +58,6 @@ describe("admin > listing defaults form parse > urls", () => {
   test("rejects an unsafe url", () => {
     expect(parse("default_webhook_url=ftp://example.com").error).not.toBeNull();
     expect(parse("default_thank_you_url=not-a-url").error).not.toBeNull();
-  });
-
-  test("ignores the webhook default in demo mode", () => {
-    setDemoModeForTest(true);
-    try {
-      expect(
-        "webhookUrl" in
-          ok(parse("default_webhook_url=https://example.com/hook")),
-      ).toBe(false);
-      expect(
-        ok(parse("default_thank_you_url=https://example.com/thanks"))
-          .thankYouUrl,
-      ).toBe("https://example.com/thanks");
-    } finally {
-      setDemoModeForTest(false);
-    }
   });
 });
 

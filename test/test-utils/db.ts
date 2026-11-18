@@ -12,7 +12,6 @@ import { lazyRef } from "#fp";
 import { runCleanups } from "#scripts/cleanup.ts";
 import { invalidateCachesForTable } from "#shared/cache-registry.ts";
 import { resetEffectiveDomain } from "#shared/config.ts";
-import { setDemoModeForTest } from "#shared/demo/mode.ts";
 import { hostEmail } from "#shared/email.ts";
 import { setStorageConfigForTest } from "#shared/storage.ts";
 import { createTestDbClient } from "#test-utils/db-client.ts";
@@ -200,7 +199,6 @@ export const resetDb = (): void => {
     settings.invalidateCache();
     invalidateEntityCaches();
     setTestSession(null);
-    setDemoModeForTest(false);
     resetEffectiveDomain();
     hostEmail.resetOverride();
     settings.appleWallet.resetHostConfig();

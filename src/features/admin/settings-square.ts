@@ -9,7 +9,6 @@ import { t } from "#i18n";
 import { squareConnectionAnswer } from "#routes/admin/settings-connection-lines.ts";
 import { settingsSecret } from "#routes/admin/settings-helpers.ts";
 import { defineProviderCredentialsRoute } from "#routes/admin/settings-provider-credentials.ts";
-import { isDemoMode } from "#shared/demo/mode.ts";
 import { squareApi } from "#shared/square/api.ts";
 import {
   validateSquareAccessToken,
@@ -41,7 +40,6 @@ export const squareRoutes = defineProviderCredentialsRoute<SquareFields>({
   testFn: async () =>
     squareConnectionAnswer(await squareApi.testSquareConnection()),
   validate: ({ locationId }, secret) => {
-    if (isDemoMode()) return t("error.square_demo_mode");
     if (!locationId) return t("error.square_location_required");
     const locationError = validateSquareLocationId(locationId);
     if (locationError) return locationError;

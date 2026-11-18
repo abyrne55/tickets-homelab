@@ -270,8 +270,8 @@ describe("i18n", () => {
   });
 
   describe("message group loading", () => {
-    const GROUP = "seed-data" as const;
-    const KEY = "admin.seeds.title";
+    const GROUP = "schema-atlas" as const;
+    const KEY = "schema.vat.title";
 
     /** Swap the group's loader for the test, then restore it and the state.
      * The whole catalog is loaded back afterwards: these tests share an isolate
@@ -308,7 +308,7 @@ describe("i18n", () => {
       // The system group already owns this key; a second group offering it
       // must fail loudly instead of silently overwriting the copy.
       await withLoader(
-        () => Promise.resolve({ "common.demo_mode_notice": "clash" }),
+        () => Promise.resolve({ "public.not_found.title": "clash" }),
         async () => {
           await expect(ensureMessageGroups([GROUP])).rejects.toThrow(
             "belongs to both",
@@ -376,7 +376,7 @@ describe("i18n", () => {
     test("withMessageGroups loads the group before running the work", () =>
       withColdMessages(async () => {
         expect(await withMessageGroups([GROUP], () => t(KEY))).toBe(
-          "Example data",
+          "Tax assessment history",
         );
       }));
   });

@@ -1,9 +1,8 @@
 import { assert, assertStringIncludes } from "@std/assert";
 import { expect } from "@std/expect";
-import { afterEach, beforeEach, describe, it as test } from "@std/testing/bdd";
+import { describe, it as test } from "@std/testing/bdd";
 import { handleRequest } from "#routes";
 import { signCsrfToken } from "#shared/csrf.ts";
-import { setDemoModeForTest } from "#shared/demo/mode.ts";
 import {
   expectFlash,
   expectFlashRedirect,
@@ -25,14 +24,6 @@ import {
 } from "#test-utils/session.ts";
 
 describeWithEnv("server (admin groups) — list & create", { db: true }, () => {
-  beforeEach(() => {
-    setDemoModeForTest(false);
-  });
-
-  afterEach(() => {
-    setDemoModeForTest(false);
-  });
-
   describe("GET /admin/groups", () => {
     testRequiresAuth("/admin/groups");
 

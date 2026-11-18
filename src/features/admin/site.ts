@@ -23,11 +23,6 @@ import { authFlashPage } from "#routes/auth-flash-page.ts";
 import { errorRedirect, redirect } from "#routes/response.ts";
 import { createAuthedFormRoute } from "#shared/app-forms.ts";
 import { isBotpoisonEnabled } from "#shared/config.ts";
-import {
-  applyDemoOverrides,
-  SITE_CONTACT_DEMO_FIELDS,
-  SITE_HOME_DEMO_FIELDS,
-} from "#shared/demo/overrides.ts";
 import { MAX_TEXTAREA_LENGTH } from "#shared/limits.ts";
 import { isPublicListing } from "#shared/listing-visibility.ts";
 import type { RequestRoute } from "#shared/response-steps.ts";
@@ -89,12 +84,7 @@ const renderContactPage: PageRenderer = (session, error, success) =>
 /** Handle POST /admin/site - save homepage */
 const handleSiteHomePost = createAuthedFormRoute({
   auth: SITE_FORM,
-  form: {
-    validate: (form) => {
-      applyDemoOverrides(form, SITE_HOME_DEMO_FIELDS);
-      return siteHomeForm.validate(form);
-    },
-  },
+  form: siteHomeForm,
   onInvalid: ({ error }) => errorRedirect("/admin/site", error),
   onValid: async ({ values }) => {
     await settings.update.websiteTitle(values.website_title);
@@ -116,10 +106,7 @@ const handleSiteContactFormTogglePost = settingsToggle({
 /** Handle POST /admin/site/contact - save contact page */
 const handleSiteContactPost = settingsHandler({
   auth: SITE_FORM,
-  extract: (form) => {
-    applyDemoOverrides(form, SITE_CONTACT_DEMO_FIELDS);
-    return form.getString("contact_page_text");
-  },
+  extract: (form) => form.getString("contact_page_text"),
   log: () => "Contact page updated",
   redirectTo: "/admin/site/contact",
   save: (v) => settings.update.contactPageText(v),

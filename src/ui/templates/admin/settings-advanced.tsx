@@ -5,7 +5,6 @@
 import { t } from "#i18n";
 import type { AddressLookupSetting } from "#shared/address-lookup/types.ts";
 import { SETTINGS_FORMS } from "#shared/settings/forms.ts";
-import { ResetDatabaseForm } from "#templates/admin/database-reset.tsx";
 import { AppleWalletForm } from "#templates/admin/settings/apple-wallet.tsx";
 import { CustomDomainForm } from "#templates/admin/settings/custom-domain.tsx";
 import { EmailNotificationsForm } from "#templates/admin/settings/email.tsx";
@@ -108,10 +107,5 @@ export const adminAdvancedSettingsPage = (
           <p>{t("settings.advanced.scheduled_unset")}</p>
         )}
       </article>
-
-      <ResetDatabaseForm
-        action="/admin/settings/reset-database"
-        id="settings-reset-database"
-      />
     </>,
   );
