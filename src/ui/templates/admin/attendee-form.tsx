@@ -27,7 +27,6 @@ import { START_DATE_FIELD } from "#shared/order-select.ts";
 import { parseDateString } from "#shared/validation/date-string.ts";
 import { renderAdminPageSpec } from "#templates/admin/admin-page-spec.tsx";
 import { ListingEditor } from "#templates/admin/attendee-form/listing-editor.tsx";
-import { LogisticsSection } from "#templates/admin/attendee-form/logistics.tsx";
 import { TaxSaveFields } from "#templates/admin/attendee-form/tax.tsx";
 import type {
   AttendeeFormProps,
@@ -35,7 +34,7 @@ import type {
 } from "#templates/admin/attendee-form/types.ts";
 import { EditQuestions } from "#templates/admin/attendees.tsx";
 import { SaveActions } from "#templates/components/actions.tsx";
-import { AddressFieldWithLookup } from "#templates/components/address-field.tsx";
+import { AddressField } from "#templates/components/address-field.tsx";
 import {
   type FormSection,
   FormSections,
@@ -209,7 +208,7 @@ const ContactDetailFields = ({ data }: AttendeeFormProps): JSX.Element => (
       />
     </label>
 
-    <AddressFieldWithLookup address={data.parsed.address || ""} />
+    <AddressField address={data.parsed.address || ""} />
 
     <label for="special_instructions">
       {t("common.special_instructions")}
@@ -372,8 +371,6 @@ const AttendeeEditForm = ({ data }: AttendeeFormProps): JSX.Element => {
       {!isEdit && <h1>{t("attendee_form.title_create")}</h1>}
 
       <FormSections sections={editFormSections(data)} />
-
-      <LogisticsSection logistics={data.logistics} />
 
       <hr />
 

@@ -362,7 +362,7 @@ describe("pages built on the spec", () => {
   });
 
   /** The collection shape: the body receives both the items and the viewer
-   *  (groups, logistics). */
+   *  (groups). */
   const collectionPage = (
     items: string[],
     session: AdminSession,

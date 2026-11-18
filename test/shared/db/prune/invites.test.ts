@@ -13,7 +13,7 @@ import {
 } from "#test-utils/user-owned-records.ts";
 
 const createInvite = (username: string, expiry: string) =>
-  createInvitedUser(username, "agent", `${username}-invite`, expiry);
+  createInvitedUser(username, "manager", `${username}-invite`, expiry);
 
 const cloneInvites = (
   sourceId: number,
@@ -62,7 +62,6 @@ describeWithEnv("db > expired invite pruning", { db: true }, () => {
     expect(await getUserOwnedRowSources(first.id)).toEqual([
       "api_keys",
       "sessions",
-      "user_logistics_agents",
       "users",
     ]);
     expect(await getUserOwnedRowSources(second.id)).toEqual(["users"]);
@@ -74,7 +73,6 @@ describeWithEnv("db > expired invite pruning", { db: true }, () => {
     expect(await getUserOwnedRowSources(future.id)).toEqual([
       "api_keys",
       "sessions",
-      "user_logistics_agents",
       "users",
     ]);
   });
@@ -150,7 +148,6 @@ describeWithEnv("db > expired invite pruning", { db: true }, () => {
     expect(await getUserOwnedRowSources(invite.id)).toEqual([
       "api_keys",
       "sessions",
-      "user_logistics_agents",
       "users",
     ]);
   });

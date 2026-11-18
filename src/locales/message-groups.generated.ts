@@ -2,7 +2,6 @@
 
 export const MESSAGE_GROUPS = [
   "activity-log",
-  "address-lookup",
   "admin-shell",
   "attendees",
   "attributes",
@@ -22,7 +21,6 @@ export const MESSAGE_GROUPS = [
   "dashboard",
   "date-picker",
   "debug",
-  "deliveries",
   "detail-rows",
   "entity-pages",
   "features",
@@ -47,7 +45,6 @@ export const MESSAGE_GROUPS = [
   "listing-qr",
   "listings-table",
   "login",
-  "logistics",
   "migrate",
   "modifiers",
   "nav",

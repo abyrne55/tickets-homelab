@@ -1,12 +1,10 @@
 import { expect } from "@std/expect";
 import { it as test } from "@std/testing/bdd";
 import { getAllListings } from "#db/listings/records.ts";
-import { settings } from "#db/settings.ts";
 import { t } from "#i18n";
 import { importCatalog } from "#routes/admin/catalog-transfer/import.ts";
 import { describeWithEnv } from "#test-utils/db.ts";
 import { withEnv } from "#test-utils/env.ts";
-import { featureSetting } from "#test-utils/settings.ts";
 
 const importPolicyListing = async (
   name: string,
@@ -52,17 +50,13 @@ describeWithEnv("catalog import policy", { db: true }, () => {
     expect(listing.use_defaults).toBe(true);
   });
 
-  test("logistics stays off when the feature is unavailable", async () => {
-    expect((await importPolicyListing("No logistics")).uses_logistics).toBe(
-      false,
-    );
-  });
+  test("an old export's retired usesLogistics key is accepted and ignored", async () => {
+    // importPolicyListing sends usesLogistics: true, as exports made before
+    // logistics was removed do. The import must still succeed.
+    const listing = await importPolicyListing("Old export");
 
-  test("logistics remains required when the feature is enabled", async () => {
-    settings.setForTest(featureSetting("logistics"));
-    expect((await importPolicyListing("With logistics")).uses_logistics).toBe(
-      true,
-    );
+    expect(listing.name).toBe("Old export");
+    expect("uses_logistics" in listing).toBe(false);
   });
 
   test("refuses a listing import that assigns a built site", async () => {

@@ -1,7 +1,6 @@
 import { assertStringIncludes } from "@std/assert";
 import { expect } from "@std/expect";
 import { describe, it as test } from "@std/testing/bdd";
-import { settings } from "#db/settings.ts";
 import {
   expectHtmlResponse,
   expectIncludesAll,
@@ -13,7 +12,6 @@ import {
   deactivateTestListing,
 } from "#test-utils/db-helpers/listings.ts";
 import { adminGet } from "#test-utils/session.ts";
-import { featureSetting } from "#test-utils/settings.ts";
 
 describeWithEnv("server listings > index and new", { db: true }, () => {
   describe("GET /admin/listings", () => {
@@ -80,19 +78,6 @@ describeWithEnv("server listings > index and new", { db: true }, () => {
         200,
         "Add Listing",
         'action="/admin/listing"',
-      );
-    });
-
-    test("redirects to picker when a logistics template is requested but logistics is disabled", async () => {
-      settings.setForTest(featureSetting());
-      const response = await adminGet(
-        "/admin/listing/new?template=hireable-item",
-      );
-      await expectHtmlResponse(
-        response,
-        200,
-        "Add Listing",
-        "Choose a listing type",
       );
     });
   });

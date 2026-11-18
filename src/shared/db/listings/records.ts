@@ -62,7 +62,6 @@ export const decryptListingWithCount = async (
   resolveListingDefaults(
     resolveListingDate(await decryptStoredListingWithCount(row)),
     settings.listingDefaults,
-    settings.features.logistics,
   );
 
 /** Read requested listings' stored values without overlaying inherited defaults. */

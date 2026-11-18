@@ -27,7 +27,6 @@ import {
   testFormParams,
 } from "#test-utils/form-values.ts";
 import { adminFormPost, apiRequest } from "#test-utils/session.ts";
-import { featureSetting, withSetting } from "#test-utils/settings.ts";
 import type { Listing } from "#types";
 
 const listingForm = (extra: TestFormValues = {}) =>
@@ -280,23 +279,10 @@ describeWithEnv("listings form", { db: true }, () => {
       expect(links.rows.map((r) => r.group_id)).toEqual([group.id]);
     });
 
-    test("builder and logistics choices stay off while their features are off", async () => {
-      const row = await createListing({
-        assign_built_site: "1",
-        uses_logistics: "1",
-      });
+    test("the builder choice stays off while its feature is off", async () => {
+      const row = await createListing({ assign_built_site: "1" });
       expect(row.assign_built_site).toBe(false);
-      expect(row.uses_logistics).toBe(false);
     });
-
-    test("a logistics choice is kept when the feature is on", () =>
-      withSetting(featureSetting("logistics"), async () => {
-        const on = await createListing({ uses_logistics: "1" });
-        expect(on.uses_logistics).toBe(true);
-        // An unticked checkbox never reaches the form at all.
-        const off = await createListing({ name: "No logistics" });
-        expect(off.uses_logistics).toBe(false);
-      }));
   });
 
   describe("update", () => {

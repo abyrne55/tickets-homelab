@@ -269,26 +269,6 @@ export const BOOKING_LOCKOUT_MS = limit(
 );
 
 // ---------------------------------------------------------------------------
-// Address lookup (postcode search)
-// ---------------------------------------------------------------------------
-
-/** Max address lookups per IP before lockout (default: 30) */
-export const MAX_ADDRESS_LOOKUPS = limit(
-  "MAX_ADDRESS_LOOKUPS",
-  30,
-  "Max address lookups before lockout",
-  "attempts",
-);
-
-/** Lockout duration after max address lookups in ms (default: 600000 = 10 min) */
-export const ADDRESS_LOOKUP_LOCKOUT_MS = limit(
-  "ADDRESS_LOOKUP_LOCKOUT_MS",
-  10 * 60 * 1000,
-  "Address lookup lockout duration",
-  "ms",
-);
-
-// ---------------------------------------------------------------------------
 // API-key (Bearer) auth rate limiting
 // ---------------------------------------------------------------------------
 
@@ -524,18 +504,6 @@ export const PRUNE_CONTACTS_RETENTION_DAYS = limit(
   "days",
 );
 
-/**
- * How long (days) a cached address-lookup result stays servable (default: 90).
- * A stale-but-unpruned row is never served: reads filter on the same cutoff
- * the prune task deletes by.
- */
-export const ADDRESS_CACHE_DAYS = limit(
-  "ADDRESS_CACHE_DAYS",
-  90,
-  "Address lookup cache retention",
-  "days",
-);
-
 /** How often (hours) to re-run each prune task (default: 24 = daily) */
 export const PRUNE_INTERVAL_HOURS = limit(
   "PRUNE_INTERVAL_HOURS",
@@ -622,7 +590,6 @@ export const PRUNE_UNUSED_STRINGS_RETENTION_MS =
   PRUNE_UNUSED_STRINGS_RETENTION_DAYS * DAY_MS;
 export const PRUNE_CONTACTS_RETENTION_MS =
   PRUNE_CONTACTS_RETENTION_DAYS * DAY_MS;
-export const ADDRESS_CACHE_MS = ADDRESS_CACHE_DAYS * DAY_MS;
 
 // ---------------------------------------------------------------------------
 // Form re-fill stash

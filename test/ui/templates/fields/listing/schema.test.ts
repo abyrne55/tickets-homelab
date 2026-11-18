@@ -5,7 +5,6 @@ import { MESSAGE_GROUPS } from "#locales/message-groups.generated.ts";
 import {
   getListingEditForm,
   getListingForm,
-  logisticsAgentForm,
 } from "#templates/fields/listing.ts";
 import {
   LISTING_FIELDS,
@@ -27,12 +26,6 @@ const revealing = (names: string[]): Record<string, unknown>[] =>
 describe("listing field schemas", () => {
   test("the listing form serves exactly its declared fields", () => {
     expect(getListingForm().fields.map(shape)).toEqual(LISTING_FIELDS);
-  });
-
-  test("the logistics view only reveals the agent assignment box", () => {
-    expect(getListingForm({ logistics: true }).fields.map(shape)).toEqual(
-      revealing(["uses_logistics"]),
-    );
   });
 
   test("the storage view only reveals the image box", () => {
@@ -64,18 +57,6 @@ describe("listing field schemas", () => {
     expect(getListingEditForm().fields.map(shape)).toEqual([
       ...LISTING_FIELDS,
       SLUG_FIELD,
-    ]);
-  });
-
-  test("the logistics agent form serves exactly its declared field", () => {
-    expect(logisticsAgentForm.fields.map(shape)).toEqual([
-      {
-        label: "Agent name",
-        name: "name",
-        placeholder: "Van 1",
-        required: true,
-        type: "text",
-      },
     ]);
   });
 });

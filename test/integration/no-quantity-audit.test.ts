@@ -1,7 +1,7 @@
 /**
  * Reader/writer audit for the no-quantity (quantity = 0) sentinel: the
- * customer-facing token flows, the success/reservation pages, the bulk-email
- * recipient queries, and the logistics run sheet all exclude or refuse
+ * customer-facing token flows, the success/reservation pages, and the bulk-email
+ * recipient queries all exclude or refuse
  * quantity-0 lines, while admin record views keep them.
  */
 
@@ -16,7 +16,6 @@ import {
 } from "#db/attendees/pii.ts";
 import { hasActiveBookingLine } from "#db/attendees/queries.ts";
 import { getDb } from "#db/client.ts";
-import { getAgentRunSheet, setLegDone } from "#db/logistics-run-sheet.ts";
 import { describeWithEnv } from "#test-utils/db.ts";
 import { createTestAttendeeWithToken } from "#test-utils/db-helpers/attendees.ts";
 import { createTestListing } from "#test-utils/db-helpers/listings.ts";
@@ -165,41 +164,3 @@ describeWithEnv(
     });
   },
 );
-
-describeWithEnv("no-quantity audit > logistics", { db: true }, () => {
-  const AGENT = 7;
-
-  /** Insert a booking row with logistics agents on both legs. */
-  const insertLogisticsLine = (
-    listingId: number,
-    attendeeId: number,
-    quantity: number,
-  ): Promise<unknown> =>
-    getDb().execute({
-      args: [listingId, attendeeId, quantity],
-      sql: `INSERT INTO listing_attendees
-              (listing_id, attendee_id, quantity, start_at, end_at,
-               start_agent_id, end_agent_id)
-            VALUES (?, ?, ?, '2026-07-01T00:00:00Z', '2026-07-02T00:00:00Z', ${AGENT}, ${AGENT})`,
-    });
-
-  test("the run sheet and setLegDone exclude a quantity-0 line", async () => {
-    const listing = await createTestListing({ maxAttendees: 50 });
-    await insertLogisticsLine(listing.id, 1, 2); // real
-    await insertLogisticsLine(listing.id, 2, 0); // ghost
-
-    const legs = await getAgentRunSheet([AGENT], ["2026-07-01"]);
-    // Only the real line's drop-off leg appears (the ghost is excluded).
-    expect(
-      legs.filter((l) => l.kind === "start").map((l) => l.attendeeId),
-    ).toEqual([1]);
-
-    // setLegDone refuses the ghost line even with the right agent.
-    expect(
-      await setLegDone(2, listing.id, "start", "2026-07-01", true, [AGENT]),
-    ).toBe(false);
-    expect(
-      await setLegDone(1, listing.id, "start", "2026-07-01", true, [AGENT]),
-    ).toBe(true);
-  });
-});

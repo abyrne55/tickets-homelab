@@ -141,8 +141,8 @@ const ActionRows = ({
 );
 
 /** An `<article>` led by a translated `<h3>` heading, then its content. The
- * actions section here and the logistics "other attendees" list share this
- * shell (it disappears via its caller's own guard when there's nothing to show). */
+ * actions section here uses this shell (it disappears via its caller's own
+ * guard when there's nothing to show). */
 export const TitledSection = ({
   titleKey,
   children,

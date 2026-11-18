@@ -10,10 +10,8 @@
 import { attendeeStatuses } from "#db/attendee-statuses.ts";
 import type { ListingAttendeeRow } from "#db/attendee-types.ts";
 import { getAllListings } from "#db/listings/records.ts";
-import { logisticsAgents } from "#db/logistics-agents.ts";
 import type { SelectedQuestionAnswers } from "#db/question-types.ts";
 import { parseQuestionAnswers } from "#db/questions/parsing.ts";
-import { settings } from "#db/settings.ts";
 import { identity, mapById } from "#fp";
 import { t } from "#i18n";
 import {
@@ -27,7 +25,6 @@ import {
   type SaveOutcome,
 } from "#routes/admin/attendee-form-save.ts";
 import { validateParsedForm } from "#routes/admin/attendee-form-validation.ts";
-import { parseLogisticsPlan } from "#routes/admin/attendee-logistics.ts";
 import { attendeePage } from "#routes/admin/attendee-page.ts";
 import {
   buildCreateForm,
@@ -207,21 +204,11 @@ const handleSubmitInner = async (
     });
   }
 
-  // The logistics plan is read from the submitted agent selects (only when the
-  // feature is on). It is applied after the booking rows exist.
-  const logisticsPlan = settings.features.logistics
-    ? parseLogisticsPlan(
-        form,
-        parsed.lines,
-        new Set((await logisticsAgents.getAll()).map((a) => a.id)),
-      )
-    : null;
-
   // Apply atomic create or edit. On a recoverable failure (capacity, no lines)
   // re-render the submitted form in place so entered data is never lost.
   let outcome: SaveOutcome;
   if (mode === "create") {
-    outcome = await applyCreate(parsed, logisticsPlan, listingsById);
+    outcome = await applyCreate(parsed, listingsById);
   } else {
     const answers = parseQuestionAnswers({ optional: true })(form, questions);
     if (!answers.ok) return showErrors({ formError: answers.error });
@@ -238,7 +225,6 @@ const handleSubmitInner = async (
       attendee!,
       questions,
       answers,
-      logisticsPlan,
       existingByKey,
       taxPlan,
     );

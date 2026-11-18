@@ -18,8 +18,7 @@ import { DAY_MS } from "#shared/now.ts";
 import { parseDateStringOrThrow } from "#shared/validation/date-string.ts";
 import { clampDurationDays } from "#types";
 
-/** A half-open [startAt, endAt) window of whole days, as timestamps. Also
- * the shape of an attendee's booked windows on the Logistics tab. */
+/** A half-open [startAt, endAt) window of whole days, as timestamps. */
 export type DayRange = { startAt: string; endAt: string };
 
 /** Convert a date string ("YYYY-MM-DD") to a half-open [start, end) pair.

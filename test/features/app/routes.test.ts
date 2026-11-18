@@ -130,13 +130,6 @@ describeWithEnv("main app router", { db: true }, () => {
     expect((await route("/contact", "POST")).status).toBe(302);
   });
 
-  test("routes configured address lookup on its exact path", async () => {
-    await settings.update.addressLookup.provider("easypostcodes");
-    await settings.update.addressLookup.apiKey("test-api-key");
-
-    expect((await route("/address-lookup")).status).toBe(400);
-  });
-
   test("routes renewal GET requests", async () => {
     expect((await routeRenewal("GET")).status).toBe(200);
   });
@@ -198,7 +191,6 @@ describe("servesBodyRequests", () => {
       "/",
       "/listings",
       "/terms",
-      "/address-lookup",
       "/attachment/3",
       "/caldav/events.ics",
       "/custom.css",

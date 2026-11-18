@@ -11,7 +11,6 @@ import { awaitTestRequest } from "#test-utils/mocks.ts";
 import { createTestScannerSession } from "#test-utils/role-sessions.ts";
 import {
   adminGet,
-  createTestAgentSession,
   createTestEditorSession,
   getTestSession,
   setupListingAndLogin,
@@ -68,14 +67,8 @@ describeWithEnv("admin listings route", { db: true }, () => {
   });
 
   test("dashboard redirects non-dashboard roles to their own landing pages", async () => {
-    const { cookie: agentCookie } = await createTestAgentSession();
     const { cookie: editorCookie } = await createTestEditorSession();
     const { cookie: scannerCookie } = await createTestScannerSession();
-    expect(
-      (await awaitTestRequest("/admin/", { cookie: agentCookie })).headers.get(
-        "location",
-      ),
-    ).toBe("/admin/deliveries");
     expect(
       (await awaitTestRequest("/admin/", { cookie: editorCookie })).headers.get(
         "location",

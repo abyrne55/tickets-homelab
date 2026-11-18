@@ -55,8 +55,6 @@ const loadMergeTarget = async (
 type MergeSourceLookup = ContactInfo &
   Pick<Attendee, "email_owed" | "email_pending" | "webhooks_pending"> & {
     id: number;
-    lat: string;
-    lng: string;
     payment_id: string;
     ticket_token: string;
     bookings: ListingAttendeeRow[];
@@ -156,15 +154,6 @@ const updateTargetPiiFromDecision = async (
     const decisionChoice = decision.pii[field];
     return decisionChoice === "source" ? source[field] : target[field];
   };
-  // The pin follows whichever side's address the operator keeps. When the kept
-  // side has no pin but the OTHER side pinned the very same address text, keep
-  // that pin. Identical addresses render as one "(same)" value on the merge
-  // form, so dropping the only pin there is a silent loss.
-  const kept = decision.pii.address === "source" ? source : target;
-  const other = kept === source ? target : source;
-  const keptIsPinned = Boolean(kept.lat && kept.lng);
-  const addressFrom =
-    keptIsPinned || kept.address !== other.address ? kept : other;
   const email = chosen("email");
   const phone = chosen("phone");
   await updateAttendeePII(
@@ -172,8 +161,6 @@ const updateTargetPiiFromDecision = async (
     {
       address: chosen("address"),
       email,
-      lat: addressFrom.lat,
-      lng: addressFrom.lng,
       name: chosen("name"),
       payment_id: target.payment_id,
       phone,

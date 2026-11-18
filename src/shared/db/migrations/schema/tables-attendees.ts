@@ -66,7 +66,6 @@ export const attendeeTables: [name: string, table: Table][] = [
         // the canonical payment row that proves the PII payment id.
         ["pii_payment_session_id", textOrNull],
         ["status_id", wholeNumberStartingAtNull],
-        ["split_logistics_agents", wholeNumberStartingAtZero],
         // Whether a notification send is owed for this booking, and who the
         // booking came from: 0 none, 1 booked online, 2 added by an admin.
         // An owed send that never got through keeps the flag up, so the
@@ -126,12 +125,6 @@ export const attendeeTables: [name: string, table: Table][] = [
         // booking creation and by the backfill; '' for rows with no ledger legs.
         ["ledger_event_group", textStartingBlank],
         ["attachment_downloads", wholeNumberStartingAtZero],
-        ["start_agent_id", wholeNumberStartingAtNull],
-        ["end_agent_id", wholeNumberStartingAtNull],
-        ["start_time", textStartingBlank],
-        ["end_time", textStartingBlank],
-        ["start_done", wholeNumberStartingAtZero],
-        ["end_done", wholeNumberStartingAtZero],
         // A per-booking token shared by every attendee row created in one
         // checkout (a parent and its chosen children), so the admin can group an
         // order's rows. Empty for legacy rows and bookings with no parent.
@@ -182,10 +175,10 @@ export const attendeeTables: [name: string, table: Table][] = [
           columns: ["listing_id", "end_at", "start_at"],
           name: "idx_listing_attendees_listing_end_start",
         },
-        // The Logistics tab's Other Attendees list overlaps a date window
-        // across ALL listings, so the listing_id-first index above can't serve
-        // it. Same end_at-first shape for the same reason: the range scan
-        // skips historical rows instead of walking every booking ever made.
+        // The calendar's day view overlaps a date window across ALL listings,
+        // so the listing_id-first index above can't serve it. Same end_at-first
+        // shape for the same reason: the range scan skips historical rows
+        // instead of walking every booking ever made.
         {
           columns: ["end_at", "start_at"],
           name: "idx_listing_attendees_end_start",

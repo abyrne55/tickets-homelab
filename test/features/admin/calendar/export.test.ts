@@ -1,12 +1,10 @@
 import { assertStringIncludes } from "@std/assert";
 import { expect } from "@std/expect";
 import { describe, it as test } from "@std/testing/bdd";
-import { getDb, queryAll, queryOne } from "#db/client.ts";
-import { logisticsAgents } from "#db/logistics-agents.ts";
+import { getDb, queryAll } from "#db/client.ts";
 import { addDays } from "#shared/dates.ts";
 import { todayInTz } from "#shared/timezone.ts";
 import {
-  bookDailyTicket,
   fetchCalendarResponse,
   tomorrow,
 } from "#test/features/admin/calendar-test-helpers.ts";
@@ -23,8 +21,6 @@ import {
   createDailyTestListing,
   createTestListing,
 } from "#test-utils/db-helpers/listings.ts";
-import { assignBookingToAgent } from "#test-utils/logistics.ts";
-import { featureSetting, withSetting } from "#test-utils/settings.ts";
 import {
   setupDailyBooking,
   setupMixedBookings,
@@ -171,39 +167,6 @@ describeWithEnv(
         // User B registered later, so their row leads the export.
         assertStringIncludes(lines[1] ?? "", "User B");
         assertStringIncludes(lines[2] ?? "", "User A");
-      });
-
-      test("adds logistics run-sheet columns for logistics bookings", async () => {
-        await withSetting(featureSetting("logistics"), async () => {
-          const vanOne = (
-            await logisticsAgents.table.insert({ name: "Van One" })
-          ).id;
-          const listing = await createDailyTestListing({
-            usesLogistics: true,
-          });
-          const date = tomorrow();
-          await bookDailyTicket(listing.slug, {
-            date,
-            email: "a@test.com",
-            name: "User A",
-          });
-          const booking = await queryOne<{ attendee_id: number }>(
-            "SELECT attendee_id FROM listing_attendees WHERE listing_id = ?",
-            [listing.id],
-          );
-          await assignBookingToAgent(
-            booking!.attendee_id,
-            listing.id,
-            vanOne,
-            date,
-          );
-
-          const response = await fetchCalendarResponse(
-            `/admin/calendar/export?date=${date}`,
-          );
-          const csv = await response.text();
-          expectIncludesAll(csv, ["Start Agent", "Van One"]);
-        });
       });
     });
   },

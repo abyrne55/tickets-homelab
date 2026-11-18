@@ -1,14 +1,11 @@
 import { assert, assertStringIncludes } from "@std/assert";
 import { describe, it as test } from "@std/testing/bdd";
-import { MASK_SENTINEL } from "#db/settings/mask.ts";
 import { t } from "#i18n";
 import { SETTINGS_FORMS } from "#shared/settings/forms.ts";
 import { settingsForm } from "#templates/admin/settings/schema-form.tsx";
 import { expectIncludesAll } from "#test-utils/assertions.ts";
 
 const state = {
-  addressLookupApiKeyConfigured: false,
-  addressLookupProvider: "none",
   attendeeColumnOrder: "",
   bookingFee: "1.5",
   businessEmail: "ops@example.com",
@@ -187,39 +184,6 @@ describe("settingsForm multi-field forms", () => {
       '<option value="attendees">Attendees</option>',
       '<input checked name="calendar_feeds_enabled" type="checkbox" value="true">',
     ]);
-  });
-
-  test("builds select options at render time and masks a stored secret", () => {
-    const html = String(
-      settingsForm(SETTINGS_FORMS.addressLookup, {
-        addressLookupApiKeyConfigured: true,
-        addressLookupProvider: "easypostcodes",
-      }),
-    );
-
-    // No labelFor: the label wraps the select, and the select has no id.
-    expectIncludesAll(html, [
-      '<label>Provider<select name="address_lookup_provider">',
-      '<option value="none">None (type addresses manually)</option>',
-      '<option selected value="easypostcodes">',
-    ]);
-    const secret = html.match(
-      /<input[^>]*name="address_lookup_api_key"[^>]*>/,
-    )?.[0];
-    assertStringIncludes(secret ?? "", 'type="password"');
-    assertStringIncludes(secret ?? "", `value="${MASK_SENTINEL}"`);
-  });
-
-  test("leaves the secret input empty when nothing is stored", () => {
-    const html = String(
-      settingsForm(SETTINGS_FORMS.addressLookup, {
-        addressLookupApiKeyConfigured: false,
-        addressLookupProvider: "none",
-      }),
-    );
-
-    assert(!html.includes(MASK_SENTINEL));
-    assertStringIncludes(html, '<option selected value="none">');
   });
 });
 

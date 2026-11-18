@@ -10,7 +10,6 @@ import {
   JOIN_MESSAGE_GROUPS,
   publicMessageGroups,
 } from "#locales/groups.ts";
-import { defineRoutes } from "#routes/router.ts";
 import type { PrefixSpec } from "./prefix-fold.ts";
 import {
   apiPrefixHandler,
@@ -42,23 +41,6 @@ export const PREFIXES_A_L = {
       ...PUBLIC_NAV_SETTINGS,
       CONFIG_KEYS.HOMEPAGE_TEXT,
       CONFIG_KEYS.COUNTRY,
-    ],
-  },
-  // Address lookup proxy (JSON only): provider choice + its API key. Session
-  // resolution (staff skip the rate limit) can hit the owner settings-nag
-  // reads, so the owner-auth keys ride along.
-  "address-lookup": {
-    getOnly: true,
-    handler: routerFromModule(
-      () => import("#routes/public/address-lookup.ts"),
-      ({ handleAddressLookupGet }) =>
-        defineRoutes({ "GET /address-lookup": handleAddressLookupGet }),
-    ),
-    messageGroups: ["address-lookup"],
-    settings: [
-      CONFIG_KEYS.ADDRESS_LOOKUP_PROVIDER,
-      CONFIG_KEYS.ADDRESS_LOOKUP_API_KEY,
-      ...OWNER_AUTH_SETTINGS,
     ],
   },
   // Everything (can touch any setting).

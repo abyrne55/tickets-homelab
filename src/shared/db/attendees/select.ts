@@ -204,7 +204,6 @@ const coreColumns = (
     "attendee.ticket_token_index",
     "attendee.pii_blob",
     "attendee.status_id",
-    "attendee.split_logistics_agents",
     "attendee.email_pending",
     "attendee.webhooks_pending",
     emailOwedColumn(

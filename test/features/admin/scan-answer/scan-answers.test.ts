@@ -15,6 +15,7 @@ import { describe, it as test } from "@std/testing/bdd";
 import { settings } from "#db/settings.ts";
 import { todayInTz } from "#shared/timezone.ts";
 import { groupDoor, scanAtDoor } from "#test/features/admin/scanner/support.ts";
+import { insertSecondBookingRow } from "#test-utils/attendees/second-booking-row.ts";
 import { describeWithEnv } from "#test-utils/db.ts";
 import { orphanAttendeeBooking } from "#test-utils/db-fault.ts";
 import {
@@ -24,7 +25,6 @@ import {
 import { storedCheckinRows } from "#test-utils/db-helpers/checkin-rows.ts";
 import { setupErrorSpy } from "#test-utils/error-spy.ts";
 import { refundThroughLedger } from "#test-utils/ledger.ts";
-import { insertSecondBookingRow } from "#test-utils/logistics.ts";
 
 /** An orphaned booking: a real token whose only line points at a listing
  * that no longer resolves, so the door's scope matches none of its rows and

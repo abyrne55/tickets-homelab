@@ -21,7 +21,6 @@ import {
   wouldBeStaySpanDays,
 } from "#db/listings/daily-switch.ts";
 import { listingsTable } from "#db/listings/records.ts";
-import { settings } from "#db/settings.ts";
 import { range } from "#fp";
 import { formDataToParams } from "#routes/csrf.ts";
 import { listingSaveOrphanedAddOnTx } from "#shared/add-on-reachability.ts";
@@ -221,10 +220,6 @@ const extractCommonFields = (
     maxPrice: toMinorUnits(Number.parseFloat(values.max_price)),
     unitPrice,
     useDefaults: form.getFlag("use_defaults"),
-    usesLogistics: enabledChoice(
-      settings.features.logistics,
-      values.uses_logistics,
-    ),
     webhookUrl: values.webhook_url,
   };
 };

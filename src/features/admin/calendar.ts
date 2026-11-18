@@ -16,15 +16,9 @@ import {
   getDailyListingAttendeesByDate,
 } from "#db/listings/attendees.ts";
 import { getAllListings } from "#db/listings/records.ts";
-import {
-  bookingAssignmentKey,
-  getLogisticsAssignmentsForAttendees,
-} from "#db/logistics.ts";
-import { logisticsAgents } from "#db/logistics-agents.ts";
 import { loadAttendeeQuestionData } from "#db/questions/attendee-answers/reads.ts";
 import { settings } from "#db/settings.ts";
 import {
-  fieldById,
   filter,
   flatMap,
   map,
@@ -42,22 +36,15 @@ import {
 } from "#routes/admin/actions.ts";
 import {
   type CalendarAttendee,
-  type CalendarLogisticsCsv,
   generateCalendarCsv,
   toCalendarAttendees,
 } from "#routes/admin/calendar-csv.ts";
 import { type AuthSession, pageGuardFor } from "#routes/auth.ts";
 import { htmlResponse, redirect } from "#routes/response.ts";
-import { getSearchParam } from "#routes/url.ts";
 import { adminDestinationAt } from "#shared/admin-surface.ts";
 import { getEffectiveDomain } from "#shared/config.ts";
 import { formatDateLabel } from "#shared/date-labels.ts";
 import { getAvailableDates, listingDateToCalendarDate } from "#shared/dates.ts";
-import {
-  type AgentFilter,
-  assignmentMatchesAgentFilter,
-  parseAgentFilter,
-} from "#shared/logistics-filter.ts";
 import type { ResponseHandler } from "#shared/response-steps.ts";
 import { requireRequestPrivateKey } from "#shared/session-private-key.ts";
 import { todayInTz } from "#shared/timezone.ts";
@@ -67,12 +54,7 @@ import {
   type CalendarAttendeeRow,
 } from "#templates/admin/calendar.tsx";
 import type { DatePickerDate } from "#templates/date-picker.tsx";
-import {
-  type Attendee,
-  isPaidListing,
-  type ListingWithCount,
-  type LogisticsAgent,
-} from "#types";
+import { type Attendee, isPaidListing, type ListingWithCount } from "#types";
 
 /** Build a map of YYYY-MM-DD → listing IDs for standard listings that have a date */
 const buildStandardListingDateMap = (
@@ -149,74 +131,6 @@ const buildCalendarAttendees = (
     ...a,
     listingId: a.listing_id,
   }));
-
-/** The distinct attendee ids for a set of calendar rows. */
-const attendeeIds = (attendees: CalendarAttendeeRow[]): number[] =>
-  unique(map((a: CalendarAttendeeRow) => a.id)(attendees));
-
-/** Load the logistics agents (when enabled) and parse the request's ?agent=
- * filter against them. Shared by the calendar view and CSV export. */
-const resolveAgentFilter = async (
-  request: Request,
-): Promise<{ agents: LogisticsAgent[]; agentFilter: AgentFilter }> => {
-  const agents = settings.features.logistics
-    ? await logisticsAgents.getAll()
-    : [];
-  const agentFilter = parseAgentFilter(
-    getSearchParam(request, "agent"),
-    new Set(agents.map((a) => a.id)),
-  );
-  return { agentFilter, agents };
-};
-
-/** Keep only the calendar attendees whose booking matches the agent filter
- * (start OR end agent). "all" short-circuits without a query. */
-const filterAttendeesByAgent = async (
-  attendees: CalendarAttendeeRow[],
-  agentFilter: AgentFilter,
-): Promise<CalendarAttendeeRow[]> => {
-  if (agentFilter === "all") return attendees;
-  const assignments = await getLogisticsAssignmentsForAttendees(
-    attendeeIds(attendees),
-  );
-  // The booking keys whose assignment matches the filter. An attendee row is
-  // kept when its (attendee, listing) booking is among them.
-  const matching = new Set(
-    assignments
-      .filter((a) =>
-        assignmentMatchesAgentFilter(agentFilter, a.startAgentId, a.endAgentId),
-      )
-      .map((a) => bookingAssignmentKey(a.attendeeId, a.listingId)),
-  );
-  return attendees.filter((a) =>
-    matching.has(bookingAssignmentKey(a.id, a.listingId)),
-  );
-};
-
-/** Build the logistics run-sheet context for the CSV export: the logistics
- * listing ids, an agent-name lookup, and each booking's assignment. Returns
- * undefined when logistics is off or no exported row is a logistics booking. */
-const buildLogisticsCsvContext = async (
-  listings: ListingWithCount[],
-  attendees: CalendarAttendeeRow[],
-  agents: { id: number; name: string }[],
-): Promise<CalendarLogisticsCsv | undefined> => {
-  if (!settings.features.logistics) return;
-  const listingIds = new Set(
-    listings.filter((l) => l.uses_logistics).map((l) => l.id),
-  );
-  if (!attendees.some((a) => listingIds.has(a.listing_id))) return;
-  const rows = await getLogisticsAssignmentsForAttendees(
-    attendeeIds(attendees),
-  );
-  return {
-    agentNames: fieldById("name")(agents),
-    assignments: new Map(
-      rows.map((r) => [bookingAssignmentKey(r.attendeeId, r.listingId), r]),
-    ),
-    listingIds,
-  };
-};
 
 /** Sort attendees by newest registration first */
 const sortAttendeesByCreatedDesc = (attendees: Attendee[]): Attendee[] =>
@@ -326,9 +240,6 @@ const handleAdminCalendarGet = (request: Request) =>
         standardListings,
         standardListingDateMap,
       } = listingCtx;
-      const { agents, agentFilter } = dateFilter
-        ? await resolveAgentFilter(request)
-        : { agentFilter: "all" as AgentFilter, agents: [] };
       let attendees: CalendarAttendeeRow[] = [];
       if (dateFilter) {
         const privateKey = await requireRequestPrivateKey();
@@ -351,10 +262,7 @@ const handleAdminCalendarGet = (request: Request) =>
           ...dailyAttendees,
           ...standardAttendees,
         ]);
-        attendees = await filterAttendeesByAgent(
-          buildCalendarAttendees(allListings, sortedAttendees),
-          agentFilter,
-        );
+        attendees = buildCalendarAttendees(allListings, sortedAttendees);
       }
 
       const availableDates = compileDateOptions(
@@ -387,8 +295,6 @@ const handleAdminCalendarGet = (request: Request) =>
           questionData,
           allListings.some(isPaidListing),
           availabilityRows,
-          agents,
-          agentFilter,
         ),
       );
     },
@@ -430,23 +336,11 @@ const handleAdminCalendarExport = (request: Request) =>
         ...dailyDecrypted,
         ...standardAttendees,
       ]);
-      const { agents, agentFilter } = await resolveAgentFilter(request);
-      const attendees = await filterAttendeesByAgent(
-        buildCalendarAttendees(allListings, allAttendees),
-        agentFilter,
-      );
-      const calendarAttendees: CalendarAttendee[] = attendees;
-
-      const logisticsCsv = await buildLogisticsCsvContext(
+      const calendarAttendees: CalendarAttendee[] = buildCalendarAttendees(
         allListings,
-        attendees,
-        agents,
+        allAttendees,
       );
-      const csv = generateCalendarCsv(
-        calendarAttendees,
-        logisticsCsv,
-        settings.timezone,
-      );
+      const csv = generateCalendarCsv(calendarAttendees, settings.timezone);
       const filename = `calendar_${dateFilter}_attendees.csv`;
       await logActivity(`Calendar CSV exported for date ${dateFilter}`);
       return csvResponse(csv, filename);

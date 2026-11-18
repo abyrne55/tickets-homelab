@@ -43,7 +43,6 @@ describeWithEnv("db > listings", { db: true, triggers: true }, () => {
       purchase_only: false,
       unit_price: 0,
       use_defaults: false,
-      uses_logistics: false,
     });
   });
 

@@ -426,23 +426,6 @@ article > * {
   margin: 0;
 }
 
-/* Agent run sheet: the top-level booking list has no bullets or indent; the
-   nested job/detail lists drop their bullets but keep their padding so they
-   still read as indented sub-lists. */
-.delivery-bookings {
-  list-style-type: none;
-  padding: 0;
-}
-
-.delivery-bookings ul {
-  list-style-type: none;
-}
-
-/* Space the inline "mark done" toggle away from the job it belongs to. */
-.delivery-mark {
-  margin-left: 1rem;
-}
-
 /* Outlines a rendered email body so it reads as a preview, not page content.
    Constrained to a typical email column width so it reads like a real email. */
 .email-preview {
@@ -1789,23 +1772,6 @@ fieldset.inset {
   padding: var(--space-m);
 }
 
-/* Postcode search row: the label (with its input) and the Find button sit on
-   one line. The button stays a sibling of the label — not a child — so it never
-   pollutes the input's accessible name. */
-.address-lookup-search {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: flex-end;
-  gap: var(--space-s);
-}
-
-/* The input only needs room for a postcode, so cap it and let the button
-   follow on the same row. */
-.address-lookup-search label > input[type="text"] {
-  flex: 0 0 auto;
-  width: 8rem;
-}
-
 .ticket-listings {
   @include stack-tight;
 }
@@ -3054,84 +3020,6 @@ a.cal-day-selected:active {
 .listing-editor:not(:has(.package-paths-toggle:checked))
   .attendee-line-package-blank {
   display: none;
-}
-
-/* Attendee form: logistics agent selectors. The "different agents per item"
-   toggle switches (pure CSS) between one shared pair and a pair per listing. */
-.logistics-agents .split-agents {
-  @include inline-control-row;
-}
-
-.logistics-agents:has(.split-agents-toggle:checked) .logistics-single {
-  display: none;
-}
-
-.logistics-agents:not(:has(.split-agents-toggle:checked)) .logistics-split {
-  display: none;
-}
-
-.logistics-line {
-  margin-bottom: var(--space-s);
-}
-
-/* Each leg is one row: a label, the time, then the agent (capped at 20rem),
-   wrapping onto the next line when there isn't room. */
-.logistics-leg {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: baseline;
-  gap: var(--space-s);
-  margin-bottom: var(--space-s);
-}
-
-.logistics-leg-label {
-  font-weight: bold;
-}
-
-.logistics-leg input[type="time"] {
-  flex: 0 0 auto;
-  width: auto;
-}
-
-.logistics-leg-agent {
-  flex: 1;
-  max-width: 20rem;
-}
-
-/* Logistics tab: the latitude/longitude pair sits side by side. */
-.location-inputs {
-  @include wrap-row-tight;
-
-  label {
-    flex: 1;
-    min-width: 10rem;
-    max-width: 16rem;
-  }
-}
-
-/* Logistics tab: the map under the pin inputs (leaflet renders into it). */
-.logistics-map {
-  height: 20rem;
-  margin-bottom: var(--space-s);
-  @include panel-border;
-}
-
-/* The map pin: a vector teardrop, so no image assets ship with the bundle. */
-.logistics-map-pin {
-  width: 1.75rem;
-  height: 1.75rem;
-  border: 2px solid #fff;
-  border-radius: 50% 50% 50% 0;
-  background: #c0392b;
-  transform: rotate(-45deg);
-  transform-origin: center;
-  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.4);
-}
-
-/* The parts of the chosen lookup address that differ from the typed one. */
-[data-address-diff] mark {
-  background: var(--color-bg-secondary);
-  font-weight: bold;
 }
 
 /* System map (/admin/schema): the derived state-machine diagrams */

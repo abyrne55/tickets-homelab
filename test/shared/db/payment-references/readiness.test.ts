@@ -237,8 +237,6 @@ describeWithEnv("db > payment reference readiness", { db: true }, () => {
     const pii = {
       address: attendee.address,
       email: attendee.email,
-      lat: attendee.lat,
-      lng: attendee.lng,
       name: "Atomic Legacy Saved",
       payment_id: attendee.payment_id,
       phone: attendee.phone,
@@ -280,8 +278,6 @@ describeWithEnv("db > payment reference readiness", { db: true }, () => {
     await updateAttendeePII(attendee.id, {
       address: attendee.address,
       email: attendee.email,
-      lat: attendee.lat,
-      lng: attendee.lng,
       name: attendee.name,
       payment_id: "second_legacy_payment",
       phone: attendee.phone,

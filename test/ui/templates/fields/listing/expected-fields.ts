@@ -308,20 +308,6 @@ export const LISTING_FIELDS = [
     type: "checkbox-group",
   },
   {
-    hint: "Handled by an agent at the customer's location. Attendees gain start and end agent selectors (e.g. delivery/collection, set-up/teardown, or pickup/drop-off).",
-    label: "Needs logistics",
-    name: "uses_logistics",
-    options: [
-      {
-        label: "Assign agents to this listing's bookings",
-        value: "1",
-      },
-    ],
-    section: "options",
-    type: "checkbox-group",
-    visible: false,
-  },
-  {
     hint: "How many months one ticket buys. Leave 0 for non-renewal listings.",
     label: "Months per unit (renewal tiers only)",
     max: 24,

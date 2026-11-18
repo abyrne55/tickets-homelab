@@ -4,7 +4,6 @@ import { defineAdminRoutes } from "#routes/admin/route-tables.ts";
  * from the per-feature settings-*.ts modules into a single route table.
  */
 
-import { handleAddressLookupPost } from "#routes/admin/settings-address-lookup.ts";
 import {
   handleCustomDomainPost,
   handleCustomDomainValidatePost,
@@ -43,7 +42,6 @@ import {
   handleListingDefaultsGet,
   handleListingDefaultsPost,
 } from "#routes/admin/settings-listing-defaults.ts";
-import { handleLogisticsRunSheetPost } from "#routes/admin/settings-logistics-run-sheet.ts";
 import {
   handleAdminSettingsAdvancedGet,
   handleAdminSettingsGet,
@@ -72,7 +70,6 @@ export const adminHandlers = defineAdminRoutes({
   "POST /admin/features/:slug": handleFeaturePost,
   "POST /admin/listing-defaults": handleListingDefaultsPost,
   "POST /admin/settings": handleAdminSettingsPost,
-  "POST /admin/settings/address-lookup": handleAddressLookupPost,
   "POST /admin/settings/apple-wallet": handleAppleWalletPost,
   "POST /admin/settings/attendee-column-order": handleAttendeeColumnOrderPost,
   "POST /admin/settings/booking-fee": handleBookingFeePost,
@@ -94,7 +91,6 @@ export const adminHandlers = defineAdminRoutes({
   "POST /admin/settings/header-image/delete": handleHeaderImageDeletePost,
   "POST /admin/settings/host-subdomain": handleHostSubdomainPost,
   "POST /admin/settings/listing-column-order": handleListingColumnOrderPost,
-  "POST /admin/settings/logistics-run-sheet": handleLogisticsRunSheetPost,
   "POST /admin/settings/payment-provider": handlePaymentProviderPost,
   "POST /admin/settings/payment-provider-recovery":
     handlePaymentProviderRecoveryPost,

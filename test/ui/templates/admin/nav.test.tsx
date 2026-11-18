@@ -15,7 +15,6 @@ describeWithEnv("AdminNav", {}, () => {
     featureSetting(
       "apiKeys",
       "attributes",
-      "logistics",
       "modifiers",
       "money",
       "questions",
@@ -259,7 +258,6 @@ describeWithEnv("AdminNav", {}, () => {
     const deepPages = [
       { active: "/admin/sessions", href: "/admin/sessions" },
       { active: "/admin/api-keys", href: "/admin/api-keys" },
-      { active: "/admin/deliveries", href: "/admin/deliveries" },
       { active: "/admin/privacy", href: "/admin/privacy" },
       { active: "/admin/questions", href: "/admin/questions" },
       { active: "/admin/emails", href: "/admin/emails" },

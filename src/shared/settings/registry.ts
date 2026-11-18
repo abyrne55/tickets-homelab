@@ -41,11 +41,6 @@ export const STRING_SETTING_DEFINITIONS = [
     storage: "plaintext",
   }),
   definition({ key: CONFIG_KEYS.EMAIL_PROVIDER, storage: "plaintext" }),
-  definition({
-    key: CONFIG_KEYS.ADDRESS_LOOKUP_PROVIDER,
-    storage: "plaintext",
-  }),
-  definition({ key: CONFIG_KEYS.ADDRESS_LOOKUP_API_KEY, storage: "encrypted" }),
   definition({ key: CONFIG_KEYS.ENABLED_FEATURES, storage: "plaintext" }),
   definition({ key: CONFIG_KEYS.TAX, storage: "plaintext" }),
   // Custom CSS is served verbatim as a public stylesheet at /custom.css, so it
@@ -123,18 +118,6 @@ export const STRING_SETTING_DEFINITIONS = [
   definition({
     accessor: { name: "attendeeColumnOrder" },
     key: CONFIG_KEYS.ATTENDEE_COLUMN_ORDER,
-    storage: "plaintext",
-  }),
-  // The run sheet's two Liquid templates. The text is the owner's own markup
-  // for a signed-in admin page, so it is stored unencrypted.
-  definition({
-    accessor: { name: "logisticsRunSheetBody" },
-    key: CONFIG_KEYS.LOGISTICS_RUN_SHEET_BODY,
-    storage: "plaintext",
-  }),
-  definition({
-    accessor: { name: "logisticsRunSheetHeading" },
-    key: CONFIG_KEYS.LOGISTICS_RUN_SHEET_HEADING,
     storage: "plaintext",
   }),
   // The invoice text the operator kept on the last invoice they made. It holds

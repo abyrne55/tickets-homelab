@@ -21,7 +21,6 @@ export const STATIC_ASSET_OUTFILES = {
   embed: `${STATIC_DIR}/embed.js`,
   iframeResizerChild: `${STATIC_DIR}/iframe-resizer-child.js`,
   iframeResizerParent: `${STATIC_DIR}/iframe-resizer-parent.js`,
-  logisticsMap: `${STATIC_DIR}/logistics-map.js`,
   markdownEditor: `${STATIC_DIR}/markdown-editor.js`,
   order: `${STATIC_DIR}/order.js`,
   scanner: `${STATIC_DIR}/scanner.js`,

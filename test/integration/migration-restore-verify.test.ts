@@ -89,8 +89,10 @@ describeWithEnv(
       // padding migration is data-only and covered by its own migration test.
       // The custom CSS Bunny fonts backfill is data-only and covered by its
       // own migration test. The listing-fields trim backfill is data-only and
-      // covered by its own migration test.
-      expect(additiveMigrations.length).toBe(MIGRATIONS.length - 28);
+      // covered by its own migration test. The logistics agents, agent users
+      // and address cache migrations are inert history, and the migration that
+      // removes those objects is removal-only.
+      expect(additiveMigrations.length).toBe(MIGRATIONS.length - 32);
     });
 
     test("restores triggers attached to a dropped table", async () => {

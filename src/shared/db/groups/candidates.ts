@@ -61,7 +61,6 @@ export const getListingsNotInGroup = async (
     const { use_defaults: _resolved, ...candidate } = resolveListingDefaults(
       resolveListingDate(row),
       settings.listingDefaults,
-      settings.features.logistics,
     );
     return candidate;
   });

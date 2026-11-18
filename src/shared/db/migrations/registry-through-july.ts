@@ -273,7 +273,8 @@ export const ENTRIES_THROUGH_JULY: MigrationRegistryEntry[] = [
     "2026-07-05_first_class_images",
     () => import("./2026-07-05_first_class_images.ts"),
   ),
-  // Create the encrypted address-lookup result cache.
+  // Historical: created the address-lookup cache (now a no-op; dropped by
+  // 2026-11-18_remove_address_lookup_and_logistics).
   entry(
     "2026-07-05_address_cache",
     () => import("./2026-07-05_address_cache.ts"),

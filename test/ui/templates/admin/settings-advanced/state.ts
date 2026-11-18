@@ -1,8 +1,6 @@
 import type { AdvancedSettingsPageState } from "#templates/admin/settings-advanced.tsx";
 
 export const advancedDefaultState: AdvancedSettingsPageState = {
-  addressLookupApiKeyConfigured: false,
-  addressLookupProvider: "none",
   adminTemplates: { html: "", subject: "", text: "" },
   appleWalletConfigured: false,
   appleWalletPassTypeId: "",
@@ -30,9 +28,6 @@ export const advancedDefaultState: AdvancedSettingsPageState = {
   hostEmailLabel: "",
   hostGoogleWalletLabel: "",
   listingColumnOrder: "",
-  logisticsEnabled: false,
-  logisticsRunSheetBody: "",
-  logisticsRunSheetHeading: "",
   paymentProviderRecoveryNeeded: false,
   scheduledTaskKey: "",
   showPublicApi: false,

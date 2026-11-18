@@ -35,7 +35,7 @@ const name: AttendeeRenderer = {
     // The badges sit beside the name, outside the link. A flag is a label on
     // the row, not part of where the link goes. Only staff read an owed
     // send. The link to the admin page enforces the same condition, so a
-    // scanner or agent session reads the plain name alone.
+    // scanner session reads the plain name alone.
     return (
       <span>
         {options.adminLinks ? (

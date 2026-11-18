@@ -32,8 +32,6 @@ export const handleFavicon = staticHandler("favicon.svg", SVG);
 export const handleIcons = staticHandler("icons.svg", SVG);
 export const handleStyleCss = staticHandler("style.css", CSS);
 export const handleAdminJs = staticHandler("admin.js", JS);
-export const handleLogisticsMapCss = staticHandler("logistics-map.css", CSS);
-export const handleLogisticsMapJs = staticHandler("logistics-map.js", JS);
 export const handleMarkdownEditorJs = staticHandler("markdown-editor.js", JS);
 export const handleScannerJs = staticHandler("scanner.js", JS);
 /** The service worker must revalidate on every scanner page load, so an

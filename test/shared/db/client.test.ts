@@ -440,14 +440,9 @@ describeWithEnv("db > client", { db: true }, () => {
   });
 
   test("update passes null SET values as params", () => {
-    const stmt = update(
-      "listing_attendees",
-      { start_agent_id: null },
-      { start_agent_id: 7 },
-    );
+    const stmt = update("attendees", { status_id: null }, { status_id: 7 });
     expect(stmt.sql).toBe(
-      "UPDATE listing_attendees SET start_agent_id = ?" +
-        " WHERE start_agent_id = ?",
+      "UPDATE attendees SET status_id = ? WHERE status_id = ?",
     );
     expect(stmt.args).toEqual([null, 7]);
   });

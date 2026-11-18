@@ -36,14 +36,6 @@ export const ADMIN_FEATURES = [
     slug: "modifiers",
   },
   {
-    descriptionKey: "features.logistics.description",
-    inUseSql:
-      "EXISTS (SELECT 1 FROM logistics_agents AS logisticsAgent) OR EXISTS (SELECT 1 FROM listings AS listing WHERE listing.uses_logistics = 1)",
-    key: "logistics",
-    labelKey: "features.logistics.name",
-    slug: "logistics",
-  },
-  {
     descriptionKey: "features.api_keys.description",
     inUseSql: "EXISTS (SELECT 1 FROM api_keys AS apiKey)",
     key: "apiKeys",

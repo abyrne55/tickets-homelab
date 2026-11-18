@@ -1,8 +1,7 @@
 import { assert, assertStringIncludes } from "@std/assert";
 import { expect } from "@std/expect";
 import { describe, it as test } from "@std/testing/bdd";
-import { getDb, queryAll } from "#db/client.ts";
-import { logisticsAgents } from "#db/logistics-agents.ts";
+import { getDb } from "#db/client.ts";
 import { formatDateLabel } from "#shared/date-labels.ts";
 import { addDays } from "#shared/dates.ts";
 import { todayInTz } from "#shared/timezone.ts";
@@ -19,8 +18,6 @@ import {
   createDailyTestListing,
   createTestListing,
 } from "#test-utils/db-helpers/listings.ts";
-import { assignBookingToAgent } from "#test-utils/logistics.ts";
-import { featureSetting, withSetting } from "#test-utils/settings.ts";
 import {
   setupDailyBooking,
   setupMixedBookings,
@@ -346,54 +343,6 @@ describeWithEnv(
 
         const html = await fetchCalendarHtml("/admin/calendar?date=2026-06-15");
         assert(!html.includes("Ghost Fan"));
-      });
-
-      test("lists logistics agents in the calendar filter bar", async () => {
-        await withSetting(featureSetting("logistics"), async () => {
-          await logisticsAgents.table.insert({ name: "Van One" });
-          const { date } = await setupDailyBooking();
-
-          const html = await fetchCalendarHtml(`/admin/calendar?date=${date}`);
-          assertStringIncludes(html, "Van One");
-        });
-      });
-
-      test("filters attendees by agent parameter", async () => {
-        await withSetting(featureSetting("logistics"), async () => {
-          const vanOne = (
-            await logisticsAgents.table.insert({ name: "Van One" })
-          ).id;
-          const vanTwo = (
-            await logisticsAgents.table.insert({ name: "Van Two" })
-          ).id;
-          const { date, listing1, listing2 } = await setupTwoDailyBookings();
-          const rows = await queryAll<{
-            listing_id: number;
-            attendee_id: number;
-          }>(
-            "SELECT listing_id, attendee_id FROM listing_attendees WHERE listing_id IN (?, ?)",
-            [listing1.id, listing2.id],
-          );
-          await assignBookingToAgent(
-            rows.find((row) => row.listing_id === listing1.id)!.attendee_id,
-            listing1.id,
-            vanOne,
-            date,
-          );
-          await assignBookingToAgent(
-            rows.find((row) => row.listing_id === listing2.id)!.attendee_id,
-            listing2.id,
-            vanTwo,
-            date,
-          );
-
-          const html = await fetchCalendarHtml(
-            `/admin/calendar?date=${date}&agent=${vanOne}`,
-          );
-          assertStringIncludes(html, "User A");
-          // User B's booking belongs to another agent, so it is filtered out.
-          assert(!html.includes("User B"));
-        });
       });
     });
   },

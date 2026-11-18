@@ -54,7 +54,6 @@ describeWithEnv("AdminNav visibility", {}, () => {
       );
       assert(!users.includes('href="/admin/api-keys"'));
       assert(!settings.includes('href="/admin/attributes"'));
-      assert(!settings.includes('href="/admin/logistics"'));
       assert(!settings.includes('href="/admin/questions"'));
     });
   });
@@ -97,8 +96,8 @@ describeWithEnv("AdminNav visibility", {}, () => {
       }
     }));
 
-  test("managers and agents never see the Site link", () => {
-    for (const adminLevel of ["manager", "agent"] as const) {
+  test("managers never see the Site link", () => {
+    for (const adminLevel of ["manager"] as const) {
       const html = String(
         AdminNav({ active: "/admin/", session: { adminLevel } }),
       );
@@ -186,8 +185,8 @@ describeWithEnv("AdminNav visibility", {}, () => {
       assert(!html.includes('href="/admin/images/new"'));
     }));
 
-  test("Guide stays hidden from editors, scanners, and agents", () => {
-    for (const adminLevel of ["editor", "scanner", "agent"] as const) {
+  test("Guide stays hidden from editors and scanners", () => {
+    for (const adminLevel of ["editor", "scanner"] as const) {
       const html = String(
         AdminNav({ active: "/admin/", session: { adminLevel } }),
       );

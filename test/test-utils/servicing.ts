@@ -316,30 +316,6 @@ export const assertRedirectPathname = (
 
 // ─── Compound assertion helpers (curried where the shape is shared) ─────────
 
-/** Assert a servicing event's logistics plan is disabled (split=0, no agents).
- *  The smuggle-attack guard in §3 and §19 both assert this exact shape. */
-export const expectLogisticsDisabled = async (id: number): Promise<void> => {
-  const row = await queryOne<{
-    assigned: number;
-    split: number;
-  }>(
-    `SELECT attendee.split_logistics_agents AS split,
-            (
-              SELECT COUNT(*) FROM listing_attendees AS booking
-              WHERE booking.attendee_id = attendee.id
-                AND (
-                  booking.start_agent_id IS NOT NULL
-                  OR booking.end_agent_id IS NOT NULL
-                )
-            ) AS assigned
-       FROM attendees AS attendee
-      WHERE attendee.id = ?`,
-    [id],
-  );
-  expect(row?.split).toBe(0);
-  expect(row?.assigned).toBe(0);
-};
-
 export const listingCostOf = async (listingId: number): Promise<number> => {
   const cost = -(await accountBalance(costAccount(listingId)));
   return Object.is(cost, -0) ? 0 : cost;

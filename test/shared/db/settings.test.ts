@@ -151,19 +151,6 @@ describeWithEnv("db > settings", { db: true }, () => {
     });
   });
 
-  describe("addressLookup provider getter behavior", () => {
-    test("settings.addressLookup.provider reads none when the stored value is unknown", async () => {
-      await settings.setRaw(
-        CONFIG_KEYS.ADDRESS_LOOKUP_PROVIDER,
-        "carrier-pigeon",
-      );
-      settings.invalidateCache();
-      await settings.loadKeys([CONFIG_KEYS.ADDRESS_LOOKUP_PROVIDER]);
-
-      expect(settings.addressLookup.provider).toBe("none");
-    });
-  });
-
   describe("customCss writer behavior", () => {
     test("settings.customCssBunnyFonts follows the stylesheet it was saved with", async () => {
       await settings.update.customCss(

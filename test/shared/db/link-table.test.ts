@@ -9,8 +9,8 @@ import { countDatabaseCalls } from "#test-utils/subrequest-budget.ts";
 
 // Exercised through a real link table so the SQL runs against the schema's
 // unique (key, value) index — the constraint the factory's dedupe protects.
-const byUser = linkTableSide("user_logistics_agents", "user_id", "agent_id");
-const byAgent = linkTableSide("user_logistics_agents", "agent_id", "user_id");
+const byGroup = linkTableSide("group_listings", "group_id", "listing_id");
+const byListing = linkTableSide("group_listings", "listing_id", "group_id");
 
 // A listing's children and its parents are both listings, so this table is
 // read from both ends of the same id.
@@ -30,13 +30,13 @@ const callsInOneRequest = (
 
 describeWithEnv("db link-table", { db: true }, () => {
   test("getIds returns [] when the key has no links", async () => {
-    expect(await byUser.getIds(99)).toEqual([]);
+    expect(await byGroup.getIds(99)).toEqual([]);
   });
 
   test("getIdsByKeys buckets links and seeds unlinked keys", async () => {
-    await byUser.setIds(1, [5, 3]);
-    await byUser.setIds(2, [4]);
-    expect(await byUser.getIdsByKeys([2, 3, 1])).toEqual(
+    await byGroup.setIds(1, [5, 3]);
+    await byGroup.setIds(2, [4]);
+    expect(await byGroup.getIdsByKeys([2, 3, 1])).toEqual(
       new Map([
         [2, [4]],
         [3, []],
@@ -46,74 +46,74 @@ describeWithEnv("db link-table", { db: true }, () => {
   });
 
   test("getIdsByKeys dedupes keys and short-circuits an empty list", async () => {
-    await byUser.setIds(1, [2]);
-    expect(await byUser.getIdsByKeys([1, 1])).toEqual(new Map([[1, [2]]]));
-    expect(await byUser.getIdsByKeys([])).toEqual(new Map());
+    await byGroup.setIds(1, [2]);
+    expect(await byGroup.getIdsByKeys([1, 1])).toEqual(new Map([[1, [2]]]));
+    expect(await byGroup.getIdsByKeys([])).toEqual(new Map());
   });
 
   test("setIds stores the set; getIds reads it back ascending", async () => {
-    await byUser.setIds(1, [3, 1, 2]);
-    expect(await byUser.getIds(1)).toEqual([1, 2, 3]);
+    await byGroup.setIds(1, [3, 1, 2]);
+    expect(await byGroup.getIds(1)).toEqual([1, 2, 3]);
   });
 
   test("setIds dedupes repeated ids", async () => {
-    await byUser.setIds(1, [5, 5, 7]);
-    expect(await byUser.getIds(1)).toEqual([5, 7]);
+    await byGroup.setIds(1, [5, 5, 7]);
+    expect(await byGroup.getIds(1)).toEqual([5, 7]);
   });
 
   test("setIds replaces the previous set", async () => {
-    await byUser.setIds(1, [1, 2, 3]);
-    await byUser.setIds(1, [9]);
-    expect(await byUser.getIds(1)).toEqual([9]);
+    await byGroup.setIds(1, [1, 2, 3]);
+    await byGroup.setIds(1, [9]);
+    expect(await byGroup.getIds(1)).toEqual([9]);
   });
 
   test("setIds with [] clears every link for the key", async () => {
-    await byUser.setIds(1, [1, 2]);
-    await byUser.setIds(1, []);
-    expect(await byUser.getIds(1)).toEqual([]);
+    await byGroup.setIds(1, [1, 2]);
+    await byGroup.setIds(1, []);
+    expect(await byGroup.getIds(1)).toEqual([]);
   });
 
   test("the reverse side reads the same rows from the other column", async () => {
-    await byUser.setIds(1, [4]);
-    await byUser.setIds(2, [4]);
-    expect(await byAgent.getIds(4)).toEqual([1, 2]);
+    await byGroup.setIds(1, [4]);
+    await byGroup.setIds(2, [4]);
+    expect(await byListing.getIds(4)).toEqual([1, 2]);
   });
 
   test("setIdsTx replaces the set inside a caller's transaction", async () => {
-    await byUser.setIds(1, [1, 2]);
-    await withTransaction((tx) => byUser.setIdsTx(tx, 1, [8, 8, 6]));
-    expect(await byUser.getIds(1)).toEqual([6, 8]);
+    await byGroup.setIds(1, [1, 2]);
+    await withTransaction((tx) => byGroup.setIdsTx(tx, 1, [8, 8, 6]));
+    expect(await byGroup.getIds(1)).toEqual([6, 8]);
   });
 
   test("setIdsTx with [] only deletes", async () => {
-    await byUser.setIds(1, [1]);
-    await withTransaction((tx) => byUser.setIdsTx(tx, 1, []));
-    expect(await byUser.getIds(1)).toEqual([]);
+    await byGroup.setIds(1, [1]);
+    await withTransaction((tx) => byGroup.setIdsTx(tx, 1, []));
+    expect(await byGroup.getIds(1)).toEqual([]);
   });
 
   test("setIdsTx rolls back with the surrounding transaction", async () => {
-    await byUser.setIds(1, [1, 2]);
+    await byGroup.setIds(1, [1, 2]);
     await expect(
       withTransaction(async (tx) => {
-        await byUser.setIdsTx(tx, 1, [9]);
+        await byGroup.setIdsTx(tx, 1, [9]);
         throw new Error("abort");
       }),
     ).rejects.toThrow("abort");
-    expect(await byUser.getIds(1)).toEqual([1, 2]);
+    expect(await byGroup.getIds(1)).toEqual([1, 2]);
   });
 
   test("getIds on a transaction sees earlier transaction writes, ascending", async () => {
     await withTransaction(async (tx) => {
-      await byUser.setIdsTx(tx, 1, [9, 3, 7]);
-      expect(await byUser.getIds(1, tx)).toEqual([3, 7, 9]);
+      await byGroup.setIdsTx(tx, 1, [9, 3, 7]);
+      expect(await byGroup.getIds(1, tx)).toEqual([3, 7, 9]);
     });
   });
 
   test("getIdsByKeys on a transaction reads the transaction's own writes", async () => {
-    await byUser.setIds(1, [2]);
+    await byGroup.setIds(1, [2]);
     await withTransaction(async (tx) => {
-      await byUser.setIdsTx(tx, 2, [1]);
-      expect(await byUser.getIdsByKeys([1, 2], tx)).toEqual(
+      await byGroup.setIdsTx(tx, 2, [1]);
+      expect(await byGroup.getIdsByKeys([1, 2], tx)).toEqual(
         new Map([
           [1, [2]],
           [2, [1]],
@@ -123,11 +123,11 @@ describeWithEnv("db link-table", { db: true }, () => {
   });
 
   test("clear removes every row for the key", async () => {
-    await byUser.setIds(1, [4, 5]);
-    await byUser.setIds(2, [4]);
-    await byAgent.clear(4);
-    expect(await byUser.getIds(1)).toEqual([5]);
-    expect(await byUser.getIds(2)).toEqual([]);
+    await byGroup.setIds(1, [4, 5]);
+    await byGroup.setIds(2, [4]);
+    await byListing.clear(4);
+    expect(await byGroup.getIds(1)).toEqual([5]);
+    expect(await byGroup.getIds(2)).toEqual([]);
   });
 
   describe("both directions of a self-linking table", () => {
@@ -210,11 +210,11 @@ describeWithEnv("db link-table", { db: true }, () => {
   });
 
   test("a write makes a plain side's next read fetch again", async () => {
-    await byUser.setIds(1, [3]);
+    await byGroup.setIds(1, [3]);
     await withRequestContext(async () => {
-      expect(await byAgent.getIds(3)).toEqual([1]);
-      await byUser.setIds(2, [3]);
-      expect(await byAgent.getIds(3)).toEqual([1, 2]);
+      expect(await byListing.getIds(3)).toEqual([1]);
+      await byGroup.setIds(2, [3]);
+      expect(await byListing.getIds(3)).toEqual([1, 2]);
     });
   });
 });

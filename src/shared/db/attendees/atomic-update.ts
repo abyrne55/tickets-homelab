@@ -54,21 +54,6 @@ export const CAPACITY_GUARD = {
 /** A desired final-state line for the atomic update path — the shared
  * DesiredListingLine the listings types module exports. */
 
-/**
- * Extra SET columns when a line is saved as the no-quantity sentinel (quantity
- * 0): clear the logistics assignment — agents, times, and the
- * start_done/end_done completion flags — in the same write. A quantity-0 line
- * is hidden from run sheets, so a completed leg would otherwise haunt them;
- * resetting the done flags too stops a completed leg reappearing as done if the
- * line is later re-activated. Real lines (quantity ≥ 1) keep their state. The
- * fragment carries no bind args, so it slots into both update branches.
- */
-const noQuantityResetColumns = (quantity: number): string =>
-  quantity === 0
-    ? ", start_agent_id = NULL, end_agent_id = NULL," +
-      " start_time = '', end_time = '', start_done = 0, end_done = 0"
-    : "";
-
 /** The booking shape `checkLineCapacity` and `buildCapacityCheckedInsert`
  * expect, projected from a desired line. */
 const lineBooking = (line: DesiredListingLine) => ({
@@ -240,9 +225,7 @@ export const updateStatementFor = (
     const { startAt, endAt } = lineRange(line);
     // A smaller quantity also lowers the admitted count, so it never exceeds it.
     const setClause =
-      `UPDATE listing_attendees SET quantity = ${quantitySql}, checked_in = MIN(checked_in, ${quantitySql}), start_at = ${bind(startAt)}, end_at = ${bind(endAt)}${noQuantityResetColumns(
-        line.quantity,
-      )}` +
+      `UPDATE listing_attendees SET quantity = ${quantitySql}, checked_in = MIN(checked_in, ${quantitySql}), start_at = ${bind(startAt)}, end_at = ${bind(endAt)}` +
       ` WHERE attendee_id = ${attendeeIdSql} AND listing_id = ${listingIdSql} AND start_at IS ${bind(oldPin.startAt)} AND parent_listing_id = ${bind(oldPin.parentListingId)} AND package_group_id = ${bind(oldPin.packageGroupId)}`;
     if (skipCapacityGuard) return setClause;
 

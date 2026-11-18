@@ -54,16 +54,6 @@ describe("the admin areas table", () => {
     );
   });
 
-  test("keeps the run sheet reachable by delivery agents", () => {
-    // The handler is gated by deliveryPage, which admits agents; the surface
-    // has to say the same or every link to it answers the wrong question.
-    expect([...adminDestination("deliveries").audience].toSorted()).toEqual([
-      "agent",
-      "manager",
-      "owner",
-    ]);
-  });
-
   test("serves a POST-only area under the URL segment it posts to", () => {
     // A POST-only area names no page of its own, so nothing else catches a
     // wrong segment: the router would 404 the post before the area loads.

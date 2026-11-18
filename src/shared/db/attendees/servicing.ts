@@ -414,8 +414,6 @@ const servicingPii = (
 ): UpdateAttendeePIIInput => ({
   address: "",
   email: "",
-  lat: "",
-  lng: "",
   name,
   payment_id: "",
   phone: "",

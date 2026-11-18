@@ -174,7 +174,6 @@ export const AdminListingSchema = v.strictObject({
       "purchase_only",
       "show_remaining",
       "use_defaults",
-      "uses_logistics",
     ],
     v.boolean(),
   ),

@@ -89,8 +89,6 @@ const buildAttendeeResult = (input: BuildAttendeeInput): Attendee => ({
       )
     : null,
   kind: input.kind,
-  lat: "",
-  lng: "",
   package_group_id: input.packageGroupId,
   payment_id: input.paymentId,
   pii_blob: "",
@@ -98,7 +96,6 @@ const buildAttendeeResult = (input: BuildAttendeeInput): Attendee => ({
   quantity: input.quantity,
   refunded: false,
   remaining_balance: input.remainingBalance,
-  split_logistics_agents: false,
   status_id: input.statusId,
   ticket_token: input.ticketToken,
   ticket_token_index: input.ticketTokenIndex,

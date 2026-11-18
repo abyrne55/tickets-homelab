@@ -2,7 +2,6 @@ import { expect } from "@std/expect";
 import { describe, it as test } from "@std/testing/bdd";
 import {
   ACTIVITY_LOG_BACKFILL_INTERVAL_MS,
-  ADDRESS_CACHE_MS,
   LIMIT_ENTRIES,
   PRUNE_CONTACTS_RETENTION_MS,
   PRUNE_LOGINS_RETENTION_MS,
@@ -53,18 +52,6 @@ describe("limit registry contract", () => {
         "attempts",
       ],
       ["BOOKING_LOCKOUT_MS", 600_000, "Booking lockout duration", "ms"],
-      [
-        "MAX_ADDRESS_LOOKUPS",
-        30,
-        "Max address lookups before lockout",
-        "attempts",
-      ],
-      [
-        "ADDRESS_LOOKUP_LOCKOUT_MS",
-        600_000,
-        "Address lookup lockout duration",
-        "ms",
-      ],
       [
         "MAX_APIKEY_ATTEMPTS",
         20,
@@ -150,7 +137,6 @@ describe("limit registry contract", () => {
         "Prune: contact-preferences retention",
         "days",
       ],
-      ["ADDRESS_CACHE_DAYS", 90, "Address lookup cache retention", "days"],
       ["PRUNE_INTERVAL_HOURS", 24, "Prune: run interval", "hours"],
       ["MAINTENANCE_PRUNE_BATCH", 500, "Maintenance prune batch size", "rows"],
       [
@@ -181,7 +167,6 @@ describe("limit registry contract", () => {
   test("keeps derived maintenance windows exact", () => {
     expect({
       activityLogBackfill: ACTIVITY_LOG_BACKFILL_INTERVAL_MS,
-      addressCache: ADDRESS_CACHE_MS,
       contacts: PRUNE_CONTACTS_RETENTION_MS,
       logins: PRUNE_LOGINS_RETENTION_MS,
       payments: PRUNE_PAYMENTS_RETENTION_MS,
@@ -195,7 +180,6 @@ describe("limit registry contract", () => {
       tokens: PRUNE_TOKENS_RETENTION_MS,
     }).toEqual({
       activityLogBackfill: 60_000,
-      addressCache: 7_776_000_000,
       contacts: 157_680_000_000,
       logins: 7_776_000_000,
       payments: 7_776_000_000,

@@ -95,11 +95,6 @@ export const STATIC_JS_BUNDLES: StaticBundle[] = [
     STATIC_ASSET_OUTFILES.admin,
   ),
   browserBundle(
-    "Logistics map",
-    "./src/ui/client/logistics-map.ts",
-    STATIC_ASSET_OUTFILES.logisticsMap,
-  ),
-  browserBundle(
     "Markdown editor",
     "./src/ui/client/markdown-editor.ts",
     STATIC_ASSET_OUTFILES.markdownEditor,

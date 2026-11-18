@@ -13,7 +13,6 @@ const settingsRoutes: ReadonlyArray<readonly [string, string]> = [
   ["POST", "/admin/features/example"],
   ["POST", "/admin/listing-defaults"],
   ["POST", "/admin/settings"],
-  ["POST", "/admin/settings/address-lookup"],
   ["POST", "/admin/settings/apple-wallet"],
   ["POST", "/admin/settings/attendee-column-order"],
   ["POST", "/admin/settings/booking-fee"],

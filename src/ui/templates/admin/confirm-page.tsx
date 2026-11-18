@@ -48,7 +48,7 @@ export type ConfirmPageProps = {
   /** Optional heading + confirm/prompt paragraph block rendered inside the
    *  ConfirmForm (after the warning, before explicit children). Models the
    *  common `<h1/><p><Raw html={t(...)}/></p><p>{t(...)}</p>` body shared by
-   *  the holiday/logistics/attendee delete pages. */
+   *  the holiday/attendee delete pages. */
   heading?: string;
   /** A `<Raw html={t(...)}/>` paragraph — usually the "this will delete X"
    *  warning rendered through t() so it can interpolate HTML. */

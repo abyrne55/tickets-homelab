@@ -6,7 +6,6 @@ import {
   getAttendeeBookingRowsRaw,
   getAttendeeKindsByIds,
   getAttendeeOrNull,
-  getAttendeesByIds,
   getFirstBooking,
   hasPaidLine,
 } from "#db/attendees/queries.ts";
@@ -43,22 +42,6 @@ describeWithEnv("db > attendees > getAttendeeOrNull", { db: true }, () => {
 });
 
 describeWithEnv("db > attendees > raw lookups", { db: true }, () => {
-  test("getAttendeesByIds returns nothing for no ids and rows for one", async () => {
-    const listing = await createTestListing();
-    const made = await attendeesApi.createAttendeeAtomic({
-      bookings: [{ listingId: listing.id, quantity: 1 }],
-      email: "by-ids@example.com",
-      name: "By Ids",
-    });
-    if (!made.success) throw new Error("booking setup failed");
-    const attendeeId = made.attendees[0]!.id;
-
-    expect(await getAttendeesByIds([])).toEqual([]);
-    const rows = await getAttendeesByIds([attendeeId]);
-    expect(rows.length).toBe(1);
-    expect(rows[0]!.id).toBe(attendeeId);
-  });
-
   test("getFirstBooking reports a one-ticket line as active and a ghost as not", async () => {
     const listing = await createTestListing({ maxAttendees: 10 });
     const made = await attendeesApi.createAttendeeAtomic({

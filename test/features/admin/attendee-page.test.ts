@@ -65,13 +65,7 @@ describeWithEnv("the attendee page", { db: true }, () => {
     test("offers every tab the owner may open", async () => {
       const id = await bookAttendee();
       const html = await tabHtml(id, "");
-      for (const slug of [
-        "edit",
-        "logistics",
-        "ledger",
-        "activity",
-        "actions",
-      ]) {
+      for (const slug of ["edit", "ledger", "activity", "actions"]) {
         assertStringIncludes(html, `/admin/attendees/${id}/${slug}`);
       }
     });
@@ -122,7 +116,7 @@ describeWithEnv("the attendee page", { db: true }, () => {
   });
 
   describe("the other tabs", () => {
-    for (const slug of ["edit", "logistics", "activity"]) {
+    for (const slug of ["edit", "activity"]) {
       test(`${slug} opens`, async () => {
         const response = await renderTab(await bookAttendee(), slug);
         expect(response.status).toBe(200);

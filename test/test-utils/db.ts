@@ -5,7 +5,6 @@ import { queryOne, setDb } from "#db/client.ts";
 import { groups } from "#db/groups.ts";
 import { holidays } from "#db/holidays.ts";
 import { invalidateListingsCache } from "#db/listings/records.ts";
-import { logisticsAgents } from "#db/logistics-agents.ts";
 import { settings } from "#db/settings.ts";
 import { invalidateUsersCache } from "#db/users.ts";
 import { lazyRef } from "#fp";
@@ -78,7 +77,6 @@ const invalidateEntityCaches = (): void => {
   invalidateListingsCache();
   holidays.invalidate();
   groups.cache.invalidate();
-  logisticsAgents.invalidate();
   attendeeStatuses.invalidate();
 };
 

@@ -33,7 +33,6 @@ describeWithEnv("settings length refusals", { db: true }, () => {
     ["business-email", "business_email", MAX_INPUT_LENGTH],
     ["terms", "terms_and_conditions", MAX_TEXTAREA_LENGTH],
     ["custom-css", "custom_css", MAX_TEXTAREA_LENGTH],
-    ["address-lookup", "address_lookup_api_key", MAX_INPUT_LENGTH],
   ] as const;
 
   test("renders each POST limit on its browser control", async () => {

@@ -110,16 +110,11 @@ export const saveAModifier = (name = "Fee"): Promise<unknown> =>
   // INSERT would store plaintext the site cannot decrypt back.
   insertModifier({ name });
 
-export const seedFeatureRecords = async (
-  includeLogistics = true,
-): Promise<void> => {
+export const seedFeatureRecords = async (): Promise<void> => {
   await executeBatch([
     ...[
       "INSERT INTO attributes (name) VALUES ('Level')",
       "INSERT INTO questions (text, display_type) VALUES ('Notes?', 'free_text')",
-      ...(includeLogistics
-        ? ["INSERT INTO logistics_agents (name) VALUES ('Delivery team')"]
-        : []),
       "INSERT INTO api_keys (user_id, key_index, wrapped_data_key, name, created) VALUES (1, 'index', 'key', 'Sync', '2026-07-15')",
       "INSERT INTO attendees (created, kind) VALUES ('2026-07-15', 'servicing')",
     ].map((sql) => ({ args: [], sql })),
@@ -131,7 +126,6 @@ export const SEEDED_FEATURE_RECORDS: EnabledFeatures = {
   apiKeys: true,
   attributes: true,
   invoices: false,
-  logistics: true,
   modifiers: true,
   money: false,
   questions: true,

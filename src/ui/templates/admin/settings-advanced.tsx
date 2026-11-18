@@ -3,7 +3,6 @@
  */
 
 import { t } from "#i18n";
-import type { AddressLookupSetting } from "#shared/address-lookup/types.ts";
 import { SETTINGS_FORMS } from "#shared/settings/forms.ts";
 import { AppleWalletForm } from "#templates/admin/settings/apple-wallet.tsx";
 import { CustomDomainForm } from "#templates/admin/settings/custom-domain.tsx";
@@ -11,7 +10,6 @@ import { EmailNotificationsForm } from "#templates/admin/settings/email.tsx";
 import { AdminEmailTemplateForm } from "#templates/admin/settings/email-tpl-admin.tsx";
 import { ConfirmationEmailTemplateForm } from "#templates/admin/settings/email-tpl-confirmation.tsx";
 import { GoogleWalletForm } from "#templates/admin/settings/google-wallet.tsx";
-import { LogisticsRunSheetTemplateForm } from "#templates/admin/settings/logistics-run-sheet.tsx";
 import { settingsPage } from "#templates/admin/settings/page-shell.tsx";
 import { settingsForm } from "#templates/admin/settings/schema-form.tsx";
 import { SmsGatewayForm } from "#templates/admin/settings/sms-gateway.tsx";
@@ -20,8 +18,6 @@ import type { EmailContent } from "#templates/email/shared.ts";
 import type { AdminSession, PaymentProviderType, Theme } from "#types";
 
 export type AdvancedSettingsPageState = {
-  addressLookupProvider: AddressLookupSetting;
-  addressLookupApiKeyConfigured: boolean;
   showPublicApi: boolean;
   externalOrderEnabled: boolean;
   emailProvider: string;
@@ -52,11 +48,6 @@ export type AdvancedSettingsPageState = {
   theme: Theme;
   listingColumnOrder: string;
   attendeeColumnOrder: string;
-  /** The logistics feature decides whether the run-sheet template boxes show,
-   * because the run sheet is the only page that renders them. */
-  logisticsEnabled: boolean;
-  logisticsRunSheetBody: string;
-  logisticsRunSheetHeading: string;
   existingPaymentProvider: PaymentProviderType | null;
   paymentProviderRecoveryNeeded: boolean;
   smsGatewayUsername: string;
@@ -89,14 +80,12 @@ export const adminAdvancedSettingsPage = (
       {AdminEmailTemplateForm(s)}
       {settingsForm(SETTINGS_FORMS.listingColumnOrder, s)}
       {settingsForm(SETTINGS_FORMS.attendeeColumnOrder, s)}
-      {s.logisticsEnabled && LogisticsRunSheetTemplateForm(s)}
       {settingsForm(SETTINGS_FORMS.customCss, s)}
       {settingsForm(SETTINGS_FORMS.showPublicApi, s)}
       {settingsForm(SETTINGS_FORMS.externalOrder, s)}
       {GoogleWalletForm(s)}
       {AppleWalletForm(s)}
       {SmsGatewayForm(s)}
-      {settingsForm(SETTINGS_FORMS.addressLookup, s)}
 
       <article class="prose">
         <h2>{t("settings.advanced.scheduled_title")}</h2>

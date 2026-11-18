@@ -80,15 +80,12 @@ describeWithEnv("ticket token utils", { db: true }, () => {
     // The count derives from the stored column; the flags from 0/1 columns.
     expect(view.checked_in).toBe(0);
     expect(view.refunded).toBe(false);
-    expect(view.split_logistics_agents).toBe(false);
     // Every PII field is blanked in the view.
     for (const blank of [
       view.name,
       view.email,
       view.phone,
       view.address,
-      view.lat,
-      view.lng,
       view.payment_id,
       view.special_instructions,
     ]) {

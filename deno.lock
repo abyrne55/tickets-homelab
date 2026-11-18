@@ -50,7 +50,6 @@
     "npm:@sendgrid/mail@*": "8.1.6",
     "npm:@sentry/core@^10.78.0": "10.78.0",
     "npm:@sentry/deno@^10.78.0": "10.78.0",
-    "npm:@types/leaflet@^1.9.20": "1.9.21",
     "npm:cross-fetch@4.1.0": "4.1.0",
     "npm:esbuild@~0.28.2": "0.28.2",
     "npm:fast-check@^4.10.2": "4.10.2",
@@ -59,7 +58,6 @@
     "npm:happy-dom@^21.0.4": "21.0.4",
     "npm:intl-messageformat@^12.1.5": "12.1.5",
     "npm:jsqr@^1.4.0": "1.4.0",
-    "npm:leaflet@^1.9.4": "1.9.4",
     "npm:liquidjs@^10.30.1": "10.30.1",
     "npm:mailgun.js@*": "13.2.0",
     "npm:marked@^18.2.0": "18.2.0",
@@ -854,15 +852,6 @@
         "tslib"
       ]
     },
-    "@types/geojson@7946.0.16": {
-      "integrity": "sha512-6C8nqWur3j98U6+lXDfTUWIfgvZU+EumvpHKcYjujKH7woYyLj2sUmff0tRhrqM7BohUw7Pz3ZB1jj2gW9Fvmg=="
-    },
-    "@types/leaflet@1.9.21": {
-      "integrity": "sha512-TbAd9DaPGSnzp6QvtYngntMZgcRk+igFELwR2N99XZn7RXUdKgsXMR+28bUO0rPsWp8MIu/f47luLIQuSLYv/w==",
-      "dependencies": [
-        "@types/geojson"
-      ]
-    },
     "@types/linkify-it@5.0.0": {
       "integrity": "sha512-sVDA58zAw4eWAffKOaQH5/5j3XeayukzDk+ewSsnv3p4yJEZHCCzMDiZM8e0OUrRvmpGZ85jf4yDHkHsgBNr9Q=="
     },
@@ -1173,9 +1162,6 @@
     },
     "jsqr@1.4.0": {
       "integrity": "sha512-dxLob7q65Xg2DvstYkRpkYtmKm2sPJ9oFhrhmudT1dZvNFFTlroai3AWSpLey/w5vMcLBXRgOJsbXpdN9HzU/A=="
-    },
-    "leaflet@1.9.4": {
-      "integrity": "sha512-nxS1ynzJOmOlHp+iL3FyWqK89GtNL8U8rvlMOsQdTTssxZwCXh8N2NB3GDQOL+YR3XnWyZAxwQixURb+FA74PA=="
     },
     "libsql@0.5.29": {
       "integrity": "sha512-8lMP8iMgiBzzoNbAPQ59qdVcj6UaE/Vnm+fiwX4doX4Narook0a4GPKWBEv+CR8a1OwbfkgL18uBfBjWdF0Fzg==",
@@ -1565,7 +1551,6 @@
       "npm:happy-dom@^21.0.4",
       "npm:intl-messageformat@^12.1.5",
       "npm:jsqr@^1.4.0",
-      "npm:leaflet@^1.9.4",
       "npm:liquidjs@^10.30.1",
       "npm:marked@^18.2.0",
       "npm:promise-limit@2.7.0",

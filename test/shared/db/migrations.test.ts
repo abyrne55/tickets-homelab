@@ -311,7 +311,6 @@ describeWithEnv("db > migrations", { db: true }, () => {
         apiKeys: false,
         attributes: false,
         invoices: false,
-        logistics: true,
         modifiers: true,
         money: false,
         questions: false,

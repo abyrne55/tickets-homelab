@@ -37,17 +37,13 @@ describeWithEnv("db > attendees > atomic edit guards", { db: true }, () => {
     expect(existing[0]!.key).toBe(`${listing.id}||0|0`);
   });
 
-  test("clears logistics state when quantity becomes zero", async () => {
+  test("clears the admitted count when quantity becomes zero", async () => {
     const { listing, attendee, blob, existing } = await bookOnNewListing(
       { maxAttendees: 10 },
       { name: "No quantity", quantity: 1 },
     );
     await execute(
-      `UPDATE listing_attendees
-          SET checked_in = 1, start_agent_id = 7, end_agent_id = 8,
-              start_time = '09:00', end_time = '10:00',
-              start_done = 1, end_done = 1
-        WHERE attendee_id = ?`,
+      "UPDATE listing_attendees SET checked_in = 1 WHERE attendee_id = ?",
       [attendee.id],
     );
 
@@ -58,21 +54,10 @@ describeWithEnv("db > attendees > atomic edit guards", { db: true }, () => {
     expect(update.success).toBe(true);
     expect(
       await queryOne(
-        `SELECT quantity, checked_in, start_agent_id, end_agent_id,
-                start_time, end_time, start_done, end_done
-           FROM listing_attendees WHERE attendee_id = ?`,
+        "SELECT quantity, checked_in FROM listing_attendees WHERE attendee_id = ?",
         [attendee.id],
       ),
-    ).toEqual({
-      checked_in: 0,
-      end_agent_id: null,
-      end_done: 0,
-      end_time: "",
-      quantity: 0,
-      start_agent_id: null,
-      start_done: 0,
-      start_time: "",
-    });
+    ).toEqual({ checked_in: 0, quantity: 0 });
   });
 
   test("checks capacity when only the duration changes", async () => {

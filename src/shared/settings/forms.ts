@@ -1,11 +1,5 @@
 import { t } from "#i18n";
-import { ADDRESS_LOOKUP_PROVIDERS } from "#shared/address-lookup/providers.ts";
-import {
-  ADDRESS_LOOKUP_SETTINGS,
-  type AddressLookupSetting,
-} from "#shared/address-lookup/types.ts";
 import type { Field } from "#shared/forms/field.ts";
-import { MAX_INPUT_LENGTH } from "#shared/limits.ts";
 import { definition } from "#shared/settings/definition.ts";
 import {
   CUSTOM_SETTINGS_FIELDS,
@@ -22,13 +16,6 @@ const availableTags = (layout: { keys: readonly string[] }): string =>
   `${t("settings.column_order.available")} ${layout.keys
     .map((key) => `{{${key}}}`)
     .join(", ")}`;
-
-/** Picklist label: "none" is translated copy, real providers show their
- *  brand. */
-const addressProviderLabel = (provider: AddressLookupSetting): string =>
-  provider === "none"
-    ? t("address_lookup.settings.provider_none")
-    : ADDRESS_LOOKUP_PROVIDERS[provider].label;
 
 export const SETTINGS_FORM_DEFINITIONS = [
   definition({
@@ -317,41 +304,6 @@ export const SETTINGS_FORM_DEFINITIONS = [
     page: "advanced",
     routeLabel: "Public API",
     stateField: "showPublicApi",
-  }),
-  definition({
-    action: "/admin/settings/address-lookup",
-    copy: {
-      descriptionHtml: "block",
-      descriptionKey: "address_lookup.settings.description",
-      submitLabelKey: "address_lookup.settings.save",
-      titleKey: "address_lookup.settings.title",
-    },
-    fields: [
-      {
-        fieldName: "address_lookup_provider",
-        kind: "select",
-        labelKey: "address_lookup.settings.provider",
-        options: () =>
-          ADDRESS_LOOKUP_SETTINGS.map((provider) => ({
-            label: addressProviderLabel(provider),
-            value: provider,
-          })),
-        stateField: "addressLookupProvider",
-      },
-      {
-        configuredStateField: "addressLookupApiKeyConfigured",
-        fieldName: "address_lookup_api_key",
-        kind: "secret",
-        labelKey: "address_lookup.settings.api_key",
-        maxlength: MAX_INPUT_LENGTH,
-        placeholderKey: "address_lookup.settings.api_key_placeholder",
-      },
-    ],
-    formId: "settings-address-lookup",
-    kind: "fields",
-    name: "addressLookup",
-    page: "advanced",
-    routeLabel: "Address lookup",
   }),
   definition({
     action: "/admin/settings/external-order",

@@ -118,23 +118,6 @@ describe("adminUsersPage", () => {
       'href="/admin/guide#user-classes"',
     ]);
   });
-
-  test("shows an agent user's single assigned agent name", () => {
-    const html = adminUsersPage(
-      [
-        displayUser({
-          adminLevel: "agent",
-          agentNames: ["Solo Van"],
-          id: 4,
-          username: "driver",
-        }),
-      ],
-      OWNER_SESSION,
-      { currentUserId: 1, inviteLink: "" },
-    );
-    assertStringIncludes(html, "Solo Van");
-    assert(!html.includes("No agents assigned"));
-  });
 });
 
 describe("adminUserDeletePage", () => {

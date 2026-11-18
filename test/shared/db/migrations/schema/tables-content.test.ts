@@ -5,7 +5,7 @@ import { jsonHash } from "#test-utils/hash.ts";
 
 test("keeps the complete content schema declaration exact", async () => {
   expect(await jsonHash(contentTables)).toBe(
-    "0992766f07fce4905048ab46b56ecd3edebc23b95f2ea2f6432ece044512ed10",
+    "01db434ad172e7dba32b8e8bb8ec0ca2e30531142ce04eb89d58c2a2e555d115",
   );
 });
 

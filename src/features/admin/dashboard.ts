@@ -112,9 +112,9 @@ const handleAdminGet = (request: Request): Promise<Response> =>
   withSession(
     request,
     async (session) => {
-      // Restricted roles have no dashboard. Their landing path is their only
-      // page (agents), a page without the dashboard's financials (editors),
-      // or the doors list (scanner users). The landing map decides who
+      // Restricted roles have no dashboard. Their landing path is a page
+      // without the dashboard's financials (editors) or the doors list
+      // (scanner users). The landing map decides who
       // redirects.
       if (adminLandingPath(session.adminLevel) !== "/admin") {
         return redirectResponse(adminLandingPath(session.adminLevel));

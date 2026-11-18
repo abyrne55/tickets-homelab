@@ -1,8 +1,7 @@
-import { assert, assertStringIncludes } from "@std/assert";
+import { assert } from "@std/assert";
 import { expect } from "@std/expect";
 import { describe, it as test } from "@std/testing/bdd";
 import { stub } from "@std/testing/mock";
-import { settings } from "#db/settings.ts";
 import { renderFields } from "#shared/forms/rendering.tsx";
 import { mergeListingFields } from "#shared/listing-fields.ts";
 import { getAddAttendeeFields } from "#templates/fields/add-attendee.ts";
@@ -88,28 +87,6 @@ describe("getTicketFields — field composition", () => {
     expect(SUBDOMAIN_INPUT_PATTERN).toBe(
       "[a-z0-9]([a-z0-9\\-]{0,61}[a-z0-9])?",
     );
-  });
-
-  test("attaches the lookup panel to the address field only when a provider is set", () => {
-    const patchable = settings as {
-      addressLookup: typeof settings.addressLookup;
-    };
-    const original: typeof settings.addressLookup = settings.addressLookup;
-    try {
-      patchable.addressLookup = { ...original, provider: "none" };
-      const plain = getTicketFields("address", false)[1]!;
-      expect(plain.beforeHtml).toBe(undefined);
-
-      patchable.addressLookup = { ...original, provider: "easypostcodes" };
-      const withPanel = getTicketFields("address", false)[1]!;
-      expect(typeof withPanel.beforeHtml).toBe("string");
-      assertStringIncludes(withPanel.beforeHtml ?? "", "<fieldset");
-      // The panel never attaches to a non-address field.
-      const email = getTicketFields("email", false)[1]!;
-      expect(email.beforeHtml).toBe(undefined);
-    } finally {
-      patchable.addressLookup = original;
-    }
   });
 });
 

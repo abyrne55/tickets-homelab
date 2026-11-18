@@ -38,7 +38,6 @@ export const shouldLogQueries = (method: string, prefix: string): boolean =>
 
 const ORGANIC_MAINTENANCE_THROTTLE_MS = 60_000;
 const ORGANIC_UNSAFE_PREFIXES = [
-  "/address-lookup",
   "/api",
   "/calculate",
   "/gwallet",

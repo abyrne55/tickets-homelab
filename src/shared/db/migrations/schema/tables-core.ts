@@ -112,7 +112,6 @@ export const coreTables: [name: string, table: Table][] = [
         // listing_prices "day_count" dimension (migrated in and projected back on
         // read via a json_group_object subquery). unit_price stays as the hot-path
         // base price, mirrored by the listing_prices "base" row.
-        ["uses_logistics", wholeNumberStartingAtZero],
         ["use_defaults", wholeNumberStartingAtZero],
         ["bookable_alone", wholeNumberStartingAtZero],
         ["show_remaining", wholeNumberStartingAtZero],
@@ -166,16 +165,6 @@ export const coreTables: [name: string, table: Table][] = [
           columns: ["listing_id"],
           name: "idx_listing_prices_listing",
         },
-      ],
-    },
-  ],
-
-  [
-    "logistics_agents",
-    {
-      columns: [
-        ["id", rowId],
-        ["name", text],
       ],
     },
   ],
@@ -260,33 +249,6 @@ export const coreTables: [name: string, table: Table][] = [
           columns: ["image_id", "item_type", "item_id"],
           name: "idx_image_uses_unique",
           unique: true,
-        },
-      ],
-    },
-  ],
-
-  [
-    // Many-to-many link between agent users and the logistics agents
-    // (vans/crews) they drive. One user may cover several agents and one
-    // agent may be driven by several users. No FKs (see note on
-    // listing_attendees); application logic + the indexes keep it consistent,
-    // and both deleteUser and logistics-agent deletion prune their rows.
-    "user_logistics_agents",
-    {
-      columns: [
-        ["id", rowId],
-        ["user_id", wholeNumber],
-        ["agent_id", wholeNumber],
-      ],
-      indexes: [
-        {
-          columns: ["user_id", "agent_id"],
-          name: "idx_user_logistics_agents_unique",
-          unique: true,
-        },
-        {
-          columns: ["agent_id"],
-          name: "idx_user_logistics_agents_agent_id",
         },
       ],
     },

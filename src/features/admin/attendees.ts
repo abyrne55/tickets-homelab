@@ -56,7 +56,6 @@ import {
   handleAttendeeNewGet,
   handleAttendeeNewPost,
 } from "./attendee-form-routes.ts";
-import { handleAttendeeLogisticsPost } from "./attendee-logistics-routes.ts";
 import { attendeePage } from "./attendee-page.ts";
 import { paymentReviewHandlers } from "./attendee-payment-review.ts";
 import {
@@ -450,7 +449,6 @@ export const adminHandlers = defineAdminRoutes({
     handleAttendeeCheckinGet,
   "POST /admin/attendees/:attendeeId": handleAttendeeEditPost,
   "POST /admin/attendees/:attendeeId/delete": handleAttendeeDelete,
-  "POST /admin/attendees/:attendeeId/logistics": handleAttendeeLogisticsPost,
   "POST /admin/attendees/:attendeeId/merge": handleMergePost,
   "POST /admin/attendees/:attendeeId/refresh-payment": handleRefreshPayment,
   "POST /admin/attendees/:attendeeId/resend-notification":

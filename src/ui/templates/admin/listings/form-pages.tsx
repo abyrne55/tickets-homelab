@@ -1,4 +1,4 @@
-import { settings } from "#db/settings.ts";
+import type { settings } from "#db/settings.ts";
 import { t } from "#i18n";
 import type { Child } from "#jsx/jsx-runtime.ts";
 import { isBuilderEnabled } from "#shared/config.ts";
@@ -89,9 +89,7 @@ export const adminListingPickerPage = (session: AdminSession): string =>
         <p>{t("listings_table.listing_type_picker_subheading")}</p>
       </div>
       <div class="listing-type-picker">
-        {LISTING_TEMPLATES.filter(
-          (tmpl) => !tmpl.requiresLogistics || settings.features.logistics,
-        ).map((tmpl) => (
+        {LISTING_TEMPLATES.map((tmpl) => (
           <a
             class="listing-type-card"
             href={`/admin/listing/new?template=${tmpl.id}`}
@@ -100,14 +98,6 @@ export const adminListingPickerPage = (session: AdminSession): string =>
             <span>{t(tmpl.description)}</span>
           </a>
         ))}
-        {LISTING_TEMPLATES.some(
-          (tmpl) => tmpl.requiresLogistics && !settings.features.logistics,
-        ) && (
-          <div class="listing-type-card listing-type-card--disabled">
-            <strong>{t("listings_table.template_hireable_item")}</strong>
-            <span>{t("listings_table.template_requires_logistics")}</span>
-          </div>
-        )}
         <a class="listing-type-card" href="/admin/listing/new?template=custom">
           <strong>{t("listings_table.listing_type_picker_custom")}</strong>
           <span>

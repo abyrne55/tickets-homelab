@@ -148,9 +148,16 @@ const TRANSFER_FIELD_SCHEMAS = {
  * dropped. A drop imports a listing missing that column or its whole
  * parent/group set.
  */
-const ListingFieldsSchema = v.strictObject(
-  projectCatalogFields(listingCatalogFields, "schema", TRANSFER_FIELD_SCHEMAS),
-);
+const ListingFieldsSchema = v.strictObject({
+  ...projectCatalogFields(
+    listingCatalogFields,
+    "schema",
+    TRANSFER_FIELD_SCHEMAS,
+  ),
+  // Retired: exports made while logistics existed still carry it. It is
+  // accepted so those files keep importing, and ignored.
+  usesLogistics: v.optional(v.boolean()),
+});
 
 /** Drop day-price keys beyond the listing's own duration: the form only reads
  * `day_price_1..durationDays`. A stored or blob entry above that (for

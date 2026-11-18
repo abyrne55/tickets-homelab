@@ -15,7 +15,6 @@ import { createTestGroup } from "#test-utils/db-helpers/groups.ts";
 import { createTestListing } from "#test-utils/db-helpers/listings.ts";
 import {
   apiRequest,
-  createTestAgentSession,
   createTestEditorSession,
   createTestManagerSession,
   requestAsSession,
@@ -109,7 +108,6 @@ describeWithEnv("Admin API - Groups", { db: true }, () => {
 
     test("refuses a role below staff with 403 and keeps the group", async () => {
       const refusals = [
-        { make: createTestAgentSession, name: "Agent Proof" },
         { make: createTestEditorSession, name: "Editor Proof" },
       ];
       for (const { make, name } of refusals) {

@@ -34,6 +34,9 @@ export const PII_BLOB_VERSION = 1;
 const PiiBlobSchema: v.GenericSchema<unknown, PiiBlob> = v.strictObject({
   a: v.string(),
   e: v.string(),
+  // Retired map-pin keys. Blobs are encrypted to the owner key, so they cannot
+  // be rewritten in bulk: old ones still carry these, and they are dropped the
+  // next time the attendee is saved.
   la: v.optional(v.string()),
   lo: v.optional(v.string()),
   n: v.string(),
@@ -45,15 +48,12 @@ const PiiBlobSchema: v.GenericSchema<unknown, PiiBlob> = v.strictObject({
 });
 const piiBlobJson = defineStoredJson(PiiBlobSchema);
 
-/** Build a PII blob JSON from contact fields. An unpinned latitude/longitude
- * ("") is left out of the JSON so blobs without a pin stay as small as before. */
+/** Build a PII blob JSON from contact fields. */
 export const buildPiiBlob = (info: AttendeePii): string =>
   piiBlobJson.write(
     {
       a: info.address,
       e: info.email,
-      la: info.lat || undefined,
-      lo: info.lng || undefined,
       n: info.name,
       p: info.phone,
       pi: info.payment_id,
@@ -85,8 +85,6 @@ export const decryptPiiBlob = async (
   return {
     address: blob.a,
     email: blob.e,
-    lat: blob.la ?? "",
-    lng: blob.lo ?? "",
     name: blob.n,
     payment_id: paidListing ? blob.pi : "",
     phone: blob.p,
@@ -102,7 +100,6 @@ export const decryptPiiBlob = async (
 export type RawAttendeeRow = {
   pii_blob: OwnerKeyEncrypted | "";
   checked_in: number | boolean;
-  split_logistics_agents: number | boolean;
   price_paid?: number | string;
   refunded?: number | boolean;
 };
@@ -113,11 +110,10 @@ export type RawAttendeeRow = {
  * `Attendee`. */
 export type DecryptedAttendeeRow<R extends RawAttendeeRow> = Omit<
   R,
-  keyof AttendeePii | "checked_in" | "split_logistics_agents"
+  keyof AttendeePii | "checked_in"
 > &
   AttendeePii & {
     checked_in: number;
-    split_logistics_agents: boolean;
   } & (R extends { price_paid: number | string }
     ? { price_paid: string }
     : unknown) &
@@ -154,7 +150,6 @@ export const decryptAttendeeFields = async <R extends RawAttendeeRow>(
     ...("refunded" in row
       ? { refunded: paidListing ? Boolean(row.refunded) : false }
       : {}),
-    split_logistics_agents: Boolean(row.split_logistics_agents),
   } as DecryptedAttendeeRow<R>;
 };
 
@@ -178,11 +173,8 @@ export const encryptAttendeeFields = async (
   input: EncryptInput,
   ticketToken = generateTicketToken(),
 ): Promise<EncryptedAttendeeData> => {
-  // Bookings never carry a pinned location — lat/lng are admin-side only.
   const piiJson = buildPiiBlob({
     ...contactFields(input),
-    lat: "",
-    lng: "",
     payment_id: input.paymentId,
     ticket_token: ticketToken,
   });

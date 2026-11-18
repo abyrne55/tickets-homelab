@@ -15,7 +15,7 @@ import {
   mockFormRequest,
   mockRequest,
 } from "#test-utils/mocks.ts";
-import { createTestAgentSession, loginAsAdmin } from "#test-utils/session.ts";
+import { loginAsAdmin } from "#test-utils/session.ts";
 
 describeWithEnv("server (admin logout)", { db: true }, () => {
   describe("POST /admin/logout", () => {
@@ -56,22 +56,6 @@ describeWithEnv("server (admin logout)", { db: true }, () => {
 
     test("shows confirmation page with the actual POST form", async () => {
       const { cookie } = await loginAsAdmin();
-
-      const response = await handleRequest(
-        mockRequest("/admin/logout", { headers: { cookie } }),
-      );
-
-      await expectHtmlResponse(
-        response,
-        200,
-        "Are you sure you want to log out?",
-        'action="/admin/logout"',
-        'method="POST"',
-      );
-    });
-
-    test("shows confirmation page to delivery agents", async () => {
-      const { cookie } = await createTestAgentSession();
 
       const response = await handleRequest(
         mockRequest("/admin/logout", { headers: { cookie } }),

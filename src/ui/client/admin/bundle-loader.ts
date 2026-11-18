@@ -4,9 +4,9 @@
  * Page-specific extra bundles. Each injects a separate script (and optional
  * stylesheet) only when the page contains the element it enhances. Pages
  * without that element never pay for the extra download. Used for the
- * markdown editor (ProseMirror) and the logistics map (Leaflet).
+ * markdown editor (ProseMirror).
  *
- * Both bundles are served with year-long immutable cache headers, and edge
+ * The bundles are served with year-long immutable cache headers, and edge
  * builds cache-bust them with a `?ts=` query. That query only exists in the
  * server-rendered markup (client bundles are built before the edge build
  * stamps it). The loader reuses the suffix from the admin bundle's own

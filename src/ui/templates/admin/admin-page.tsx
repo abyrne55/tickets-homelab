@@ -62,7 +62,7 @@ const openWithNotices = (
 /** CRUD edit-page admin opener: takes the page title (and optional `active`),
  *  returns a function taking (session, error) and producing a page-body
  *  receiver. Renders an error Flash when error is set; otherwise no Flash.
- *  Used by the holiday/logistics edit pages. */
+ *  Used by the holiday edit pages. */
 const errorFlash = (error?: string): JSX.Element | null =>
   error === undefined ? null : <Flash error={error} />;
 
@@ -159,20 +159,6 @@ export const successListPage =
       session,
       title: t(titleKey),
     });
-
-/** A page that edits a many-to-many assignment: given the record, the list of
- *  things it can be assigned to, the currently-selected ids, the viewer's
- *  session and an optional error, it renders the edit page. Shared by the
- *  logistics-agent editor (which users drive an agent) and the user-agents
- *  editor (which agents a user drives) so their identical shape lives in one
- *  type rather than being re-declared per page. */
-export type AssignmentEditPage<Record, Item> = (
-  record: Record,
-  items: Item[],
-  selectedIds: ReadonlySet<number>,
-  session: AdminSession,
-  error?: string,
-) => string;
 
 /** Bind a single-form page to its title and nav highlight once; the renderer
  *  takes the viewer's session plus the error and success notices its route

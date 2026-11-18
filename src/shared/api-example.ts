@@ -63,7 +63,6 @@ export const API_EXAMPLE_LISTING: ListingWithCount = {
   tickets_count: 3,
   unit_price: EXAMPLE_LISTING.unit_price,
   use_defaults: false,
-  uses_logistics: false,
   webhook_url: "",
 };
 

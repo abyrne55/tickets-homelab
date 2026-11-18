@@ -58,10 +58,6 @@ import {
 import { parseTaxPolicy, updateTaxPolicy } from "#db/settings/tax.ts";
 import { cssUsesBunnyFonts } from "#routes/public/bunny-fonts.ts";
 import {
-  type AddressLookupSetting,
-  isAddressLookupSetting,
-} from "#shared/address-lookup/types.ts";
-import {
   type EnabledFeatures,
   parseEnabledFeatures,
 } from "#shared/admin-features.ts";
@@ -102,16 +98,6 @@ export {
 };
 
 const settingsBase = {
-  // --- Address lookup ---
-  addressLookup: snapGetters({
-    apiKey: "address_lookup_api_key",
-    hasKey: isSet("address_lookup_api_key"),
-    provider: known({
-      fallback: "none",
-      isKnown: isAddressLookupSetting,
-      key: "address_lookup_provider",
-    }),
-  }),
   // --- Apple Wallet ---
   appleWallet: appleWallet.createReadSettings(snap as (k: string) => string),
   get attendeeColumnLayout(): TableLayout<AttendeeColumnKey> {
@@ -216,13 +202,6 @@ const settingsBase = {
   update: {
     ...stringAccessors.updaters,
     ...paymentProviderAccessors.updaters,
-    // --- Address lookup writes ---
-    addressLookup: {
-      apiKey: encryptedUpdate(CONFIG_KEYS.ADDRESS_LOOKUP_API_KEY),
-      provider: plaintextUpdate(CONFIG_KEYS.ADDRESS_LOOKUP_PROVIDER) as (
-        v: AddressLookupSetting,
-      ) => Promise<void>,
-    },
     // --- Apple Wallet writes ---
     appleWallet: appleWallet.createUpdateSettings(encryptedUpdate),
     autoPurgeOrphans: boolUpdate(

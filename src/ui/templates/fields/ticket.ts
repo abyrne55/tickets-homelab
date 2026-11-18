@@ -16,7 +16,6 @@ import {
   parseListingFields,
   withRequiredEmail,
 } from "#shared/listing-fields.ts";
-import { renderAddressLookupPanel } from "#templates/components/address-lookup.tsx";
 import {
   CONTACT_TEXTAREA_LIMIT,
   PHONE_FIELD_LENGTH,
@@ -123,27 +122,10 @@ const contactFieldMap: Record<ContactField, Field> = {
 export const fieldsApi = { getSettingCached: settings.getCachedRaw };
 
 /**
- * Give the address field its postcode search panel when a lookup provider is
- * configured (no provider ⇒ the plain textarea, unchanged).
- */
-const withAddressLookup = (field: Field): Field => {
-  const panel = renderAddressLookupPanel();
-  return panel ? { ...field, beforeHtml: panel } : field;
-};
-
-/** Resolve one contact field, attaching the address search panel. */
-const resolveContactField = (name: ContactField): Field =>
-  name === "address"
-    ? withAddressLookup(contactFieldMap[name])
-    : contactFieldMap[name];
-
-/**
  * Get ticket form fields based on listing fields setting.
  * Always includes name. Adds contact fields based on the comma-separated setting.
  * When isPaid is true and Square is the active provider, email is always included
  * because Square requires an email address for checkout.
- * The address field carries the postcode search panel (always editable) when a
- * lookup provider is configured.
  */
 export const getTicketFields = (
   fields: ListingFields,
@@ -155,7 +137,7 @@ export const getTicketFields = (
       ? withRequiredEmail(fields)
       : fields;
   const parsed = parseListingFields(effective);
-  return [nameField, ...parsed.map(resolveContactField)];
+  return [nameField, ...parsed.map((name) => contactFieldMap[name])];
 };
 
 /** Validate ticket fields, mapping validation failure to a response via onError */

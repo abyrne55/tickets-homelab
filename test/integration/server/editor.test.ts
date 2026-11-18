@@ -135,7 +135,6 @@ describeWithEnv("server (editor role)", { db: true }, () => {
         ["ledger", "/admin/ledger"],
         ["users", "/admin/users"],
         ["settings", "/admin/settings"],
-        ["deliveries", "/admin/deliveries"],
         ["activity log", "/admin/log"],
       ];
       for (const [label, path] of forbidden) {
@@ -251,14 +250,6 @@ describeWithEnv("server (editor role)", { db: true }, () => {
         currency_code: "USD",
       });
       expect(settingsResp.status).toBe(403);
-
-      // The delivery run-sheet mark action excludes editors.
-      const markResp = await postFormAs("/admin/deliveries/mark", cookie, {
-        attendee_id: "1",
-        done: "true",
-        listing_id: "1",
-      });
-      expect(markResp.status).toBe(403);
     });
   });
 
@@ -405,7 +396,6 @@ describeWithEnv("server (editor role)", { db: true }, () => {
         '"/admin/attendees"',
         '"/admin/calendar"',
         '"/admin/modifiers"',
-        '"/admin/deliveries"',
       ]) {
         assert(!html.includes(forbidden), `nav must not link ${forbidden}`);
       }

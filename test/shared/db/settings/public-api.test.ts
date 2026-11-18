@@ -7,7 +7,6 @@ import { describeWithEnv } from "#test-utils/db.ts";
 describeWithEnv("db > settings public API", { db: true }, () => {
   test("reports absent provider credentials as not configured", () => {
     settings.setForTest({
-      address_lookup_api_key: "",
       email_api_key: "",
       sms_gateway_passphrase: "",
       sms_gateway_password: "",
@@ -16,14 +15,12 @@ describeWithEnv("db > settings public API", { db: true }, () => {
     });
 
     expect({
-      addressLookup: settings.addressLookup.hasKey,
       email: settings.email.hasApiKey,
       smsPassphrase: settings.smsGateway.hasPassphrase,
       smsPassword: settings.smsGateway.hasPassword,
       smsWebhook: settings.smsGateway.hasWebhookSecret,
       square: settings.square.hasToken,
     }).toEqual({
-      addressLookup: false,
       email: false,
       smsPassphrase: false,
       smsPassword: false,

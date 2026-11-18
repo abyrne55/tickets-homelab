@@ -87,8 +87,7 @@
 // ---------------------------------------------------------------------------
 
 form.listing-form--templated:not(:has(#customise-listing:checked)) {
-  label:has(input[name="purchase_only"]),
-  label:has(input[name="uses_logistics"]) {
+  label:has(input[name="purchase_only"]) {
     display: none;
   }
 }
@@ -125,7 +124,6 @@ form.listing-form--templated.listing-form--no-daily:not(
 // in the DOM, so unticking Use defaults reveals them pre-filled with the
 // defaults to customise from.
 // ---------------------------------------------------------------------------
-@include hide-when-using-defaults("uses-logistics", "uses_logistics");
 @include hide-when-using-defaults("bookable-days", "bookable_days");
 @include hide-when-using-defaults("minimum-days-before", "minimum_days_before");
 @include hide-when-using-defaults("maximum-days-after", "maximum_days_after");

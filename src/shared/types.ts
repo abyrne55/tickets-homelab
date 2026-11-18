@@ -321,9 +321,6 @@ export interface Listing extends ItemImageColumns {
    * (see {@link resolveListingDefaults}). A single per-listing flag, never a
    * per-field one, so a stored `false` is never ambiguous. */
   use_defaults: boolean;
-  /** When true (and logistics is enabled) this listing is dropped off and
-   * collected from the customer, so its attendees carry logistics agents. */
-  uses_logistics: boolean;
   webhook_url: string;
 }
 
@@ -333,20 +330,6 @@ export interface Image {
   filename_thumb: NonEmptyString;
   id: number;
   name: string;
-}
-
-/** A logistics agent (typically a van) used for drop-off and collection. */
-export interface LogisticsAgent {
-  id: number;
-  name: string;
-}
-
-/** A link between an agent user and a logistics agent (van/crew) they drive.
- * Many-to-many: a user may cover several agents and an agent several users. */
-export interface UserLogisticsAgent {
-  agent_id: number;
-  id: number;
-  user_id: number;
 }
 
 export interface Attendee extends ContactInfo {
@@ -363,11 +346,7 @@ export interface Attendee extends ContactInfo {
   end_date: string | null;
   id: number;
   kind: string;
-  /** Latitude the operator pinned for the address ("" = not pinned). Admin-only. */
-  lat: string;
   listing_id: number;
-  /** Longitude the operator pinned for the address ("" = not pinned). */
-  lng: string;
   /** The package group this booking row belongs to (0 = not a package).
    * Stamped on every row of a package order so tickets/emails group under it. */
   package_group_id: number;
@@ -379,8 +358,6 @@ export interface Attendee extends ContactInfo {
   refunded: boolean;
   /** Remaining balance owed in minor units (plaintext); 0 when fully paid. */
   remaining_balance: number;
-  /** Whether each delivered listing books its own drop-off/collection agents. */
-  split_logistics_agents: boolean;
   /** Owner-defined status id (plaintext); null for legacy/default. */
   status_id: number | null;
   ticket_token: string;
@@ -399,8 +376,8 @@ export type PiiBlob = {
   s: string; // special_instructions
   pi: string; // payment_id
   t: string; // ticket_token
-  la?: string | undefined; // latitude (absent = not pinned; set by admins, never at booking)
-  lo?: string | undefined; // longitude (absent = not pinned; set by admins, never at booking)
+  la?: string | undefined; // retired map-pin latitude; read and ignored
+  lo?: string | undefined; // retired map-pin longitude; read and ignored
 };
 
 export interface Settings {
@@ -419,19 +396,17 @@ export interface Session {
 /** Schema for admin role levels.
  * - `owner`/`manager` share full back-office access (gated per-page; managers
  *   are denied a subset).
- * - `agent` is a delivery-driver login for its own run sheet only (`/admin/deliveries`).
  * - `editor` writes listings, groups and site content but holds no DATA_KEY,
  *   so attendee PII stays undecryptable for them (`CONTENT_ADMIN_LEVELS`).
  * - `scanner` works a door: the scanner pages, the scan API, and check-in (`DOOR_ADMIN_LEVELS`). */
 export const AdminLevelSchema = v.picklist([
   "owner",
   "manager",
-  "agent",
   "editor",
   "scanner",
 ]);
 
-/** Admin role levels that are back-office staff (not delivery agents). */
+/** Admin role levels that are back-office staff. */
 export const STAFF_ADMIN_LEVELS = ["owner", "manager"] as const;
 
 /** Admin role levels with owner-only permissions. */
@@ -439,7 +414,7 @@ const OWNER_ADMIN_LEVELS = ["owner"] as const;
 
 /** Admin role levels that may create/edit listings & groups: the back-office
  * staff plus the content-only `editor`. Gates the listing/group content
- * routes editors opt into; deliberately excludes `agent`. */
+ * routes editors opt into. */
 export const CONTENT_ADMIN_LEVELS = ["owner", "manager", "editor"] as const;
 
 /** Admin role levels that may edit the public-facing site content (homepage,
@@ -447,11 +422,6 @@ export const CONTENT_ADMIN_LEVELS = ["owner", "manager", "editor"] as const;
  * role joins it, but `manager` stays excluded — owner+editor, NOT the broader
  * {@link CONTENT_ADMIN_LEVELS}. */
 export const SITE_ADMIN_LEVELS = ["owner", "editor"] as const;
-
-/** Admin role levels that may reach the delivery run sheet
- * (`/admin/deliveries`): staff plus delivery `agent`s — the run sheet's
- * long-standing audience, with the content-only `editor` excluded. */
-export const DELIVERY_ADMIN_LEVELS = ["owner", "manager", "agent"] as const;
 
 /** Admin role levels that may work a door: the staff plus the door-only
  * `scanner`, gating the scanner pages, the scan API, and the check-in toggle. */
@@ -478,9 +448,6 @@ export const isStaffRole = roleIn(STAFF_ADMIN_LEVELS);
 /** True only for the owner role. */
 export const isOwnerRole = roleIn(OWNER_ADMIN_LEVELS);
 
-/** True for roles that may reach the delivery run sheet (owner/manager/agent). */
-export const isDeliveryRole = roleIn(DELIVERY_ADMIN_LEVELS);
-
 /** True for roles that may work a door (owner/manager/scanner). */
 export const isDoorRole = roleIn(DOOR_ADMIN_LEVELS);
 
@@ -500,7 +467,7 @@ export type AdminSession = {
 };
 
 export interface User {
-  admin_level: EnvKeyEncrypted; // encrypted "owner", "manager", "agent", "editor" or "scanner"
+  admin_level: EnvKeyEncrypted; // encrypted "owner", "manager", "editor" or "scanner"
   id: number;
   // Encrypted SHA-256 of the invite token, null once the password is set.
   invite_code_hash: EnvKeyEncrypted | null;

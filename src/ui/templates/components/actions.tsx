@@ -226,7 +226,7 @@ export const GuideLink = iconLink("guide-link", "book-open");
  * "…guide" affordance sits consistently in the same spot instead of competing
  * with the page's primary actions at the top.
  *
- * `/admin/guide` is staff-only (owner/manager), so on pages an editor or agent
+ * `/admin/guide` is staff-only (owner/manager), so on pages an editor
  * can also reach (the listings/groups indexes, the site editors) pass
  * `adminLevel` — the footer then renders nothing for non-staff rather than a
  * link that would 403. Staff-only pages can omit it and always render the link.
@@ -250,7 +250,7 @@ export const GuideFooter = ({
 
 /** A footer that links one Guide section, labelled from the catalog. The
  *  staff-only pages it serves may always render the link. A page that an
- *  editor or agent can also reach passes the viewer's admin level, so the
+ *  editor can also reach passes the viewer's admin level, so the
  *  footer hides the link from non-staff. */
 export const guideFooterFor = (
   href: string,
