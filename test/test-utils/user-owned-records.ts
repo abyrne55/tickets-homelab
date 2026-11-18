@@ -1,15 +1,11 @@
 import { encrypt } from "#crypto/encryption.ts";
 import { getDb, insert, queryAll } from "#db/client.ts";
-import { logisticsAgents } from "#db/logistics-agents.ts";
 import { createSession } from "#db/sessions.ts";
-import { userAgents } from "#db/user-agents.ts";
 
 export const addUserOwnedAccessRecords = async (
   userId: number,
   label: string,
 ): Promise<void> => {
-  const agent = await logisticsAgents.table.insert({ name: `${label} agent` });
-  await userAgents.setIds(userId, [agent.id]);
   await createSession(
     `${label}-session`,
     `${label}-csrf`,
@@ -36,8 +32,7 @@ export const getUserOwnedRowSources = async (
     await queryAll<{ source: string }>(
       `SELECT 'api_keys' AS source FROM api_keys WHERE user_id = ?
        UNION ALL SELECT 'sessions' FROM sessions WHERE user_id = ?
-       UNION ALL SELECT 'user_logistics_agents' FROM user_logistics_agents WHERE user_id = ?
        UNION ALL SELECT 'users' FROM users WHERE id = ?`,
-      [userId, userId, userId, userId],
+      [userId, userId, userId],
     )
   ).map(({ source }) => source);

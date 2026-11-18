@@ -1,5 +1,4 @@
 import type { BlindIndex } from "#crypto/sealed.ts";
-import { settings } from "#db/settings.ts";
 import { TransactionValidationError } from "#db/transaction.ts";
 import type {
   GroupInput,
@@ -111,7 +110,7 @@ export const listingDataToInput = (
     minimumDaysBefore,
     nonTransferable,
     useDefaults,
-    usesLogistics,
+    usesLogistics: _retired,
     ...rest
   } = data;
   return {
@@ -130,7 +129,6 @@ export const listingDataToInput = (
     slug,
     slugIndex,
     useDefaults,
-    usesLogistics,
   } as ListingInput;
 };
 
@@ -165,6 +163,5 @@ export const applyImportPolicy = (
     policed.webhookUrl = "";
     policed.useDefaults = false;
   }
-  if (!settings.features.logistics) policed.usesLogistics = false;
   return policed;
 };

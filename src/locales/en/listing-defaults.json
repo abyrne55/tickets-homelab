@@ -11,8 +11,6 @@
   "listing_defaults.days_enable": "Set a default for bookable days",
   "listing_defaults.days_required": "Choose at least one bookable day, or turn the bookable-days default off.",
   "listing_defaults.error.number": "Enter a whole number of 0 or more for \"{label}\", or leave it blank.",
-  "listing_defaults.field.uses_logistics.label": "Require logistics",
-  "listing_defaults.field.uses_logistics.hint": "Whether new listings are handled by a logistics agent (drop-off and collection).",
   "listing_defaults.field.bookable_days.label": "Bookable days",
   "listing_defaults.field.bookable_days.hint": "The days of the week daily listings can be booked on.",
   "listing_defaults.field.minimum_days_before.label": "Minimum days' notice",

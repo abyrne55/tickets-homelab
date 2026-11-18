@@ -297,9 +297,7 @@ const ADMIN_API_EXAMPLE_ATTENDEE = {
   end_date: null,
   id: 7,
   kind: "attendee",
-  lat: "",
   listing_id: 4,
-  lng: "",
   name: "Jane Doe",
   package_group_id: 0,
   payment_id: "pi_3Qx1aB2c",
@@ -309,7 +307,6 @@ const ADMIN_API_EXAMPLE_ATTENDEE = {
   refunded: false,
   remaining_balance: 0,
   special_instructions: "Vegetarian",
-  split_logistics_agents: false,
   status_id: 3,
   ticket_token: "tok_9f3c7a1b", // notsecret
   webhooks_pending: 0,

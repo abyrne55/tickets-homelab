@@ -12,7 +12,6 @@ import { describeWithEnv } from "#test-utils/db.ts";
 import { createTestGroup } from "#test-utils/db-helpers/groups.ts";
 import {
   apiRequest,
-  createTestAgentSession,
   createTestEditorSession,
   requestAsSession,
 } from "#test-utils/session.ts";
@@ -62,29 +61,6 @@ describeWithEnv("Admin API - Groups", { db: true }, () => {
           expect(body.group.name).toBe("Editor Renamed");
         },
       );
-    });
-
-    test("refuses an agent with 403 and changes nothing", async () => {
-      const group = await createTestGroup({ name: "Agent Edit" });
-      const agent = await createTestAgentSession();
-
-      const response = await handleRequest(
-        requestAsSession(
-          `/api/admin/groups/${group.id}`,
-          {
-            cookie: agent.cookie,
-            csrfToken: await signCsrfToken(),
-          },
-          {
-            body: JSON.stringify({ name: "Agent Renamed" }),
-            headers: { "content-type": "application/json" },
-            method: "PUT",
-          },
-        ),
-      );
-      expect(response.status).toBe(403);
-      const row = await groups.table.read.one({ id: group.id });
-      expect(row?.name).toBe("Agent Edit");
     });
 
     test("refuses a malformed catalog field, naming the field", async () => {

@@ -9,7 +9,6 @@ import { ATTENDEE_KIND } from "#db/attendees/kind.ts";
 import { decryptAttendeeFields, decryptPiiBlob } from "#db/attendees/pii.ts";
 import {
   ATTENDEE_FIELDS,
-  type AttendeeKindFilter,
   type AttendeeRowFor,
   type GetAttendeesQuery,
   getAttendees,
@@ -309,8 +308,8 @@ export const hasPaidLine = rowExistsForIdList(
  *
  * The read omits owedScope, so it keeps the default attendee-wide rule:
  * email_owed asks about every booking the attendee holds. That matches the
- * merge target and the attendee page. getAttendeeBookingRowsRaw and
- * getAttendeesByIds opt in with `booking` for one row per booking.
+ * merge target and the attendee page. getAttendeeBookingRowsRaw opts in with
+ * `booking` for one row per booking.
  */
 export const getAttendeeRaw = async (id: number): Promise<Attendee | null> =>
   (await loadAttendeeRows({ join: "left", where: { attendeeIds: [id] } }))[0] ??
@@ -340,26 +339,6 @@ export const getAttendeeRawByToken = async (
     )[0] ?? null
   );
 };
-
-/**
- * Get attendees by ID without decrypting PII, one row per (attendee, booking).
- * Used by the agent run sheet, which already knows the attendee ids it needs
- * and only reads each attendee's contact fields. Pass `kind` when the run sheet
- * must also include servicing attendees. The default is regular attendees only.
- * Returns an empty array for no ids. Decrypt with decryptAttendees before
- * display.
- */
-export const getAttendeesByIds = (
-  ids: number[],
-  kind?: AttendeeKindFilter,
-): Promise<Attendee[]> =>
-  ids.length === 0
-    ? Promise.resolve([])
-    : loadAttendeeRows({
-        join: "left",
-        owedScope: "booking",
-        where: { attendeeIds: ids, ...(kind === undefined ? {} : { kind }) },
-      });
 
 /**
  * Bounded id → name lookup for the given attendees, decrypting only the name

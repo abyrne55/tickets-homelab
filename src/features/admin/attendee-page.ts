@@ -22,7 +22,6 @@ import { t } from "#i18n";
 import type { PaymentWorkStatus } from "#payment/admit-move.ts";
 import { attendeeBookingsFromLines } from "#routes/admin/attendee-form-dates.ts";
 import { loadAttendeeLedgerPanel } from "#routes/admin/attendee-ledger-panel.ts";
-import { loadLogisticsPanel } from "#routes/admin/attendee-logistics-tab.ts";
 import {
   buildEditFormFromAttendee,
   buildTemplateData,
@@ -370,11 +369,6 @@ export const attendeePage: EntityPage<AttendeePageEntity> = defineEntityPage({
   tabs: [
     overview,
     writeFormTab<AttendeePageEntity>("edit", "entity.tab.edit", loadEditPanel),
-    writeFormTab<AttendeePageEntity>(
-      "logistics",
-      "entity.tab.logistics",
-      loadLogisticsPanel,
-    ),
     {
       labelKey: "entity.tab.ledger",
       sections: [

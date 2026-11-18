@@ -5,10 +5,7 @@ import type { Field } from "#shared/forms/field.ts";
 import { getBuiltSiteForm } from "#templates/fields/admin.ts";
 import { getListingAggregateFields } from "#templates/fields/aggregate.ts";
 import { getGroupCreateForm } from "#templates/fields/group.ts";
-import {
-  getListingForm,
-  logisticsAgentForm,
-} from "#templates/fields/listing.ts";
+import { getListingForm } from "#templates/fields/listing.ts";
 import { getModifierForm } from "#templates/fields/modifier.ts";
 import { getTicketFields } from "#templates/fields/ticket.ts";
 import { getSlugField } from "#templates/fields/validators.ts";
@@ -171,9 +168,6 @@ describe("fields behaviour", () => {
       const updates = byName(fields, "updates");
       accepts(updates, "release");
       rejects(updates, "not-a-tier");
-    });
-    test("the logistics-agent name is required", () => {
-      expect(byName(logisticsAgentForm.fields, "name").required).toBe(true);
     });
     test("the slug field is required", () => {
       expect(getSlugField().required).toBe(true);

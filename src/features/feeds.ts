@@ -6,13 +6,8 @@
 import { decryptAttendees } from "#db/attendees/pii.ts";
 import { getAttendeesByListingIds } from "#db/listings/attendees.ts";
 import { getAllListings } from "#db/listings/records.ts";
-import {
-  bookingAssignmentKey,
-  getLogisticsAssignmentsForAttendees,
-} from "#db/logistics.ts";
 import { getNewsPostSummaries } from "#db/news-posts.ts";
 import { settings } from "#db/settings.ts";
-import { userAgents } from "#db/user-agents.ts";
 import { identity, map, mapById, pipe } from "#fp";
 import type { CoreListingFields } from "#routes/api/public-listing.ts";
 import { withAuth } from "#routes/auth.ts";
@@ -281,35 +276,6 @@ const buildVEvent = (opts: {
   return lines.join("\r\n");
 };
 
-const assignmentIncludesUser = (
-  assignment: { endAgentId: number | null; startAgentId: number | null },
-  userId: number,
-): boolean => [assignment.startAgentId, assignment.endAgentId].includes(userId);
-
-const filterCalendarFeedAttendees = async (
-  attendees: Attendee[],
-  session: { adminLevel: string; userId: number },
-): Promise<Attendee[]> => {
-  if (session.adminLevel !== "agent") return attendees;
-  const [assignments, agentIds] = await Promise.all([
-    getLogisticsAssignmentsForAttendees(attendees.map((a) => a.id)),
-    userAgents.getIds(session.userId),
-  ]);
-  const visible = new Set<string>();
-  for (const assignment of assignments) {
-    if (
-      agentIds.some((agentId) => assignmentIncludesUser(assignment, agentId))
-    ) {
-      visible.add(
-        bookingAssignmentKey(assignment.attendeeId, assignment.listingId),
-      );
-    }
-  }
-  return attendees.filter((a) =>
-    visible.has(bookingAssignmentKey(a.id, a.listing_id)),
-  );
-};
-
 /* jscpd:ignore-start */
 const buildCalendarFeed = async (request: Request): Promise<Response> => {
   if (!settings.calendarFeedsEnabled) {
@@ -317,8 +283,8 @@ const buildCalendarFeed = async (request: Request): Promise<Response> => {
   }
   return withAuth(
     request,
-    { allowApiKey: true, body: "json", roles: ["owner", "manager", "agent"] },
-    async (session) => {
+    { allowApiKey: true, body: "json", roles: ["owner", "manager"] },
+    async () => {
       const privateKey = await getRequestPrivateKey();
       const listings = await getAllListings();
       const listingById = mapById(identity<ListingWithCount>)(listings);
@@ -327,10 +293,7 @@ const buildCalendarFeed = async (request: Request): Promise<Response> => {
         // Operational ICS feed: exclude no-quantity sentinel lines.
         true,
       );
-      const attendees = await filterCalendarFeedAttendees(
-        await decryptAttendees(rawAttendees, privateKey!),
-        session,
-      );
+      const attendees = await decryptAttendees(rawAttendees, privateKey!);
       const domain = getEffectiveDomain();
       const dtstamp = formatIcsDate(nowIso());
       const events = attendees.flatMap((attendee) => {

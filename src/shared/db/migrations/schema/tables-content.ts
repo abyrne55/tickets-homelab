@@ -278,29 +278,4 @@ export const contentTables: [name: string, table: Table][] = [
       ],
     },
   ],
-
-  [
-    // Address-lookup result cache. search_index is the HMAC blind index of
-    // "provider:normalised-search" and results is the encrypted JSON array of
-    // address lines, so neither the searched value nor the returned addresses
-    // are readable from a database dump. Rows expire after ADDRESS_CACHE_DAYS:
-    // reads filter on the cutoff and the prune task deletes past it.
-    "address_cache",
-    {
-      columns: [
-        ["id", rowId],
-        ["search_index", text],
-        ["results", text],
-        ["created", text],
-      ],
-      indexes: [
-        {
-          columns: ["search_index"],
-          name: "idx_address_cache_search_index",
-          unique: true,
-        },
-        { columns: ["created"], name: "idx_address_cache_created" },
-      ],
-    },
-  ],
 ];

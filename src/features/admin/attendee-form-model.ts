@@ -124,7 +124,7 @@ export type ParsedAttendeeForm = ContactInfo & {
 // ---------------------------------------------------------------------------
 
 /** True when the line becomes a booking (quantity ≥ 1). Governs capacity,
- * validation, warnings, and logistics — everything the quantity-0 sentinel is
+ * validation and warnings — everything the quantity-0 sentinel is
  * deliberately absent from. */
 export const isBookedLine = (line: AttendeeFormLine): boolean =>
   line.quantity !== null && line.quantity >= 1 && line.listing !== null;

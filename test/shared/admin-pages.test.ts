@@ -244,7 +244,6 @@ describe("adminLandingPath", () => {
   });
 
   test("keeps each role's landing page", () => {
-    expect(adminLandingPath("agent")).toBe("/admin/deliveries");
     expect(adminLandingPath("editor")).toBe("/admin/listings");
     expect(adminLandingPath("scanner")).toBe("/admin/scanner");
     expect(adminLandingPath("owner")).toBe("/admin");

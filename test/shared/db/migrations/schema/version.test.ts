@@ -22,7 +22,7 @@ describe("db > migrations > schema version", () => {
     // The sentence is what an upgrading site reads as its last applied
     // update, so the label is the migration's identity, not a comment.
     expect(LATEST_UPDATE).toBe(
-      "Add single_ticket_per_order to groups so a group can limit each order to one ticket.",
+      "Remove the address lookup and logistics: drop their tables, columns and triggers, delete agent users and retire their settings.",
     );
   });
 });

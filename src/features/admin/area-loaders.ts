@@ -63,7 +63,7 @@ export const ADMIN_AREA_LOADERS: Record<AdminAreaId, AdminAreaLoader> = {
   ),
   attendeeNotes: area(
     () => import("#routes/admin/attendee-notes.ts"),
-    ["attendees", "entity-pages", "ledger", "logistics", "notes", "validation"],
+    ["attendees", "entity-pages", "ledger", "notes", "validation"],
   ),
   attendeeRefunds: area(
     () => import("#routes/admin/attendee-refunds.ts"),
@@ -82,7 +82,6 @@ export const ADMIN_AREA_LOADERS: Record<AdminAreaId, AdminAreaLoader> = {
       "ledger",
       "listing-qr",
       "listings-table",
-      "logistics",
       "modifiers",
       "notes",
       "payment",
@@ -156,10 +155,6 @@ export const ADMIN_AREA_LOADERS: Record<AdminAreaId, AdminAreaLoader> = {
     ],
   ),
   debug: area(() => import("#routes/admin/debug.ts"), ["debug", "settings"]),
-  deliveries: area(
-    () => import("#routes/admin/deliveries.ts"),
-    ["attendees", "capacity", "date-picker", "deliveries", "logistics"],
-  ),
   groups: area(
     () => import("#routes/admin/groups.ts"),
     [
@@ -219,7 +214,6 @@ export const ADMIN_AREA_LOADERS: Record<AdminAreaId, AdminAreaLoader> = {
       "capacity",
       "csv",
       "date-picker",
-      "deliveries",
       "detail-rows",
       "entity-pages",
       "groups",
@@ -227,7 +221,6 @@ export const ADMIN_AREA_LOADERS: Record<AdminAreaId, AdminAreaLoader> = {
       "listing-defaults",
       "listing-qr",
       "listings-table",
-      "logistics",
       "modifiers",
       "notes",
       "questions",
@@ -279,7 +272,7 @@ export const ADMIN_AREA_LOADERS: Record<AdminAreaId, AdminAreaLoader> = {
   ),
   servicing: area(
     () => import("#routes/admin/servicing.tsx"),
-    ["listings-table", "logistics", "servicing", "validation"],
+    ["listings-table", "servicing", "validation"],
   ),
   sessions: area(() => import("#routes/admin/sessions.ts"), ["users"]),
   settings: area(
@@ -292,7 +285,6 @@ export const ADMIN_AREA_LOADERS: Record<AdminAreaId, AdminAreaLoader> = {
       "listing-defaults",
       "listings-table",
       "login",
-      "logistics",
       "payment",
       "settings",
       "setup",
@@ -301,10 +293,6 @@ export const ADMIN_AREA_LOADERS: Record<AdminAreaId, AdminAreaLoader> = {
       "users",
       "validation",
     ],
-  ),
-  settingsLogistics: area(
-    () => import("#routes/admin/settings-logistics.ts"),
-    ["entity-pages", "logistics", "settings", "users", "validation"],
   ),
   settingsStatuses: area(
     () => import("#routes/admin/settings-statuses.ts"),
@@ -329,6 +317,6 @@ export const ADMIN_AREA_LOADERS: Record<AdminAreaId, AdminAreaLoader> = {
   update: area(() => import("#routes/admin/update.ts"), ["update"]),
   users: area(
     () => import("#routes/admin/users.ts"),
-    ["deliveries", "entity-pages", "login", "users", "validation"],
+    ["entity-pages", "login", "users", "validation"],
   ),
 };

@@ -71,4 +71,29 @@ describeWithEnv("removed routes", { db: true }, () => {
       expect(response.status).toBe(404);
     });
   });
+
+  describe("logistics", () => {
+    test("GET /admin/deliveries is a 404 for an owner", async () => {
+      const response = await adminGet("/admin/deliveries");
+      expect(response.status).toBe(404);
+    });
+
+    test("GET /admin/logistics is a 404 for an owner", async () => {
+      const response = await adminGet("/admin/logistics");
+      expect(response.status).toBe(404);
+    });
+
+    test("GET /logistics-map.js is a 404", async () => {
+      const response = await handleRequest(mockRequest("/logistics-map.js"));
+      expect(response.status).toBe(404);
+    });
+
+    test("POST /admin/settings/logistics-run-sheet is a 404 for an owner", async () => {
+      const { response } = await adminFormPost(
+        "/admin/settings/logistics-run-sheet",
+        { body: "x", heading: "y" },
+      );
+      expect(response.status).toBe(404);
+    });
+  });
 });

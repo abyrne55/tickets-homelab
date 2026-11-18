@@ -186,21 +186,13 @@ const DefaultControl = ({
   defaults: ListingDefaults;
 }): JSX.Element => KIND_CONTROLS[field.kind](field, defaults[field.key]);
 
-/**
- * Render the Listing Defaults page. The logistics default is only offered when
- * the logistics feature is enabled — a default that can never take effect would
- * just be confusing.
- */
+/** Render the Listing Defaults page. */
 export const adminListingDefaultsPage = (
   session: AdminSession,
   defaults: ListingDefaults,
-  hasLogistics: boolean,
   error?: string,
   success?: string,
 ): string => {
-  const fields = LISTING_DEFAULT_FIELDS.filter(
-    (field) => field.field !== "uses_logistics" || hasLogistics,
-  );
   const renderField = (field: ListingDefaultField) => (
     <DefaultControl defaults={defaults} field={field} />
   );
@@ -217,7 +209,7 @@ export const adminListingDefaultsPage = (
             <h2>{t("listing_defaults.title")}</h2>
             <p>{t("listing_defaults.intro")}</p>
           </div>
-          {fields.map(renderField)}
+          {LISTING_DEFAULT_FIELDS.map(renderField)}
         </SaveForm>
 
         <GuideFooter href="/admin/guide#listings">

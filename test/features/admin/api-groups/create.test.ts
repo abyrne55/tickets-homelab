@@ -11,7 +11,6 @@ import { assertJson } from "#test-utils/assertions.ts";
 import { describeWithEnv } from "#test-utils/db.ts";
 import {
   apiRequest,
-  createTestAgentSession,
   createTestEditorSession,
   requestAsSession,
 } from "#test-utils/session.ts";
@@ -60,27 +59,6 @@ describeWithEnv("Admin API - Groups", { db: true }, () => {
           expect(body.group.name).toBe("Editor Made Group");
         },
       );
-    });
-
-    test("refuses an agent with 403 and creates nothing", async () => {
-      const agent = await createTestAgentSession();
-      const response = await handleRequest(
-        requestAsSession(
-          "/api/admin/groups",
-          {
-            cookie: agent.cookie,
-            csrfToken: await signCsrfToken(),
-          },
-          {
-            body: JSON.stringify({ name: "Agent Made Group" }),
-            headers: { "content-type": "application/json" },
-            method: "POST",
-          },
-        ),
-      );
-      expect(response.status).toBe(403);
-      const all = await groups.cache.getAll();
-      expect(all.find((g) => g.name === "Agent Made Group")).toBeUndefined();
     });
 
     test("returns 400 when the name is longer than 250 characters", async () => {

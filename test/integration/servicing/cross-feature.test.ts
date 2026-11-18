@@ -3,7 +3,7 @@
  *
  * A servicing hold is a real booking row, so it flows through the same
  * listing-attendee machinery as a customer booking — but it must NOT trigger
- * the customer-only side effects (logistics splitting, webhook firing,
+ * the customer-only side effects (webhook firing,
  * modifier consumption, purchase-only restrictions). These pin that the
  * servicing create path skips each customer-only resolution.
  */
@@ -12,25 +12,12 @@ import { expect } from "@std/expect";
 import { it as test } from "@std/testing/bdd";
 import { describeWithEnv } from "#test-utils/db.ts";
 import { stubFetch } from "#test-utils/fetch-stub.ts";
-import {
-  createServicingHold,
-  expectLogisticsDisabled,
-} from "#test-utils/servicing.ts";
+import { createServicingHold } from "#test-utils/servicing.ts";
 
 describeWithEnv(
   "servicing edge cases — cross-feature interactions",
   { db: true },
   () => {
-    test("a servicing hold on a listing with logistics agents does not split or assign agents", async () => {
-      // The listing has `uses_logistics = true` and logistics agents configured;
-      // a customer booking on it would split the attendee row. A servicing
-      // hold must not — `split_logistics_agents` stays 0, no agents assigned.
-      const { id } = await createServicingHold({
-        listing: { name: "Logistics L", usesLogistics: true },
-      });
-      await expectLogisticsDisabled(id);
-    });
-
     test("a servicing hold on a purchase_only listing is accepted (no payment required)", async () => {
       // `purchase_only` listings refuse the public booking flow (no payment =
       // no booking). A servicing hold is free and admin-created, so it bypasses

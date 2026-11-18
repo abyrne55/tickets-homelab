@@ -34,7 +34,7 @@ export type DebugFooterData = {
 
 /** Set while an admin page renders so its footer is emitted by the Layout. Holds
  * the viewer's role so the footer's utility links can be gated (e.g. the
- * activity log is staff-only; the guide is hidden from delivery agents). */
+ * activity log is staff-only; the guide is hidden from other roles). */
 export type AdminFooterState = { adminLevel: AdminLevel | null };
 
 /** Flag the current render as an admin page so its footer (with logout) shows,

@@ -52,7 +52,6 @@ describe("operations guide schema", () => {
   test("keeps every operations section in its intended order", () => {
     expect(sections.map(({ id, titleKey }) => ({ id, titleKey }))).toEqual([
       { id: "servicing", titleKey: "servicing" },
-      { id: "logistics", titleKey: "logistics" },
       { id: "images", titleKey: "images" },
       { id: "attendee-statuses", titleKey: "attendee_statuses" },
       { id: "attendees", titleKey: "attendees" },

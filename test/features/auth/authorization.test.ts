@@ -9,7 +9,6 @@ import {
   anyUserPage,
   pageGuardFor,
   requireContentOr,
-  requireDeliveryOr,
   requireSiteOr,
   withAuth,
   withSession,
@@ -17,7 +16,6 @@ import {
 import { adminDestinationAt } from "#shared/admin-surface.ts";
 import { describeWithEnv } from "#test-utils/db.ts";
 import {
-  createTestAgentSession,
   createTestEditorSession,
   createTestManagerSession,
   testCookie,
@@ -35,12 +33,10 @@ const EVERY_GUARD: Guard[] = [
   pageGuardFor(adminDestinationAt("/admin/calendar")),
   requireContentOr,
   requireSiteOr,
-  requireDeliveryOr,
 ];
 
 /** A live, authenticated cookie for each admin level. */
 const roleCookies = async (): Promise<Record<string, string>> => ({
-  agent: (await createTestAgentSession()).cookie,
   editor: (await createTestEditorSession()).cookie,
   manager: await createTestManagerSession(),
   owner: await testCookie(),
@@ -108,7 +104,7 @@ describeWithEnv("auth authorization matrix", { db: true }, () => {
     );
   });
 
-  test("requireContentOr admits content editors (owner, manager, editor), not agents", async () => {
+  test("requireContentOr admits content editors (owner, manager, editor)", async () => {
     await expectAdmits(requireContentOr, await roleCookies(), [
       "owner",
       "manager",
@@ -116,16 +112,8 @@ describeWithEnv("auth authorization matrix", { db: true }, () => {
     ]);
   });
 
-  test("requireSiteOr admits site editors (owner, editor), not managers or agents", async () => {
+  test("requireSiteOr admits site editors (owner, editor), not managers", async () => {
     await expectAdmits(requireSiteOr, await roleCookies(), ["owner", "editor"]);
-  });
-
-  test("requireDeliveryOr admits delivery roles (owner, manager, agent), not editors", async () => {
-    await expectAdmits(requireDeliveryOr, await roleCookies(), [
-      "owner",
-      "manager",
-      "agent",
-    ]);
   });
 
   test("anyUserPage renders for every authenticated role", async () => {
@@ -215,10 +203,13 @@ describeWithEnv("auth authorization matrix", { db: true }, () => {
   });
 
   test("an owner-only api gate keeps the generic json refusal body", async () => {
-    const response = await postThroughWithAuth(await createTestAgentSession(), {
-      body: "json",
-      roles: ["owner"],
-    });
+    const response = await postThroughWithAuth(
+      await createTestEditorSession(),
+      {
+        body: "json",
+        roles: ["owner"],
+      },
+    );
     expect(response.status).toBe(403);
     expect(await response.json()).toEqual({ error: "Forbidden" });
   });

@@ -290,7 +290,6 @@ describeWithEnv(
       "/admin/listing/42/attendee/99/checkin",
       "/admin/listing/42/scan",
       "/admin/attendees/99/refresh-payment",
-      "/admin/deliveries/mark",
     ];
     for (const path of safePostPaths) {
       test(`POST ${path} is not blocked by read-only guard`, async () => {

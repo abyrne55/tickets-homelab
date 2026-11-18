@@ -7,7 +7,6 @@ import { listingGroups } from "#db/groups/table.ts";
 import { getGroupPackagePrices } from "#db/groups.ts";
 import { listingParents } from "#db/listing-parents.ts";
 import { getListingWithCount } from "#db/listings/records.ts";
-import { settings } from "#db/settings.ts";
 import { t } from "#i18n";
 import { exportListing } from "#routes/admin/catalog-transfer/export.ts";
 import { importCatalog } from "#routes/admin/catalog-transfer/import.ts";
@@ -19,7 +18,6 @@ import { describeWithEnv } from "#test-utils/db.ts";
 import { createTestGroup } from "#test-utils/db-helpers/groups.ts";
 import { createTestListing } from "#test-utils/db-helpers/listings.ts";
 import { withEnv } from "#test-utils/env.ts";
-import { featureSetting } from "#test-utils/settings.ts";
 
 /** Import a listing that asks for a built site, answering the refusal
  * message the import raises. */
@@ -38,17 +36,6 @@ const refusedPlanImportError = async (name: string): Promise<string> => {
     throw new Error(`the built-site plan import was accepted: ${name}`);
   }
   return result.error;
-};
-
-const importLogisticsListing = async (name: string): Promise<boolean> => {
-  const result = await importCatalog({
-    kind: "listing",
-    listing: { maxAttendees: 1, name, usesLogistics: true },
-    version: 1,
-  });
-  if (!result.ok) throw new Error(result.error);
-  return (await getListingWithCount(requireEntityImport(result).id))!
-    .uses_logistics;
 };
 
 describeWithEnv(
@@ -149,15 +136,6 @@ describeWithEnv(
           name: "Builder On",
         }),
       );
-    });
-
-    test("clears uses-logistics when logistics is disabled", async () => {
-      expect(await importLogisticsListing("Logi Off")).toBe(false);
-    });
-
-    test("keeps uses-logistics when logistics is enabled", async () => {
-      settings.setForTest(featureSetting("logistics"));
-      expect(await importLogisticsListing("Logi On")).toBe(true);
     });
 
     test("clears package overrides for a non-package group membership", async () => {

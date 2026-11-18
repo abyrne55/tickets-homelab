@@ -241,7 +241,7 @@ describe("GuideFooter", () => {
   });
 
   test("renders nothing for non-staff roles (the guide is staff-only, 403s them)", () => {
-    for (const adminLevel of ["editor", "agent"] as const) {
+    for (const adminLevel of ["editor"] as const) {
       expect(String(GuideFooter(guideFooterProps(adminLevel)))).toBe("");
     }
   });

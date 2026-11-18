@@ -210,7 +210,6 @@ export const handleAttendeesCsvExport: TypedRouteHandler<
       const attendees = await decryptAttendees(bookings, privateKey);
       const csv = generateCalendarCsv(
         toCalendarAttendees(attendees, setup.listings),
-        undefined,
         settings.timezone,
       );
       await logActivity("Attendees CSV exported");

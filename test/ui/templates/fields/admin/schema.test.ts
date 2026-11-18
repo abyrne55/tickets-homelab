@@ -330,10 +330,6 @@ describe("admin field schemas", () => {
             value: "manager",
           },
           {
-            label: "Delivery agent",
-            value: "agent",
-          },
-          {
             label: "Editor",
             value: "editor",
           },

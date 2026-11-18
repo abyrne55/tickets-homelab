@@ -10,12 +10,10 @@
 import { assert, assertStringIncludes } from "@std/assert";
 import { expect } from "@std/expect";
 import { it as test } from "@std/testing/bdd";
-import { settings } from "#db/settings.ts";
 import { describeWithEnv } from "#test-utils/db.ts";
 import { buildCreateListingForm } from "#test-utils/db-helpers/listing-forms.ts";
 import { testListingInput } from "#test-utils/factories.ts";
 import { adminGet, adminMultipartPost } from "#test-utils/session.ts";
-import { featureSetting } from "#test-utils/settings.ts";
 
 const PICKER_HEADING = "Choose a listing type";
 const FORM_HEADING = "<h1>Add Listing</h1>";
@@ -65,27 +63,14 @@ describeWithEnv("opening the new listing form", { db: true }, () => {
     expect(carriedTemplate(html)).toBe("custom");
   });
 
-  test("sends a logistics template back to the picker while the feature is off", async () => {
+  test("opens the full form for a template that no longer exists", async () => {
+    // hireable-item went with logistics. A saved link to it must not 404.
     const html = await (
       await adminGet("/admin/listing/new?template=hireable-item")
     ).text();
 
-    assertStringIncludes(html, PICKER_HEADING);
-    assert(!html.includes(FORM_HEADING));
-  });
-
-  test("opens the same logistics template once the feature is on", async () => {
-    settings.setForTest(featureSetting("logistics"));
-    try {
-      const html = await (
-        await adminGet("/admin/listing/new?template=hireable-item")
-      ).text();
-
-      assertStringIncludes(html, FORM_HEADING);
-      expect(carriedTemplate(html)).toBe("hireable-item");
-    } finally {
-      settings.clearTestOverride("enabled_features");
-    }
+    assertStringIncludes(html, FORM_HEADING);
+    expect(carriedTemplate(html)).toBe("custom");
   });
 });
 
@@ -125,23 +110,8 @@ describeWithEnv("a rejected create keeps its template", { db: true }, () => {
     expect(carriedTemplate(html)).toBe("online-digital");
   });
 
-  test("works it out from a shape that also uses logistics", async () => {
-    settings.setForTest(featureSetting("logistics"));
-    try {
-      const html = await rejectedCreate({
-        listingType: "standard",
-        purchaseOnly: true,
-        usesLogistics: true,
-      });
-
-      expect(carriedTemplate(html)).toBe("hireable-item");
-    } finally {
-      settings.clearTestOverride("enabled_features");
-    }
-  });
-
   test("carries no template when the shape matches none", async () => {
-    // Standard, no date, check-in wanted, no logistics is the Custom card's
+    // Standard, no date, check-in wanted is the Custom card's
     // shape, which no template signature claims.
     const html = await rejectedCreate({ listingType: "standard" });
 

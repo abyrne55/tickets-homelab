@@ -92,8 +92,6 @@ const testPii = (
 ): UpdateAttendeePIIInput => ({
   address: "",
   email,
-  lat: "",
-  lng: "",
   name,
   payment_id: paymentId,
   phone: "",

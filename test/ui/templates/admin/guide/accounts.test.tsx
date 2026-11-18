@@ -42,7 +42,6 @@ describe("accounts guide schema", () => {
     expect(faqs).toEqual([
       "owner_vs_manager",
       "editor_role",
-      "agent_role",
       "scanner_role",
       "invite_admin",
       "invite_link_expiry",

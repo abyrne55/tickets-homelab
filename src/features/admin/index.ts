@@ -90,7 +90,7 @@ export const routeAdmin: PathMethodRoute = async (request, path, method) => {
 
   return await withMessageGroups(segmentRouter.messageGroups, async () => {
     // Query recording starts in prepareRequestEnvironment. Only staff can
-    // see the footer that exposes it. Delivery agents and editors cannot.
+    // see the footer that exposes it. Editors cannot.
     if (method === "GET" && session && isStaffRole(session.adminLevel)) {
       enableFooterDebug();
     }

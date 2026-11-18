@@ -46,23 +46,19 @@ describe("listing form schema", () => {
   test("renders conditional fields from schema visibility", () => {
     const visible = getListingEditForm({
       builder: true,
-      logistics: true,
       storage: true,
       webhook: true,
     });
     const hidden = getListingEditForm({
       builder: false,
-      logistics: false,
       storage: false,
       webhook: false,
     });
 
     assertStringIncludes(visible.section("basics"), 'name="attachment"');
-    assertStringIncludes(visible.section("options"), 'name="uses_logistics"');
     assertStringIncludes(visible.section("advanced"), 'name="months_per_unit"');
     assertStringIncludes(visible.section("advanced"), 'name="webhook_url"');
     assert(!hidden.section("basics").includes('name="attachment"'));
-    assert(!hidden.section("options").includes('name="uses_logistics"'));
     assert(!hidden.section("advanced").includes('name="months_per_unit"'));
     assert(!hidden.section("advanced").includes('name="webhook_url"'));
   });

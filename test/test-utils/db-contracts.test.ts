@@ -41,7 +41,6 @@ import {
 } from "#test-utils/internal.ts";
 import { wait } from "#test-utils/mocks.ts";
 import {
-  createTestAgentSession,
   createTestManagerSession,
   loginAsAdmin,
   withTestSession,
@@ -179,22 +178,13 @@ describe("test-utils — db-backed & settings contracts", () => {
         "MixedCaseManager",
       );
       assertStringIncludes(managerCookie, "mgr-mixed");
-
-      const agent = await createTestAgentSession({
-        token: "agent-mixed",
-        username: "MixedCaseAgent",
-      });
-      expect(agent.userId).toBeGreaterThan(0);
     });
 
-    test("manager and agent helpers require the setup admin key", async () => {
+    test("manager helper requires the setup admin key", async () => {
       resetDb();
       await createTestDb();
 
       await expect(createTestManagerSession()).rejects.toThrow(
-        "Test owner has no wrapped data key",
-      );
-      await expect(createTestAgentSession()).rejects.toThrow(
         "Test owner has no wrapped data key",
       );
     });

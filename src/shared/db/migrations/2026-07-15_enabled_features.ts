@@ -13,7 +13,6 @@ const ExistingFeatureUsageSchema = v.object({
   apiKeys: StoredBooleanSchema,
   attributes: StoredBooleanSchema,
   configured: v.string(),
-  logistics: StoredBooleanSchema,
   modifiers: StoredBooleanSchema,
   questions: StoredBooleanSchema,
   servicing: StoredBooleanSchema,
@@ -41,19 +40,6 @@ export default schemaMigration(
           ),
           ''
         ) AS configured,
-        (
-          EXISTS (SELECT 1 FROM logistics_agents AS logisticsAgent)
-          OR EXISTS (
-            SELECT 1
-            FROM listings AS listing
-            WHERE listing.uses_logistics = 1
-          )
-          OR EXISTS (
-            SELECT 1
-            FROM settings AS setting
-            WHERE setting.key = 'has_logistics' AND setting.value = 'true'
-          )
-        ) AS logistics,
         EXISTS (SELECT 1 FROM api_keys AS apiKey) AS apiKeys,
         EXISTS (
           SELECT 1
@@ -75,7 +61,6 @@ export default schemaMigration(
       apiKeys: configured.apiKeys || asBoolean(row.apiKeys),
       attributes: configured.attributes || asBoolean(row.attributes),
       invoices: configured.invoices,
-      logistics: configured.logistics || asBoolean(row.logistics),
       modifiers: configured.modifiers || asBoolean(row.modifiers),
       money: configured.money,
       questions: configured.questions || asBoolean(row.questions),

@@ -9,7 +9,6 @@ describe("admin roles", () => {
     expect(results).toEqual([
       ["owner", true],
       ["manager", false],
-      ["agent", false],
       ["editor", false],
       ["scanner", false],
     ]);

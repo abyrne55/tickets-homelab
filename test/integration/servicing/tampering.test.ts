@@ -14,7 +14,6 @@ import {
   createServicingHold,
   decryptFirstServicingAttendee,
   expectEmptyContactFields,
-  expectLogisticsDisabled,
   kindOf,
   SMUGGLED_CONTACT_FIELDS,
   updateServicingEvent,
@@ -70,16 +69,6 @@ describeWithEnv(
       );
       response.body?.cancel();
       expect(await kindOf(attendee.id)).toBe(ATTENDEE_KIND);
-    });
-
-    test("a service event cannot be assigned to a logistics agent via params", async () => {
-      const { id, listing } = await createServicingHold();
-      await updateServicingEvent(id, {
-        bookings: [{ listingId: listing.id, quantity: 1 }],
-        logisticsAgentIds: [7, 8],
-        name: "Boiler Service",
-      } as never);
-      await expectLogisticsDisabled(id);
     });
   },
 );

@@ -1,4 +1,4 @@
-import { assert, assertStringIncludes } from "@std/assert";
+import { assertStringIncludes } from "@std/assert";
 import { beforeAll, describe, it as test } from "@std/testing/bdd";
 import type { ListingDefaults } from "#shared/listing-defaults.ts";
 import { adminListingDefaultsPage } from "#templates/admin/listing-defaults.tsx";
@@ -8,22 +8,14 @@ import {
 } from "#test-utils/admin-page-test.ts";
 import { expectIncludesAll } from "#test-utils/assertions.ts";
 
-const render = (defaults: ListingDefaults = {}, hasLogistics = true): string =>
-  adminListingDefaultsPage(OWNER_SESSION, defaults, hasLogistics);
+const render = (defaults: ListingDefaults = {}): string =>
+  adminListingDefaultsPage(OWNER_SESSION, defaults);
 
 describe("adminListingDefaultsPage", () => {
   beforeAll(setupAdminPageTest);
 
   test("posts back to its own path", () => {
     assertStringIncludes(render(), 'action="/admin/listing-defaults"');
-  });
-
-  test("offers the logistics default when the feature is on", () => {
-    assertStringIncludes(render({}, true), "default_uses_logistics");
-  });
-
-  test("leaves the logistics default out when the feature is off", () => {
-    assert(!render({}, false).includes("default_uses_logistics"));
   });
 
   test("draws a number control for a number default", () => {
@@ -48,12 +40,12 @@ describe("adminListingDefaultsPage", () => {
   });
 
   test("offers no default, yes and no for a true/false default", () => {
-    const html = render({}, true);
+    const html = render({});
     expectIncludesAll(html, ["No default", 'value="1"', 'value="0"']);
   });
 
   test("shows an error above the form when one is given", () => {
-    const html = adminListingDefaultsPage(OWNER_SESSION, {}, true, "Nope");
+    const html = adminListingDefaultsPage(OWNER_SESSION, {}, "Nope");
     assertStringIncludes(html, "Nope");
   });
 
@@ -61,7 +53,6 @@ describe("adminListingDefaultsPage", () => {
     const html = adminListingDefaultsPage(
       OWNER_SESSION,
       {},
-      true,
       undefined,
       "Saved",
     );

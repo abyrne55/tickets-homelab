@@ -8,7 +8,6 @@ import {
   getListingWithCount,
   listingsTable,
 } from "#db/listings/records.ts";
-import { settings } from "#db/settings.ts";
 import { handleRequest } from "#routes";
 import {
   expectFlashRedirect,
@@ -26,7 +25,6 @@ import {
   setupListingAndLogin,
   testCookie,
 } from "#test-utils/session.ts";
-import { featureSetting } from "#test-utils/settings.ts";
 import { expectTemporaryError } from "#test-utils/temporary-error.ts";
 
 describeWithEnv("server listings > create", { db: true }, () => {
@@ -41,23 +39,6 @@ describeWithEnv("server listings > create", { db: true }, () => {
       multipart: true,
     });
 
-    test("redirects to picker when posting a logistics template with logistics disabled", async () => {
-      settings.setForTest(featureSetting());
-      const { response } = await adminMultipartPost("/admin/listing", {
-        max_attendees: "100",
-        max_quantity: "1",
-        name: "Hireable",
-        template_id: "hireable-item",
-        thank_you_url: "https://example.com",
-      });
-      await expectHtmlResponse(
-        response,
-        200,
-        "Add Listing",
-        "Choose a listing type",
-      );
-    });
-
     test("returns date required error for one-off-event template with no date", async () => {
       const { response } = await adminMultipartPost("/admin/listing", {
         listing_type: "standard",
@@ -67,7 +48,6 @@ describeWithEnv("server listings > create", { db: true }, () => {
         purchase_only: "",
         template_id: "one-off-event",
         thank_you_url: "https://example.com",
-        uses_logistics: "",
       });
       expect(response.status).toBe(400);
       assertStringIncludes(await response.text(), "date is required");

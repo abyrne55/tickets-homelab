@@ -64,7 +64,6 @@ describe("read-only request guard", () => {
       "/admin/attendees/99/refresh-payment",
       "/admin/backup/create",
       "/admin/debug/sentry",
-      "/admin/deliveries/mark",
       "/admin/listing/42/scan",
       "/admin/listing/42/attendee/99/checkin",
       "/admin/groups/42/scan",
@@ -170,7 +169,6 @@ describe("read-only request guard in update mode", () => {
       "/admin/support",
       "/admin/listing/42/attendee/99/checkin",
       "/admin/listing/42/scan",
-      "/admin/deliveries/mark",
       "/admin/backup/create",
     ]) {
       expect(updating(path, "POST"), path).toBe("page");

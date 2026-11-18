@@ -21,8 +21,6 @@
   "features.questions.description": "Show tools for asking people questions when they book.",
   "features.modifiers.name": "Modifiers",
   "features.modifiers.description": "Show tools for changing prices and adding optional extras.",
-  "features.logistics.name": "Logistics",
-  "features.logistics.description": "Show tools for delivery and collection work.",
   "features.api_keys.name": "API keys",
   "features.api_keys.description": "Show tools for creating keys that connect other software.",
   "features.servicing.name": "Servicing",

@@ -360,7 +360,7 @@ export const paymentRecoveryAction = (
 type AttendeeIdRouteParams = { attendeeId: number };
 
 /** A POST route scoped to one attendee, with no listing load. Shared by the
- * note and logistics POSTs. The gate comes from the route the handler
+ * note POSTs. The gate comes from the route the handler
  * serves. */
 export const attendeeFormPost =
   (pattern: string, handle: IdFormHandler) =>

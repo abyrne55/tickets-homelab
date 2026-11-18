@@ -143,7 +143,6 @@ export const listingCatalogFields = {
   ],
   unitPrice: ["unit_price", zeroColumn, "price", CATALOG_API],
   useDefaults: ["use_defaults", falseColumn, "boolean", CATALOG_API],
-  usesLogistics: ["uses_logistics", falseColumn, "boolean"],
   webhookUrl: ["webhook_url", encryptedTextColumn, "string", CATALOG_API],
 } as const;
 

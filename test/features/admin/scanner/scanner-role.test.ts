@@ -29,7 +29,6 @@ import { createTestGroup } from "#test-utils/db-helpers/groups.ts";
 import { allDays, createTestListing } from "#test-utils/db-helpers/listings.ts";
 import { createTestScannerSession } from "#test-utils/role-sessions.ts";
 import {
-  createTestAgentSession,
   createTestEditorSession,
   requestAsSession,
   testCsrfToken,
@@ -259,21 +258,20 @@ describeWithEnv("the scanner class's doors", { db: true }, () => {
     );
     const group = await createTestGroup({ name: "Private Party" });
     const editor = await createTestEditorSession();
-    const agent = await createTestAgentSession();
 
     const doorPaths = [
       "/admin/scanner",
       `/admin/listing/${listing.id}/scanner`,
       `/admin/groups/${group.id}/scanner`,
     ];
-    for (const { cookie } of [editor, agent]) {
+    for (const { cookie } of [editor]) {
       for (const path of doorPaths) {
         expect(await statusAs(path, cookie), `${path}`).toBe(403);
       }
     }
 
     // The scan gate must refuse before the write: the ticket stays outside.
-    for (const { cookie } of [editor, agent]) {
+    for (const { cookie } of [editor]) {
       const response = await scanAsScanner(
         `/admin/listing/${listing.id}/scan`,
         cookie,

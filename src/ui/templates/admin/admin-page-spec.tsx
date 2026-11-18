@@ -12,12 +12,7 @@ import type {
   ReorderColumnOptions,
   TableColumn,
 } from "#shared/tables/column.ts";
-import { AgentHeader } from "#templates/admin/agent-header.tsx";
-import {
-  AdminNav,
-  type NavActive,
-  StaffAdminNav,
-} from "#templates/admin/nav.tsx";
+import { AdminNav, type NavActive } from "#templates/admin/nav.tsx";
 import {
   renderListPartTable,
   type TableContextOptions,
@@ -123,7 +118,7 @@ export type AdminPageListPart<
    *  unavailable (the images page: file storage not configured). */
   unavailable?: Child;
   /** Wraps the table-or-empty section, when the page frames its list (the
-   *  logistics agents article). */
+   *  page frames its list). */
   frame?: (section: Child) => Child;
   /** Optional move controls, hidden with their column in read-only mode. */
   reorder?: ReorderColumnOptions<TItem> | undefined;
@@ -138,10 +133,8 @@ export type AdminPageFormPart = {
 };
 
 /** What it takes to open an admin page: the shell fields every page sets,
- *  plus at most one of `list`, `form`, or `body`. Staff pages (the run
- *  sheet, the logout page) set `staff` instead. Staff pages render through
- *  the staff nav with the bare agent header shown to agent users, and their
- *  notices stay inside the body. */
+ *  plus at most one of `list`, `form`, or `body`. Staff pages (the logout
+ *  page) set `staff` instead. Their notices stay inside the body. */
 export type AdminPageSpec<TItem = never, TContext = undefined> = {
   title: string;
   active: NavActive;
@@ -203,17 +196,11 @@ export const renderAdminPageSpec = <TItem, TContext = undefined>(
   if (spec.staff !== undefined) {
     return String(
       <Layout
-        beforeContent={
-          <StaffAdminNav active={spec.active} session={spec.session} />
-        }
+        beforeContent={<AdminNav active={spec.active} session={spec.session} />}
         family="admin"
         title={spec.title}
       >
-        {spec.session.adminLevel === "agent" ? (
-          <AgentHeader title={spec.title} />
-        ) : (
-          spec.staff.heading
-        )}
+        {spec.staff.heading}
         {spec.body}
       </Layout>,
     );

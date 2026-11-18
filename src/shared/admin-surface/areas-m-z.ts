@@ -166,7 +166,6 @@ export const AREAS_M_Z = {
       settingsHeaderImageDelete: "/admin/settings/header-image/delete",
       settingsHostSubdomain: "/admin/settings/host-subdomain",
       settingsListingColumnOrder: "/admin/settings/listing-column-order",
-      settingsLogisticsRunSheet: "/admin/settings/logistics-run-sheet",
       settingsPaymentProvider: "/admin/settings/payment-provider",
       settingsPaymentProviderRecovery:
         "/admin/settings/payment-provider-recovery",
@@ -184,18 +183,6 @@ export const AREAS_M_Z = {
       settingsTax: "/admin/settings/tax",
       settingsTerms: "/admin/settings/terms",
       settingsTheme: "/admin/settings/theme",
-    },
-  },
-  settingsLogistics: {
-    audience: OWNER_AUDIENCE,
-    view: {
-      logistics: "/admin/logistics",
-      logisticsAgent: "/admin/logistics/:id",
-    },
-    write: {
-      logisticsDelete: "/admin/logistics/:id/delete",
-      logisticsEdit: "/admin/logistics/:id/edit",
-      logisticsNew: "/admin/logistics/new",
     },
   },
   settingsStatuses: {
@@ -279,7 +266,6 @@ export const AREAS_M_Z = {
       users: "/admin/users",
     },
     write: {
-      userAgents: "/admin/users/:id/agents",
       userDelete: "/admin/users/:id/delete",
       userNew: "/admin/user/new",
     },

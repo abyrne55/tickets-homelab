@@ -67,7 +67,7 @@ export const ALLOWED_DUPLICATE_TYPE_SHAPES: {
   },
   {
     reason:
-      "The minimal {id, name} identity shape, shared coincidentally by a logistics agent, a listing row, and two unrelated select-option types.",
+      "The minimal {id, name} identity shape, shared coincidentally by a listing row and unrelated select-option types.",
     signature: "id: number; name: string",
   },
   {
@@ -79,11 +79,6 @@ export const ALLOWED_DUPLICATE_TYPE_SHAPES: {
     reason:
       "The generic {label, value} select-option shape, used independently by the date picker and the site-page picker.",
     signature: "label: string; value: string",
-  },
-  {
-    reason:
-      "A selector's props and its edit-context, two local view-model types in one logistics component that currently carry the same two fields.",
-    signature: "selected: ReadonlySet<number>; users: AgentUserOption[]",
   },
 ];
 

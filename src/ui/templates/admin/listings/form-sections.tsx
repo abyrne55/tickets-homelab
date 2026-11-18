@@ -32,27 +32,15 @@ type ListingRenderValues = FormRenderValuesFor<
 >;
 
 export const TEMPLATE_SEEDS: Record<string, ListingRenderValues> = {
-  "hireable-item": {
-    bookable_days: ALL_BOOKABLE_DAYS,
-    duration_days: "1",
-    fields: "email,phone,address",
-    listing_type: "daily",
-    maximum_days_after: "90",
-    minimum_days_before: "1",
-    purchase_only: "1",
-    uses_logistics: "1",
-  },
   "one-off-event": {
     fields: "email",
     listing_type: "standard",
     purchase_only: "",
-    uses_logistics: "",
   },
   "online-digital": {
     fields: "email",
     listing_type: "standard",
     purchase_only: "1",
-    uses_logistics: "",
   },
   "weekly-event": {
     bookable_days: ALL_BOOKABLE_DAYS,
@@ -62,7 +50,6 @@ export const TEMPLATE_SEEDS: Record<string, ListingRenderValues> = {
     maximum_days_after: "90",
     minimum_days_before: "1",
     purchase_only: "",
-    uses_logistics: "",
   },
 };
 
@@ -262,7 +249,6 @@ export const listingFormPageState = (
   const showUseDefaults = showUseDefaultsToggle(session, defaults);
   const view: ListingFormView = {
     builder: isBuilderEnabled(),
-    logistics: settings.features.logistics,
     ...(fields.nameAutofocus ? { nameAutofocus: true } : {}),
     storage: isStorageEnabled(),
     webhook: session.adminLevel !== "editor",

@@ -269,7 +269,6 @@ const inviteStatements = (ids: number[]): PruneStatement[] => {
   return [
     { field: "user_id", table: "api_keys" },
     { field: "user_id", table: "sessions" },
-    { field: "user_id", table: "user_logistics_agents" },
     { field: "id", table: "users" },
   ].map(({ field, table }) => ({
     args: ids,

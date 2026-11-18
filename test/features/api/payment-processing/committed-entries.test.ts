@@ -82,11 +82,6 @@ describeWithEnv("payment processing > committed entries", { db: true }, () => {
     expect(attendee.checked_in).toBe(0);
     expect(attendee.refunded).toBe(false);
     expect(attendee.attachment_downloads).toBe(0);
-    // The rebuilt row carries no geo or logistics split: those belong to the
-    // attendee's own stored record, not the paid booking's echo.
-    expect(attendee.lat).toBe("");
-    expect(attendee.lng).toBe("");
-    expect(attendee.split_logistics_agents).toBe(false);
     // The rest of the line comes from the committed row itself.
     expect(attendee.date).toBe(
       stored.start_at === null ? null : stored.start_at.slice(0, 10),

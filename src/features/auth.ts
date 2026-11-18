@@ -42,7 +42,6 @@ import {
   type AdminLevel,
   ALL_ADMIN_LEVELS,
   CONTENT_ADMIN_LEVELS,
-  DELIVERY_ADMIN_LEVELS,
   DOOR_ADMIN_LEVELS,
   isRecord,
   isStaffRole,
@@ -239,10 +238,8 @@ export type AuthPolicy<T extends BodyMode = BodyMode> = {
 /**
  * Whether a session's role satisfies a gate.
  * - `roles` given: membership test.
- * - single `role` given: exact match (owner-only or agent-only gates).
- * - neither: any back-office staff (owner|manager). Delivery agents are
- *   excluded by default so introducing the agent class can never widen access
- *   to an existing staff page that didn't explicitly opt them in.
+ * - single `role` given: exact match (owner-only gates).
+ * - neither: any back-office staff (owner|manager).
  */
 const sessionRoleAllowed = (
   level: AdminLevel,
@@ -256,8 +253,6 @@ const sessionRoleAllowed = (
 
 /** Auth policy presets — use with withAuth to avoid repeating policy objects */
 export const OWNER_FORM: AuthPolicy<"form"> = { body: "form", role: "owner" };
-/** Agent-only form gate (delivery run-sheet actions). */
-export const AGENT_FORM: AuthPolicy<"form"> = { body: "form", role: "agent" };
 /** Content-editing form gate: staff plus the content-only `editor`. Used for the
  * listing/group create-edit actions and the public-site content saves editors
  * are opted into. */
@@ -281,18 +276,13 @@ export const SITE_MULTIPART: AuthPolicy<"multipart"> = {
   body: "multipart",
   roles: SITE_ADMIN_LEVELS,
 };
-/** Delivery run-sheet form gate: staff + agent, but NOT editor. */
-export const DELIVERY_FORM: AuthPolicy<"form"> = {
-  body: "form",
-  roles: DELIVERY_ADMIN_LEVELS,
-};
 /** Door check-in form gate: staff + the door-only `scanner`. The ticket
  * check-in page's check-in/out toggle is the one write a scanner login makes. */
 export const DOOR_FORM: AuthPolicy<"form"> = {
   body: "form",
   roles: DOOR_ADMIN_LEVELS,
 };
-/** Form gate that admits any authenticated user, agents and editors included —
+/** Form gate that admits any authenticated user, editors and scanners included —
  * used for actions every logged-in user must reach, like logout. */
 export const ANY_USER_FORM: AuthPolicy<"form"> = {
   body: "form",
@@ -404,10 +394,6 @@ export const requireContentOr = requireRolesOr(CONTENT_ADMIN_LEVELS);
  * {@link SITE_ADMIN_LEVELS}. Managers stay excluded from site editing. */
 export const requireSiteOr = requireRolesOr(SITE_ADMIN_LEVELS);
 
-/** Require a delivery-run-sheet session (staff or agent, NOT editor) — 403
- * outside {@link DELIVERY_ADMIN_LEVELS}. */
-export const requireDeliveryOr = requireRolesOr(DELIVERY_ADMIN_LEVELS);
-
 /**
  * The gates below take the roles they admit from the route the handler serves,
  * so `admin-surface/areas.ts` is the one place a role is written down.
@@ -472,8 +458,7 @@ export const authResponsePage =
     );
 
 /** Factory for creating authenticated page handlers. The render callback is
- * given the request too, for pages that read query params (e.g. the deliveries
- * run sheet's date picker), and the flashed message values, for pages that
+ * given the request too, for pages that read query params (e.g. a date picker), and the flashed message values, for pages that
  * thread them into the template; callers that need neither simply ignore
  * them. */
 export const authPage =
@@ -510,10 +495,6 @@ export const contentPage = authPage(requireContentOr);
  * render HTML. */
 export const sitePage = authPage(requireSiteOr);
 
-/** Delivery-run-sheet GET page (staff or agent): authenticate, apply flash,
- * render HTML. */
-export const deliveryPage = authPage(requireDeliveryOr);
-
 /** Look up the current session (or null) and hand it to `handler`. The single
  * place a request's session is fetched for a branch on present/absent — callers
  * decide what each case means (fail, redirect, render). */
@@ -522,11 +503,8 @@ export const withOptionalSession = async (
   handler: ResponseHandler<[session: AuthSession | null]>,
 ): Promise<Response> => handler(await getAuthenticatedSession(request));
 
-/** Require any authenticated user (owner, manager or agent). Used for pages
- * that staff and delivery agents alike must reach, like the deliveries run
- * sheet — agents are sent here, staff opt in via the Calendar submenu. Every
- * valid session already holds one of the three roles, so authentication is the
- * only gate. */
+/** Require any authenticated user. Every valid session already holds a role,
+ * so authentication is the only gate. */
 const requireAnyUserOr = (
   request: Request,
   handler: AuthSessionHandler,

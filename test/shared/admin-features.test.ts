@@ -43,14 +43,6 @@ describe("admin features", () => {
         slug: "modifiers",
       },
       {
-        descriptionKey: "features.logistics.description",
-        inUseSql:
-          "EXISTS (SELECT 1 FROM logistics_agents AS logisticsAgent) OR EXISTS (SELECT 1 FROM listings AS listing WHERE listing.uses_logistics = 1)",
-        key: "logistics",
-        labelKey: "features.logistics.name",
-        slug: "logistics",
-      },
-      {
         descriptionKey: "features.api_keys.description",
         inUseSql: "EXISTS (SELECT 1 FROM api_keys AS apiKey)",
         key: "apiKeys",
@@ -87,7 +79,6 @@ describe("admin features", () => {
       apiKeys: false,
       attributes: false,
       invoices: false,
-      logistics: false,
       modifiers: false,
       money: false,
       questions: false,

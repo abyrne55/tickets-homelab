@@ -4,8 +4,8 @@ import { describe, it as test } from "@std/testing/bdd";
 import { parseListingDefaultsForm } from "#routes/admin/settings-listing-defaults.ts";
 import { FormParams } from "#shared/form-data.ts";
 
-const parse = (query: string, hasLogistics = true) =>
-  parseListingDefaultsForm(new FormParams(query), hasLogistics);
+const parse = (query: string) =>
+  parseListingDefaultsForm(new FormParams(query));
 
 const ok = (result: ReturnType<typeof parse>) => {
   if (result.error) throw new Error(`expected ok, got error: ${result.error}`);
@@ -18,15 +18,6 @@ describe("admin > listing defaults form parse > booleans", () => {
     expect(ok(parse("default_hidden=0")).hidden).toBe(false);
     expect("hidden" in ok(parse("default_hidden="))).toBe(false);
     expect("hidden" in ok(parse(""))).toBe(false);
-  });
-
-  test("logistics default is ignored when the feature is disabled", () => {
-    expect(
-      "usesLogistics" in ok(parse("default_uses_logistics=1", false)),
-    ).toBe(false);
-    expect(ok(parse("default_uses_logistics=1", true)).usesLogistics).toBe(
-      true,
-    );
   });
 });
 
@@ -110,7 +101,6 @@ describe("admin > listing defaults form parse > combined", () => {
     const value = ok(
       parse(
         [
-          "default_uses_logistics=1",
           "default_hidden=0",
           "default_minimum_days_before=1",
           "default_maximum_days_after=30",
@@ -127,7 +117,6 @@ describe("admin > listing defaults form parse > combined", () => {
       maximumDaysAfter: 30,
       minimumDaysBefore: 1,
       thankYouUrl: "https://example.com/thanks",
-      usesLogistics: true,
       webhookUrl: "https://example.com/hook",
     });
   });

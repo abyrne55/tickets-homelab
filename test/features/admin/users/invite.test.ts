@@ -253,55 +253,23 @@ describeWithEnv(
   },
 );
 
-describeWithEnv("choosing which vans an agent drives", { db: true }, () => {
-  const agentUserWithVan = async (username: string) => {
-    const { enableFeature } = await import("#test-utils/settings.ts");
-    const { logisticsAgents } = await import("#db/logistics-agents.ts");
-    await enableFeature("logistics");
-    const van = await logisticsAgents.table.insert({ name: "Van 1" });
-    await adminFormPost(LIST_PATH, {
-      admin_level: "agent",
-      username,
-    });
-    return { userId: (await getUserByUsername(username))!.id, van };
-  };
-
-  test("posts the choice back to the agent user's own tab", async () => {
-    const { userId } = await agentUserWithVan("vandriver");
-
-    const html = await (await adminGet(`${LIST_PATH}/${userId}/agents`)).text();
-
-    assertStringIncludes(html, `action="${LIST_PATH}/${userId}/agents"`);
-  });
-
-  test("says the choice was saved and writes it to the log", async () => {
-    const { userId, van } = await agentUserWithVan("loggeddriver");
-
-    const { response } = await adminFormPost(`${LIST_PATH}/${userId}/agents`, {
-      agent_ids: String(van.id),
-    });
-
-    await expectFlashRedirect(LIST_PATH, t("success.agents_updated"))(response);
-    assertArrayIncludes(await activityMessages(), [
-      "Agents updated for user 'loggeddriver'",
-    ]);
-  });
-});
-
 describeWithEnv("a users page shown with an error", { db: true }, () => {
   test("carries no join link, because no invite was made", async () => {
     // The error page renders the same users screen, so it must not show the
-    // invite box a successful invite fills in.
-    const { enableFeature } = await import("#test-utils/settings.ts");
-    await enableFeature("logistics");
-    await invite("notanagent", "manager");
-    const id = (await getUserByUsername("notanagent"))!.id;
+    // invite box a successful invite fills in. Deleting your own account is
+    // refused with that page.
+    const owner = (await getUserByUsername(TEST_ADMIN_USERNAME))!;
 
-    const { response } = await adminFormPost(`${LIST_PATH}/${id}/agents`, {});
+    const { response } = await adminFormPost(
+      `${LIST_PATH}/${owner.id}/delete`,
+      {
+        confirm_identifier: "owner",
+      },
+    );
 
     expect(response.status).toBe(400);
     const html = await response.text();
-    assertStringIncludes(html, t("error.not_agent_user"));
+    assertStringIncludes(html, t("error.cannot_delete_self"));
     assert(!html.includes("/join/"));
     assert(!html.includes("<code>"));
   });

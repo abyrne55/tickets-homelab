@@ -22,8 +22,6 @@ import {
 import { expectIncludesAll } from "#test-utils/assertions.ts";
 import type { AdminSession } from "#types";
 
-const AGENT_SESSION: AdminSession = { adminLevel: "agent" };
-
 const page = (props: Partial<Parameters<typeof AdminPage>[0]> = {}): string =>
   String(
     AdminPage({
@@ -129,16 +127,6 @@ describe("the page staff and agents share", () => {
     assertStringIncludes(html, "<h1>For staff</h1>");
     assert(!html.includes('<header class="agent-header">'));
     assertStringIncludes(html, "<p>Run sheet</p>");
-  });
-
-  test("gives an agent the bare agent header instead", () => {
-    const html = staffPage(AGENT_SESSION);
-
-    assert(!html.includes("<h1>For staff</h1>"));
-    expectIncludesAll(html, [
-      '<header class="agent-header"><h1>Deliveries</h1></header>',
-      "<p>Run sheet</p>",
-    ]);
   });
 });
 

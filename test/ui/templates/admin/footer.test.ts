@@ -246,13 +246,6 @@ describe("admin footer templates", () => {
       assertStringIncludes(html, '<a href="/admin/logout">Log out</a>');
     });
 
-    test("delivery agents get only logout (no log or guide they can't open)", () => {
-      const html = adminFooterHtml(null, "agent");
-      assert(!html.includes('href="/admin/log"'));
-      assert(!html.includes('href="/admin/guide"'));
-      assertStringIncludes(html, '<a href="/admin/logout">Log out</a>');
-    });
-
     test("omits the debug menu when no debug data is supplied", () => {
       const html = adminFooterHtml(null, "owner");
       assert(!html.includes("debug-menu"));

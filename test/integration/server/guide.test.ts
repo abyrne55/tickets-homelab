@@ -146,16 +146,6 @@ describeWithEnv("server (admin guide)", { db: true }, () => {
       );
     });
 
-    test("contains logistics guidance with the delivery area recipe", async () => {
-      await guide(
-        "How do I charge delivery by area?",
-        "Which delivery area?",
-        "Question answer",
-        "not from their postcode",
-        "Max times per order",
-      );
-    });
-
     test("says attendee deletion keeps the Money records", async () => {
       await guide(
         "How do I delete an attendee?",

@@ -71,7 +71,6 @@ export const testListing = (overrides: Partial<Listing> = {}): Listing => ({
   thank_you_url: "https://example.com/thanks",
   unit_price: 0,
   use_defaults: false,
-  uses_logistics: false,
   webhook_url: "",
   ...overrides,
 });
@@ -119,9 +118,7 @@ export const testAttendee = (overrides: Partial<Attendee> = {}): Attendee => ({
   end_date: null,
   id: 1,
   kind: "attendee",
-  lat: "",
   listing_id: 1,
-  lng: "",
   name: "John Doe",
   package_group_id: 0,
   payment_id: "",
@@ -132,7 +129,6 @@ export const testAttendee = (overrides: Partial<Attendee> = {}): Attendee => ({
   refunded: false,
   remaining_balance: 0,
   special_instructions: "",
-  split_logistics_agents: false,
   status_id: null,
   ticket_token: "test-token-1",
   // Hand-crafted fixture stand-in for the stored blind index — test cast.

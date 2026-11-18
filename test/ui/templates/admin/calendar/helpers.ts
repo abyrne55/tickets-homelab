@@ -1,4 +1,3 @@
-import type { AgentFilter } from "#shared/logistics-filter.ts";
 import type { AvailabilityRow } from "#templates/admin/availability-checker.tsx";
 import {
   adminCalendarPage,
@@ -8,7 +7,6 @@ import type { DatePickerDate } from "#templates/date-picker.tsx";
 import { OWNER_SESSION } from "#test-utils/admin-page-test.ts";
 import { shownLineBookings } from "#test-utils/attendees/pair-bookings.ts";
 import { testAttendee } from "#test-utils/factories.ts";
-import type { LogisticsAgent } from "#types";
 
 export const calendarAttendee = (
   overrides: Partial<CalendarAttendeeRow> = {},
@@ -36,8 +34,6 @@ export const calendarHtml = (
     today?: string;
     viewMonth?: string | null;
     availabilityRows?: AvailabilityRow[];
-    agents?: LogisticsAgent[];
-    agentFilter?: AgentFilter;
   } = {},
 ): string =>
   adminCalendarPage(
@@ -53,6 +49,4 @@ export const calendarHtml = (
     undefined,
     false,
     overrides.availabilityRows ?? [],
-    overrides.agents ?? [],
-    overrides.agentFilter ?? "all",
   );

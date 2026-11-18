@@ -10,7 +10,6 @@ import { assertJson } from "#test-utils/assertions.ts";
 import { describeWithEnv } from "#test-utils/db.ts";
 import { createTestListing } from "#test-utils/db-helpers/listings.ts";
 import {
-  createTestAgentSession,
   createTestEditorSession,
   createTestManagerSession,
   requestAsSession,
@@ -70,26 +69,6 @@ describeWithEnv("Admin API - Listings role parity", { db: true }, () => {
         }
       },
     );
-  });
-
-  test("refuses an agent with 403 and creates nothing", async () => {
-    const agent = await createTestAgentSession();
-    const response = await handleRequest(
-      requestAsSession(
-        "/api/admin/listings",
-        {
-          cookie: agent.cookie,
-          csrfToken: await signCsrfToken(),
-        },
-        {
-          body: JSON.stringify({ name: "Agent Made Listing" }),
-          headers: { "content-type": "application/json" },
-          method: "POST",
-        },
-      ),
-    );
-    expect(response.status).toBe(403);
-    expect(await getListingWithCount(0)).toBeNull();
   });
 
   test("refuses an editor deleting a listing and keeps it", async () => {

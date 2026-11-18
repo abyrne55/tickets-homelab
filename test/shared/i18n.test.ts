@@ -71,11 +71,6 @@ describe("i18n", () => {
       expect(t("modifiers.err_child_only_addon", { name: "Retreat" })).toBe(
         "'Retreat' is an opt-in add-on reachable only through a required child listing, so no booking page would offer it — scope it to the parent (or another bookable listing), or remove it as a child, before saving.",
       );
-      // The logistics "saved" flash wraps the attendee name the same way; a
-      // single-quoted `'{value}'` would have shown the literal text `{value}`.
-      expect(t("attendee_logistics.saved", { value: "Retreat" })).toBe(
-        "Logistics saved for 'Retreat'",
-      );
     });
 
     test("no locale message single-quotes a whole placeholder (ICU escaping trap)", () => {

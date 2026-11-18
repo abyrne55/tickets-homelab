@@ -8,7 +8,6 @@ import { OWNER_AUDIENCE } from "#shared/admin-surface/definitions.ts";
 import {
   ALL_ADMIN_LEVELS,
   CONTENT_ADMIN_LEVELS,
-  DELIVERY_ADMIN_LEVELS,
   STAFF_ADMIN_LEVELS,
 } from "#types";
 
@@ -52,7 +51,6 @@ export const AREAS_A_L = {
       attendeeActions: "/admin/attendees/:attendeeId/actions",
       attendeeDelete: "/admin/attendees/:attendeeId/delete",
       attendeeEdit: "/admin/attendees/:attendeeId/edit",
-      attendeeLogistics: "/admin/attendees/:attendeeId/logistics",
       attendeeMerge: "/admin/attendees/:attendeeId/merge",
       attendeeNew: "/admin/attendees/new",
       attendeePaymentReview: {
@@ -218,20 +216,6 @@ export const AREAS_A_L = {
     write: {
       debugSentry: {
         pattern: "/admin/debug/sentry",
-        readOnlyWrite: "read-only",
-      },
-    },
-  },
-  deliveries: {
-    // The run sheet is a delivery agent's only page, so it admits agents as
-    // well as staff — the same roles `deliveryPage` lets through.
-    audience: DELIVERY_ADMIN_LEVELS,
-    view: {
-      deliveries: "/admin/deliveries",
-    },
-    write: {
-      deliveriesMark: {
-        pattern: "/admin/deliveries/mark",
         readOnlyWrite: "read-only",
       },
     },

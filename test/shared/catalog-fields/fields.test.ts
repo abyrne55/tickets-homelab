@@ -51,7 +51,6 @@ describe("catalog fields", () => {
       thank_you_url: "",
       unit_price: 0,
       use_defaults: false,
-      uses_logistics: false,
       webhook_url: "",
     });
   });
@@ -255,7 +254,6 @@ describe("catalog fields", () => {
         thankYouUrl: names.string,
         unitPrice: names.price,
         useDefaults: names.boolean,
-        usesLogistics: names.boolean,
         webhookUrl: names.string,
       },
     );

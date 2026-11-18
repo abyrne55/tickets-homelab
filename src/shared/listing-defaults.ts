@@ -28,7 +28,6 @@ export const ListingDefaultsSchema = v.strictObject({
   minimumDaysBefore: v.optional(integerAtLeast(0)),
   showRemaining: v.optional(v.boolean()),
   thankYouUrl: v.optional(v.string()),
-  usesLogistics: v.optional(v.boolean()),
   webhookUrl: v.optional(v.string()),
 });
 export type ListingDefaults = v.InferOutput<typeof ListingDefaultsSchema>;
@@ -36,9 +35,6 @@ const listingDefaultsJson = defineStoredJson(ListingDefaultsSchema);
 
 /** How a default is stored, validated, and rendered. */
 export type ListingDefaultKind = "bool" | "number" | "url" | "days";
-
-/** What {@link resolveListingDefaults} knows beyond the listing being resolved. */
-export type ResolveContext = { hasLogistics: boolean };
 
 /**
  * A row the overlay can resolve: it must carry the inheritance flag, and it
@@ -60,7 +56,7 @@ export type ListingDefaultField = {
    * break, so {@link resolveListingDefaults} stays a plain fold with no
    * special-cased branches. Absent ⇒ the default always applies.
    */
-  appliesTo?: (listing: ResolvableListing, ctx: ResolveContext) => boolean;
+  appliesTo?: (listing: ResolvableListing) => boolean;
   /** The other fields {@link appliesTo} reads. A row carrying this field must
    * carry these too — {@link resolveListingDefaults} throws rather than judge
    * the gate on values that are not there. */
@@ -68,24 +64,16 @@ export type ListingDefaultField = {
 };
 
 /**
- * Two fields carry an `appliesTo` gate, so the overlay never produces a listing
+ * One field carries an `appliesTo` gate, so the overlay never produces a listing
  * the save path would reject. `duration_days` and `customisable_days` are
  * excluded outright, because both are tied to save-time invariants that
  * read-time inheritance cannot honour.
  *
- * - `uses_logistics` is inert while logistics is off, so a listing created in a
- *   logistics-off window cannot silently become one if the feature returns.
  * - `hidden` never applies to a renewal tier, which must stay hidden and
  *   purchase-only or renewal extension breaks. {@link catalogVisibleSql}
  *   mirrors this gate in SQL.
  */
 export const LISTING_DEFAULT_FIELDS: readonly ListingDefaultField[] = [
-  {
-    appliesTo: (_listing, { hasLogistics }) => hasLogistics,
-    field: "uses_logistics",
-    key: "usesLogistics",
-    kind: "bool",
-  },
   { field: "bookable_days", key: "bookableDays", kind: "days" },
   { field: "minimum_days_before", key: "minimumDaysBefore", kind: "number" },
   { field: "maximum_days_after", key: "maximumDaysAfter", kind: "number" },
@@ -115,8 +103,8 @@ export const listingDefaultLabelKey = listingDefaultTextKey("label");
 
 export const listingDefaultHintKey = listingDefaultTextKey("hint");
 
-/** A kebab-case CSS marker class per field (e.g. `uses_logistics` →
- * `listing-form--default-uses-logistics`). */
+/** A kebab-case CSS marker class per field (e.g. `show_remaining` →
+ * `listing-form--default-show-remaining`). */
 export const listingDefaultFieldClass = (field: keyof Listing): string =>
   `listing-form--default-${String(field).replace(/_/g, "-")}`;
 
@@ -151,10 +139,8 @@ export const listingDefaultFormClasses = (defaults: ListingDefaults): string =>
 export const resolveListingDefaults = <T extends ResolvableListing>(
   listing: T,
   defaults: ListingDefaults,
-  hasLogistics: boolean,
 ): T => {
   if (!listing.use_defaults) return listing;
-  const ctx: ResolveContext = { hasLogistics };
   const overlay: Partial<Record<keyof Listing, unknown>> = {};
   for (const { key, field, appliesTo, gateReads } of setListingDefaultFields(
     defaults,
@@ -166,7 +152,7 @@ export const resolveListingDefaults = <T extends ResolvableListing>(
         `Cannot resolve the ${field} default: the row selects it but not ${missing.join(", ")}, which its rule reads`,
       );
     }
-    if (!appliesTo || appliesTo(listing, ctx)) overlay[field] = defaults[key];
+    if (!appliesTo || appliesTo(listing)) overlay[field] = defaults[key];
   }
   return { ...listing, ...overlay };
 };

@@ -68,42 +68,6 @@ describe("adminListingNewPage", () => {
     assertStringIncludes(html, "listing-form--hide-type");
   });
 
-  test("does not apply listing-form--hide-type for templates with no fixed listing_type", () => {
-    const html = adminListingNewPage([], OWNER_SESSION, {
-      templateId: "hireable-item",
-    });
-    assert(!html.includes("listing-form--hide-type"));
-    assertStringIncludes(html, "listing-form--templated");
-  });
-
-  test("seeds the hireable-item contact fields with phone for delivery contact", () => {
-    const html = adminListingNewPage([], OWNER_SESSION, {
-      templateId: "hireable-item",
-    });
-    expectIncludesAll(html, [
-      'name="fields" value="email" checked',
-      'name="fields" value="phone" checked',
-      'name="fields" value="address" checked',
-    ]);
-  });
-
-  test("seeds every weekday into the hireable-item bookable_days", () => {
-    const html = adminListingNewPage([], OWNER_SESSION, {
-      templateId: "hireable-item",
-    });
-    for (const day of [
-      "Monday",
-      "Tuesday",
-      "Wednesday",
-      "Thursday",
-      "Friday",
-      "Saturday",
-      "Sunday",
-    ]) {
-      assertStringIncludes(html, `name="bookable_days" value="${day}" checked`);
-    }
-  });
-
   test("applies listing-form--no-daily class for non-daily templates", () => {
     const html = adminListingNewPage([], OWNER_SESSION, {
       templateId: "one-off-event",
@@ -113,7 +77,7 @@ describe("adminListingNewPage", () => {
 
   test("does not apply listing-form--no-daily for templates without a fixed non-daily type", () => {
     const html = adminListingNewPage([], OWNER_SESSION, {
-      templateId: "hireable-item",
+      templateId: "weekly-event",
     });
     assert(!html.includes("listing-form--no-daily"));
   });

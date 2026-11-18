@@ -35,7 +35,6 @@ import type {
   ParsedAttendeeForm,
 } from "#routes/admin/attendee-form-model.ts";
 import { attendeeBalanceNotice } from "#routes/admin/attendee-form-validation.ts";
-import { buildAttendeeLogisticsData } from "#routes/admin/attendee-logistics.ts";
 import { withDecryptedAttendee } from "#routes/admin/attendees-route-helpers.ts";
 import { computeWarnings } from "#routes/admin/booking-warnings.ts";
 import { refundWorkRemains } from "#routes/admin/refunds/candidates.ts";
@@ -401,15 +400,13 @@ const loadTemplateParts = async (
   const summary = attendee
     ? getAttendeeOrderSummary(attendee.id)
     : Promise.resolve(null);
-  const [statuses, orderSummary, warnings, logistics, pathNames] =
-    await Promise.all([
-      attendeeStatuses.getAll(),
-      summary,
-      computeWarnings(parsed, attendee?.id),
-      buildAttendeeLogisticsData(parsed.lines, attendee),
-      loadPathNames(parsed.lines),
-    ]);
-  return { logistics, orderSummary, pathNames, statuses, warnings };
+  const [statuses, orderSummary, warnings, pathNames] = await Promise.all([
+    attendeeStatuses.getAll(),
+    summary,
+    computeWarnings(parsed, attendee?.id),
+    loadPathNames(parsed.lines),
+  ]);
+  return { orderSummary, pathNames, statuses, warnings };
 };
 
 type TemplateParts = Awaited<ReturnType<typeof loadTemplateParts>>;
@@ -427,7 +424,7 @@ const assembleTemplateData = (
   parts: TemplateParts,
 ): AttendeeFormTemplateData => {
   const { attendee, mode, opts, parsed } = input;
-  const { logistics, orderSummary, pathNames, statuses, warnings } = parts;
+  const { orderSummary, pathNames, statuses, warnings } = parts;
   return {
     atBooking: opts.atBooking ?? [],
     attendee,
@@ -449,7 +446,6 @@ const assembleTemplateData = (
     ),
     hasMixedTimings: opts.hasMixedTimings ?? false,
     lineWarnings: warnings.byListing,
-    logistics,
     mode,
     packageNamesById: pathNames.packageNamesById,
     parentNamesById: pathNames.parentNamesById,
@@ -465,7 +461,7 @@ const assembleTemplateData = (
 };
 
 /** Build the form template data: everything the editable form itself renders
- * (statuses, balance notice, warnings, logistics). It includes nothing the
+ * (statuses, balance notice, warnings). It includes nothing the
  * other tabs own (log, ledger, notes, contact history). The question texts
  * render as markdown, so their img#N references need the id→uid-URL table.
  * Bounded by the ids the texts reference. */

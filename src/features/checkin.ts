@@ -4,23 +4,16 @@
  * POST: Sets check-in status based on explicit check_in form field (PRG pattern)
  */
 
-import { type TicketMove, ticketCount } from "#booking/ticket-moves.ts";
+import {
+  type TicketMove,
+  type TicketPair,
+  ticketCount,
+} from "#booking/ticket-moves.ts";
 import { moveTicketsAndLog, ticketsWord } from "#db/attendees/door-moves.ts";
 import { getPairBookings } from "#db/attendees/ticket-lines.ts";
-import type { DeliveryBookingRef } from "#db/logistics.ts";
-import {
-  getAgentRunSheetBookings,
-  runSheetBookingKey,
-} from "#db/logistics-run-sheet.ts";
 import { settings } from "#db/settings.ts";
-import { userAgents } from "#db/user-agents.ts";
 import { filter, map, requiredMapValue } from "#fp";
-import {
-  type AuthSession,
-  DOOR_FORM,
-  getAuthenticatedSession,
-  withAuth,
-} from "#routes/auth.ts";
+import { DOOR_FORM, getAuthenticatedSession, withAuth } from "#routes/auth.ts";
 import { authFailure } from "#routes/auth-failures.ts";
 import {
   htmlResponse,
@@ -38,11 +31,8 @@ import {
 } from "#routes/tickets/token-utils.ts";
 import { getSearchParam } from "#routes/url.ts";
 import { getEffectiveDomain } from "#shared/config.ts";
-import { addDays } from "#shared/dates.ts";
 import type { ResponseHandler } from "#shared/response-steps.ts";
 import { requireRequestPrivateKey } from "#shared/session-private-key.ts";
-import { todayInTz } from "#shared/timezone.ts";
-import { parseDateStringOrThrow } from "#shared/validation/date-string.ts";
 import { checkinAdminPage, checkinPublicPage } from "#templates/checkin.tsx";
 import { type Attendee, isDoorRole, isStaffRole } from "#types";
 
@@ -62,50 +52,10 @@ const decryptEntries = async (entries: TokenEntry[]): Promise<TokenEntry[]> => {
   return decryptTokenEntries(entries, privateKey);
 };
 
-const agentRunSheetDates = (): string[] => {
-  const today = parseDateStringOrThrow(
-    todayInTz(settings.timezone),
-    "the configured timezone's clock",
-  );
-  return [today, addDays(today, 1)];
-};
-
-const entryBookingRef = (entry: TokenEntry): DeliveryBookingRef => ({
+const entryBookingRef = (entry: TokenEntry): TicketPair => ({
   attendeeId: entry.attendee.id,
   listingId: entry.listing.id,
 });
-
-const entryRunSheetKey = (entry: TokenEntry): string =>
-  runSheetBookingKey({
-    attendeeId: entry.attendee.id,
-    date: entry.attendee.date,
-    listingId: entry.listing.id,
-    packageGroupId: entry.attendee.package_group_id,
-    parentListingId: entry.parentListingId,
-  });
-
-const entriesVisibleToSession = async (
-  session: AuthSession,
-  entries: TokenEntry[],
-): Promise<TokenEntry[]> => {
-  if (isDoorRole(session.adminLevel)) return entries;
-  if (session.adminLevel !== "agent") return [];
-
-  const agentIds = await userAgents.getIds(session.userId);
-  // The agent sees the booking rows whose drop-off or collection leg is on
-  // their run sheet for today or tomorrow — matched at row granularity, so a
-  // multi-row attendee's row outside the run sheet never leaks alongside an
-  // assigned sibling row.
-  const allowedBookings = await getAgentRunSheetBookings(
-    agentIds,
-    agentRunSheetDates(),
-    entries.map(entryBookingRef),
-  );
-  const allowedKeys = new Set(allowedBookings.map(runSheetBookingKey));
-  return filter((entry: TokenEntry) =>
-    allowedKeys.has(entryRunSheetKey(entry)),
-  )(entries);
-};
 
 /** The facts a door-only login may read from a ticket row: who, which listing
  * and day, how many places, and the check-in state. Contact details stay
@@ -169,20 +119,18 @@ const handleCheckinGet: TokenMethodHandler = (request, tokens) =>
     const session = await getAuthenticatedSession(request);
     if (!session) return publicPageResponse(checkinPublicPage);
 
-    const visibleEntries = await entriesVisibleToSession(session, entries);
     // Door roles may toggle check-in; only staff may follow the attendee and
     // listing links into the admin, which a scanner login cannot open. A
-    // door-only login (a scanner) reads door facts only; an agent's own
-    // delivery rows still show contact details, which the run sheet needs.
+    // door-only login (a scanner) reads door facts only.
     // The toggle form renders only when the POST has something it can change
     // — a token whose every row is refunded or no-check-in offers no action.
     const door = isDoorRole(session.adminLevel);
     const canCheckIn =
       door &&
       entries.some((e) => !e.attendee.refunded && !e.listing.purchase_only);
-    return visibleEntries.length === 0
+    return !door
       ? authFailure("html", "forbidden")
-      : renderAdminCheckin(request, tokens, visibleEntries, {
+      : renderAdminCheckin(request, tokens, entries, {
           canCheckIn,
           doorOnly: door && !isStaffRole(session.adminLevel),
           linkAdminPages: isStaffRole(session.adminLevel),

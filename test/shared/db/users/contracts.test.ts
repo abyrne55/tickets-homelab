@@ -240,8 +240,8 @@ describeWithEnv("db > users contracts", { db: true }, () => {
 
   test("deletes the user and every owned access record", async () => {
     const user = await createInvitedUser(
-      "deleted-agent",
-      "agent",
+      "deleted-manager",
+      "manager",
       "delete-invite",
       "2099-01-01T00:00:00.000Z",
     );
@@ -249,7 +249,6 @@ describeWithEnv("db > users contracts", { db: true }, () => {
     expect(await getUserOwnedRowSources(user.id)).toEqual([
       "api_keys",
       "sessions",
-      "user_logistics_agents",
       "users",
     ]);
 

@@ -47,7 +47,7 @@ describeWithEnv(
       expect(await storedFeatures()).toEqual(SEEDED_FEATURE_RECORDS);
     });
 
-    test("moves old feature settings and removes their rows", async () => {
+    test("moves old feature settings and removes their rows, dropping the retired logistics flag", async () => {
       await execute(
         "INSERT OR REPLACE INTO settings (key, value) VALUES ('has_logistics', 'true')",
       );
@@ -58,9 +58,9 @@ describeWithEnv(
 
       expect(await storedFeatures()).toEqual({
         ...DEFAULT_ENABLED_FEATURES,
-        logistics: true,
         site: true,
       });
+      expect(await storedFeatures()).not.toHaveProperty("logistics");
       expect(
         await queryOne(
           "SELECT value FROM settings WHERE key = 'has_logistics'",
@@ -71,18 +71,6 @@ describeWithEnv(
           "SELECT value FROM settings WHERE key = 'show_public_site'",
         ),
       ).toBeNull();
-    });
-
-    test("counts a logistics listing and stays idempotent", async () => {
-      await execute(
-        "INSERT INTO listings (created, max_attendees, uses_logistics) VALUES ('2026-07-15', 10, 1)",
-      );
-      await runMigration();
-      await runMigration();
-      expect(await storedFeatures()).toEqual({
-        ...DEFAULT_ENABLED_FEATURES,
-        logistics: true,
-      });
     });
 
     test("keeps Site enabled when the migration runs again", async () => {

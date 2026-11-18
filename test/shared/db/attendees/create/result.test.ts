@@ -35,8 +35,6 @@ describeWithEnv("db > attendees > create result", { db: true }, () => {
       email: "defaults@example.com",
       end_date: null,
       kind: "attendee",
-      lat: "",
-      lng: "",
       name: "Defaults",
       package_group_id: 0,
       payment_id: "",
@@ -47,7 +45,6 @@ describeWithEnv("db > attendees > create result", { db: true }, () => {
       refunded: false,
       remaining_balance: 0,
       special_instructions: "",
-      split_logistics_agents: false,
       status_id: null,
       ticket_token: "default-result-token",
     });

@@ -1,6 +1,5 @@
 /**
- * The address textarea the admin attendee forms share (Edit tab and Logistics
- * tab).
+ * The address textarea the admin attendee forms share.
  */
 
 import { t } from "#i18n";

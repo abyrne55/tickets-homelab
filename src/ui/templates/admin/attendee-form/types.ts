@@ -2,7 +2,6 @@ import type { AttendeeStatus } from "#db/attendee-statuses.ts";
 import type { SelectedQuestionAnswers } from "#db/question-types.ts";
 import type { ParsedAttendeeForm } from "#routes/admin/attendee-form-model.ts";
 import type { BalanceNotice } from "#routes/admin/attendee-form-validation.ts";
-import type { AttendeeLogisticsData } from "#routes/admin/attendee-logistics.ts";
 import type { TaxSavePreview } from "#shared/tax/save.ts";
 import type { Attendee } from "#types";
 
@@ -16,7 +15,6 @@ export interface AttendeeFormTemplateData extends SelectedQuestionAnswers {
   hasDailyListings: boolean;
   hasMixedTimings: boolean;
   lineWarnings: Map<number, string[]>;
-  logistics?: AttendeeLogisticsData | undefined;
   mode: "create" | "edit";
   packageNamesById: Map<number, string>;
   parentNamesById: Map<number, string>;

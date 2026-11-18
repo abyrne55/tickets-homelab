@@ -28,7 +28,6 @@ import {
   createTestServicingEvent,
   decryptFirstServicingAttendee,
   expectEmptyContactFields,
-  expectLogisticsDisabled,
   expectRejects,
   kindOf,
   SMUGGLED_CONTACT_FIELDS,
@@ -62,13 +61,12 @@ describeWithEnv("servicing §3 — creation", { db: true }, () => {
 
   test("a crafted servicing POST cannot smuggle customer-only fields", async () => {
     const listing = await createTestListing({ maxAttendees: 10 });
-    const event = await createTestServicingEvent({
+    await createTestServicingEvent({
       ...SMUGGLED_CONTACT_FIELDS,
       bookings: [{ listingId: listing.id, quantity: 1 }],
       name: "Boiler Service",
     } as never);
     expectEmptyContactFields(await decryptFirstServicingAttendee(listing.id));
-    await expectLogisticsDisabled(event.id);
   });
 
   test("a servicing event's stored token index is the HMAC of its ticket token", async () => {

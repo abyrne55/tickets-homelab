@@ -133,5 +133,11 @@ export const ENTRIES_RECENT: MigrationRegistryEntry[] = [
     "2026-11-10_group_single_ticket_per_order",
     () => import("./2026-11-10_group_single_ticket_per_order.ts"),
   ),
+  // The address lookup and logistics are gone: their tables, columns,
+  // triggers, settings and agent users with them.
+  entry(
+    "2026-11-18_remove_address_lookup_and_logistics",
+    () => import("./2026-11-18_remove_address_lookup_and_logistics.ts"),
+  ),
 ];
 /* jscpd:ignore-end */

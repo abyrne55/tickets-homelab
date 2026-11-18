@@ -13,11 +13,7 @@ import { listingCatalogFields } from "#shared/catalog-fields/fields.ts";
 import { formatCurrency, getDecimalPlaces } from "#shared/currency.ts";
 import { VALID_DAY_NAMES } from "#shared/day-names.ts";
 import { formatBytes } from "#shared/format-units.ts";
-import {
-  defineFieldsForm,
-  defineForm,
-  type FormValues,
-} from "#shared/forms/definition.ts";
+import { defineFieldsForm, type FormValues } from "#shared/forms/definition.ts";
 import {
   type Field,
   type InputField,
@@ -49,7 +45,6 @@ import {
 
 export interface ListingFormView {
   builder?: boolean;
-  logistics?: boolean;
   nameAutofocus?: boolean;
   storage?: boolean;
   webhook?: boolean;
@@ -326,17 +321,6 @@ const listingFields = (view: ListingFormView = {}) =>
       }),
       section: "options",
     },
-    {
-      hint: "Handled by an agent at the customer's location. Attendees gain start and end agent selectors (e.g. delivery/collection, set-up/teardown, or pickup/drop-off).",
-      label: "Needs logistics",
-      name: "uses_logistics",
-      options: [
-        { label: "Assign agents to this listing's bookings", value: "1" },
-      ],
-      section: "options",
-      type: "checkbox-group",
-      visible: view.logistics === true,
-    },
     listingNumberField("months_per_unit", "advanced", {
       max: 24,
       min: 0,
@@ -380,19 +364,3 @@ export type ListingFormValues = FormValues<ReturnType<typeof getListingForm>>;
 export type ListingEditFormValues = FormValues<
   ReturnType<typeof getListingEditForm>
 >;
-
-/** Logistics agent form field definitions
- */
-const logisticsAgentFields = [
-  {
-    label: t("logistics.agent_name"),
-    name: "name",
-    placeholder: "Van 1",
-    required: true,
-    type: "text",
-  },
-] as const satisfies readonly Field[];
-
-export const logisticsAgentForm = defineForm({
-  fields: logisticsAgentFields,
-});

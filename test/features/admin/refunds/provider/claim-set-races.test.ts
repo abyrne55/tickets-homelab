@@ -42,8 +42,6 @@ const resave = (attendee: Attendee, name = attendee.name): Promise<void> =>
   updateAttendeePII(attendee.id, {
     address: attendee.address,
     email: attendee.email,
-    lat: attendee.lat,
-    lng: attendee.lng,
     name,
     payment_id: attendee.payment_id,
     phone: attendee.phone,

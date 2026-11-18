@@ -72,18 +72,7 @@ export const ADMIN_SECTIONS: readonly AdminSectionDef[] = [
     id: "calendar",
     labelKey: "nav.calendar",
     landing: "calendar",
-    // The run sheet is an agent's only page, so agents sign in to it instead
-    // of the dashboard.
-    landingFor: { agent: "deliveries" },
-    nav: [
-      { id: "calendar", kind: "landing", labelKey: "nav.calendar" },
-      {
-        id: "deliveries",
-        kind: "link",
-        labelKey: "nav.deliveries",
-        visible: featureVisible("logistics"),
-      },
-    ],
+    nav: [{ id: "calendar", kind: "landing", labelKey: "nav.calendar" }],
   },
   {
     id: "servicing",
@@ -209,12 +198,6 @@ export const ADMIN_SECTIONS: readonly AdminSectionDef[] = [
         kind: "link",
         labelKey: "terms.questions",
         visible: featureVisible("questions"),
-      },
-      {
-        id: "logistics",
-        kind: "link",
-        labelKey: "nav.logistics",
-        visible: featureVisible("logistics"),
       },
       { id: "emails", kind: "link", labelKey: "nav.emails" },
       { id: "holidays", kind: "link", labelKey: "terms.holidays" },

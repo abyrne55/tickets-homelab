@@ -34,8 +34,6 @@ describe("servicing §0 — buildPiiBlob with name only produces an all-empty-bu
   const input = {
     address: "",
     email: "",
-    lat: "",
-    lng: "",
     name: "Boiler Service",
     payment_id: "",
     phone: "",
@@ -82,8 +80,6 @@ describe("servicing §0 — buildPiiBlob with name only produces an all-empty-bu
 const samplePii = {
   address: "5 Ledger Lane",
   email: "aggie@pii.test",
-  lat: "",
-  lng: "",
   name: "Aggie Attendee",
   payment_id: "pay_pii",
   phone: "07700900123",
@@ -107,16 +103,10 @@ describe("PII blob encoding", () => {
     expect(PII_BLOB_VERSION).toBe(1);
   });
 
-  test("buildPiiBlob keeps a pinned lat/lng but omits an empty one", () => {
-    const pinned = JSON.parse(
-      buildPiiBlob({ ...samplePii, lat: "1.5", lng: "2.5" }),
-    );
-    expect(pinned.la).toBe("1.5");
-    expect(pinned.lo).toBe("2.5");
-
-    const unpinned = JSON.parse(buildPiiBlob(samplePii));
-    expect("la" in unpinned).toBe(false);
-    expect("lo" in unpinned).toBe(false);
+  test("buildPiiBlob writes no retired map-pin keys", () => {
+    const blob = JSON.parse(buildPiiBlob(samplePii));
+    expect("la" in blob).toBe(false);
+    expect("lo" in blob).toBe(false);
   });
 
   test("parsePiiBlob defaults a missing version", () => {
@@ -150,33 +140,21 @@ const roundTrip = async (pii: typeof samplePii, paidListing: boolean) =>
 
 describeWithEnv("PII crypto", { db: true }, () => {
   test("decryptPiiBlob round-trips fields and exposes payment id only when paid", async () => {
-    const pinned = { ...samplePii, lat: "1.5", lng: "2.5" };
-
-    const paid = await roundTrip(pinned, true);
+    const paid = await roundTrip(samplePii, true);
     expect(paid.name).toBe("Aggie Attendee");
-    expect(paid.lat).toBe("1.5");
-    expect(paid.lng).toBe("2.5");
     expect(paid.payment_id).toBe("pay_pii");
 
-    const unpaid = await roundTrip(pinned, false);
+    const unpaid = await roundTrip(samplePii, false);
     expect(unpaid.payment_id).toBe("");
   });
 
-  test("decryptPiiBlob returns empty coordinates for an unpinned blob", async () => {
-    const pii = await roundTrip(samplePii, true);
-    expect(pii.lat).toBe("");
-    expect(pii.lng).toBe("");
-  });
-
-  test("encryptAttendeeFields encrypts blank coordinates that decrypt back to empty", async () => {
+  test("encryptAttendeeFields round-trips the payment id and leaves the session id unset", async () => {
     const result = await encryptAttendeeFields(encInput);
     const pii = await decryptPiiBlob(
       result.encryptedPiiBlob,
       await getTestPrivateKey(),
       true,
     );
-    expect(pii.lat).toBe("");
-    expect(pii.lng).toBe("");
     expect(pii.payment_id).toBe("pay_pii");
     expect(result.piiPaymentSessionId).toBeNull();
     expect(

@@ -138,10 +138,7 @@ describe("documented admin CRUD endpoints", () => {
     expect(attendee).toMatchObject({
       attachment_downloads: 0,
       id: 7,
-      lat: "",
-      lng: "",
       package_group_id: 0,
-      split_logistics_agents: false,
       status_id: 3,
       ticket_token: "tok_9f3c7a1b", // notsecret
     });

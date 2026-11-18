@@ -4,10 +4,6 @@ import { attendeesApi } from "#db/attendees/api.ts";
 import { hasPaidLine } from "#db/attendees/queries.ts";
 import { hasAssignedBuiltSite } from "#db/built-sites/claims.ts";
 import { syncAttendeeContactTokens } from "#db/contact-tokens.ts";
-import {
-  type LogisticsAssignment,
-  setLogisticsAssignments,
-} from "#db/logistics.ts";
 import type { QuestionWithAnswers } from "#db/question-types.ts";
 import {
   type AttendeeAnswerSet,
@@ -69,24 +65,8 @@ const savedRedirect = (
     formId: ATTENDEE_FORM_ID,
   });
 
-/** The submitted logistics assignment plan, or null when logistics is off. */
-type LogisticsPlan = {
-  split: boolean;
-  perListing: Map<number, LogisticsAssignment>;
-} | null;
-
-/** Persist the logistics assignment plan against a saved attendee. */
-const applyLogisticsPlan = (
-  attendeeId: number,
-  plan: LogisticsPlan,
-): Promise<void> =>
-  plan
-    ? setLogisticsAssignments(attendeeId, plan.split, plan.perListing)
-    : Promise.resolve();
-
 export const applyCreate = async (
   parsed: ParsedAttendeeForm,
-  logisticsPlan: LogisticsPlan,
   listingsById: Map<number, ListingWithCount>,
 ): Promise<SaveOutcome> => {
   const input = toCreateInput(parsed);
@@ -121,7 +101,6 @@ export const applyCreate = async (
   const { attendees } = createResult;
   const firstListingId = input.bookings[0]!.listingId;
   const newId = attendees[0]!.id;
-  await applyLogisticsPlan(newId, logisticsPlan);
   // An online booking tells the listings' webhooks, and so does a manual add.
   // Webhooks only: the buyer email waits for the "Re-send notification"
   // action, which sends the webhooks again too. The activity line below
@@ -153,7 +132,6 @@ export const applyEdit = async (
   attendee: Attendee,
   questions: QuestionWithAnswers[],
   answers: AttendeeAnswerSet,
-  logisticsPlan: LogisticsPlan,
   existingByKey: Map<string, ListingAttendeeRow>,
   taxPlan: TaxSavePlan,
 ): Promise<SaveOutcome> => {
@@ -176,16 +154,9 @@ export const applyEdit = async (
     return { ok: false, saveError: t("attendee_form.error_paid_no_qty") };
   }
 
-  // The Edit tab has no location inputs, so the Logistics pin survives only
-  // while the address it was pinned for stays the same. An edit that changes
-  // the address clears the now-stale pin (a fresh one is set on the
-  // Logistics tab).
-  const addressUnchanged = parsed.address === attendee.address;
   const pii = {
     address: parsed.address,
     email: parsed.email,
-    lat: addressUnchanged ? attendee.lat : "",
-    lng: addressUnchanged ? attendee.lng : "",
     name: parsed.name,
     payment_id: attendee.payment_id,
     phone: parsed.phone,
@@ -240,8 +211,6 @@ export const applyEdit = async (
       ticketToken: attendee.ticket_token,
     });
   }
-
-  await applyLogisticsPlan(attendeeId, logisticsPlan);
 
   if (questions.length > 0) {
     await saveAttendeeAnswers(new Map([[attendeeId, answers]]));

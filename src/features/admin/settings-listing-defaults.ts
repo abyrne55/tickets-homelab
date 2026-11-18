@@ -115,17 +115,12 @@ const parseField = (field: ListingDefaultField, form: FormParams): FieldParse =>
   KIND_PARSERS[field.kind](field, form);
 
 /**
- * Parse the form into a {@link ListingDefaults}. The logistics default is only
- * accepted when the feature is enabled. Returns the first validation error
- * encountered, or the assembled defaults.
+ * Parse the form into a {@link ListingDefaults}. Returns the first validation
+ * error encountered, or the assembled defaults.
  */
-export const parseListingDefaultsForm = (
-  form: FormParams,
-  hasLogistics: boolean,
-): ParseResult => {
+export const parseListingDefaultsForm = (form: FormParams): ParseResult => {
   const value: Record<string, unknown> = {};
   for (const field of LISTING_DEFAULT_FIELDS) {
-    if (field.field === "uses_logistics" && !hasLogistics) continue;
     const { value: parsed, error } = parseField(field, form);
     if (error) return { error, value: value as ListingDefaults };
     if (parsed !== undefined) value[field.key] = parsed;
@@ -139,7 +134,6 @@ export const handleListingDefaultsGet: TypedRouteHandler<"GET /admin/listing-def
     adminListingDefaultsPage(
       session,
       settings.listingDefaults,
-      settings.features.logistics,
       flash.error,
       flash.success,
     ),
@@ -147,8 +141,7 @@ export const handleListingDefaultsGet: TypedRouteHandler<"GET /admin/listing-def
 
 /** POST /admin/listing-defaults — owner only. */
 export const handleListingDefaultsPost = settingsHandler<ParseResult>({
-  extract: (form) =>
-    parseListingDefaultsForm(form, settings.features.logistics),
+  extract: (form) => parseListingDefaultsForm(form),
   log: () => t("listing_defaults.saved"),
   redirectTo: "/admin/listing-defaults",
   // validate() rejects a non-null error before save() runs, so save always has

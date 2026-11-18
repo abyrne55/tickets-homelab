@@ -1,4 +1,3 @@
-import { fieldById } from "#fp";
 import { defineAdminRoutes } from "#routes/admin/route-tables.ts";
 import type { TypedRouteHandler } from "#routes/router.ts";
 
@@ -10,9 +9,6 @@ import { unwrapKeyWithToken, wrapKeyWithToken } from "#crypto/keys.ts";
 import type { WrappedKey } from "#crypto/sealed.ts";
 import { generateSecureToken } from "#crypto/utils.ts";
 import { logActivity } from "#db/activity-log.ts";
-import { logisticsAgents } from "#db/logistics-agents.ts";
-import { settings } from "#db/settings.ts";
-import { userAgents } from "#db/user-agents.ts";
 import {
   createInvitedUser,
   decryptAdminLevel,
@@ -40,24 +36,20 @@ import {
   formPolicyFor,
   pageGuardFor,
 } from "#routes/auth.ts";
-import { entityFormById, idRouteFor } from "#routes/entity.ts";
+import { idRouteFor } from "#routes/entity.ts";
 import { adminRedirect, htmlResponse, redirect } from "#routes/response.ts";
 import { getSearchParam } from "#routes/url.ts";
 import { adminDestinationAt, adminPattern } from "#shared/admin-surface.ts";
 import { createAuthedFormRoute } from "#shared/app-forms.ts";
 import { getEffectiveDomain } from "#shared/config.ts";
 import { getFlash } from "#shared/flash-context.ts";
-import type { FormParams } from "#shared/form-data.ts";
 import { DAY_MS, nowMs } from "#shared/now.ts";
-import { selectedIdsFromForm } from "#shared/selected-ids.ts";
 import { flashProps } from "#templates/admin/admin-page-spec.tsx";
 import {
   adminUserDeletePage,
   adminUserNewPage,
   adminUsersPage,
-  agentNamesDisplay,
   type DisplayUser,
-  UserAgentsPanel,
   type UsersPageOpts,
   userStatus,
 } from "#templates/admin/users.tsx";
@@ -65,18 +57,14 @@ import {
   getInviteUserForm,
   type InviteUserFormValues,
 } from "#templates/fields/admin.ts";
-import type { LogisticsAgent, User } from "#types";
+import type { User } from "#types";
 import { confirmDeleteWithLog } from "./logged-actions.ts";
 
 /** Invite link expiry: 7 days */
 const INVITE_EXPIRY_MS = 7 * DAY_MS;
 
-/** The logistics agents an owner can assign — only when logistics is enabled. */
-const loadAssignableAgents = (): Promise<LogisticsAgent[]> =>
-  settings.features.logistics ? logisticsAgents.getAll() : Promise.resolve([]);
-
 /** Wrap the shared DATA_KEY under a new invitee's single-use invite code for the
- * keyed roles (owner/manager/agent). Returns an error Response when the inviting
+ * keyed roles (owner/manager). Returns an error Response when the inviting
  * owner's session somehow lacks its own key, so editors (which skip this) never
  * pay that check. */
 const wrapInviteDataKey = async (
@@ -93,55 +81,18 @@ const wrapInviteDataKey = async (
   return wrapKeyWithToken(dataKey, inviteCode);
 };
 
-/** Map of assignable logistics-agent id → name, for resolving agent users'
- * assignments to display names. */
-const loadAgentNameById = async (): Promise<Map<number, string>> => {
-  const agents = await loadAssignableAgents();
-  return fieldById("name")(agents);
-};
-
-/** Resolve the chosen `agent_ids` from a form down to the ids that are real
- * logistics agents, dropping anything unknown. */
-const parseAssignedAgentIds = (
-  form: FormParams,
-  agents: LogisticsAgent[],
-): number[] => selectedIdsFromForm(form, "agent_ids", agents);
-
-/** Persist a user's logistics-agent links from a submitted form. Only ids
- * that are real assignable agents survive. */
-const saveAgentSelection = async (
-  userId: number,
-  form: FormParams,
-): Promise<void> => {
-  const agentIds = parseAssignedAgentIds(form, await loadAssignableAgents());
-  await userAgents.setIds(userId, agentIds);
-};
-
-/**
- * Decrypt user data for display. When an agent-name lookup is supplied, agent
- * users also get the names of their assigned logistics agents.
- */
-const toDisplayUser = async (
-  user: User,
-  agentNameById?: Map<number, string>,
-): Promise<DisplayUser> => {
+/** Decrypt user data for display. */
+const toDisplayUser = async (user: User): Promise<DisplayUser> => {
   const adminLevel = await decryptAdminLevel(user);
-  const agentNames =
-    adminLevel === "agent" && agentNameById
-      ? (await userAgents.getIds(user.id))
-          .map((id) => agentNameById.get(id))
-          .filter((name): name is string => name !== undefined)
-      : undefined;
   // A user is activated once they have set a password (buildUserInsert stores a
   // literal empty string until then). This is the universal activation signal.
-  // It holds for keyed roles (owner/manager/agent, who also gain a data key)
+  // It holds for keyed roles (owner/manager, who also gain a data key)
   // and for the keyless editor (who never gets one). Status does not hinge on
   // the data key the editor deliberately lacks.
   const activated = user.password_hash !== "";
   return {
     activated,
     adminLevel,
-    agentNames,
     id: user.id,
     // Only un-activated invites can expire.
     inviteExpired: activated ? false : await isInviteExpired(user),
@@ -156,13 +107,8 @@ const renderUsersPage = async (
   session: AuthSession,
   opts: UsersPageOpts,
 ): Promise<string> => {
-  const [users, agentNameById] = await Promise.all([
-    getAllUsers(),
-    loadAgentNameById(),
-  ]);
-  const displayUsers = await Promise.all(
-    users.map((user) => toDisplayUser(user, agentNameById)),
-  );
+  const users = await getAllUsers();
+  const displayUsers = await Promise.all(users.map(toDisplayUser));
   return adminUsersPage(displayUsers, session, opts);
 };
 
@@ -206,10 +152,10 @@ const handleUsersGet: TypedRouteHandler<"GET /admin/users"> = (request) =>
     ),
   );
 
-/** Load and decrypt one user, including assignment names for agent users. */
+/** Load and decrypt one user. */
 const loadDisplayUser = async (id: number): Promise<DisplayUser | null> => {
   const user = await getUserById(id);
-  return user ? toDisplayUser(user, await loadAgentNameById()) : null;
+  return user ? toDisplayUser(user) : null;
 };
 
 const userOverviewTab: TabDef<DisplayUser> = overviewTab([
@@ -217,14 +163,6 @@ const userOverviewTab: TabDef<DisplayUser> = overviewTab([
     Promise.resolve([
       { labelKey: "users.col.role", value: user.adminLevel },
       { labelKey: "common.status", value: userStatus(user) },
-      ...(user.adminLevel === "agent"
-        ? [
-            {
-              labelKey: "users.agents.legend",
-              value: agentNamesDisplay(user),
-            },
-          ]
-        : []),
     ]),
   ),
 ]);
@@ -234,39 +172,13 @@ const userActionsTab: TabDef<DisplayUser> = {
   visible: (user, session) => user.id !== session.userId,
 };
 
-/** The owner-only user management and agent-assignment page. */
+/** The owner-only user management page. */
 const userPage: EntityPage<DisplayUser> = defineEntityPage({
   destination: "user",
   load: (id) => loadDisplayUser(id),
   navActive: { section: adminPattern("users") },
   recordId: (user) => user.id,
-  tabs: [
-    userOverviewTab,
-    {
-      intent: "write-form",
-      labelKey: "users.agents.edit_link",
-      sections: [
-        {
-          kind: "custom",
-          load: async (user) => {
-            const [agents, selectedIds] = await Promise.all([
-              loadAssignableAgents(),
-              userAgents.getIds(user.id),
-            ]);
-            return UserAgentsPanel({
-              action: userPage.path(user.id, "agents"),
-              agents,
-              selectedIds: new Set(selectedIds),
-              user,
-            });
-          },
-        },
-      ],
-      slug: "agents",
-      visible: (user) => user.adminLevel === "agent",
-    },
-    userActionsTab,
-  ],
+  tabs: [userOverviewTab, userActionsTab],
   titleOf: (user) => user.username,
 });
 
@@ -283,9 +195,7 @@ const handleUserManageGet: TypedRouteHandler<"GET /admin/users/:id"> =
  */
 const handleUserNewGet = authPage(
   pageGuardFor(adminDestinationAt("/admin/user/new")),
-)(async (session) =>
-  adminUserNewPage(session, await loadAssignableAgents(), getFlash().error),
-);
+)((session) => adminUserNewPage(session, getFlash().error));
 
 /** Handle POST /admin/users - create invited user */
 const handleUsersPost = createAuthedFormRoute<InviteUserFormValues>({
@@ -294,7 +204,7 @@ const handleUsersPost = createAuthedFormRoute<InviteUserFormValues>({
     validate: (form) => getInviteUserForm().validate(form),
   },
   onInvalid: ({ error }) => adminRedirect("userNew", {}, error, false),
-  onValid: async ({ values, form, session }) => {
+  onValid: async ({ values, session }) => {
     const { username, admin_level: adminLevel } = values;
 
     if (await isUsernameTaken(username)) {
@@ -317,19 +227,13 @@ const handleUsersPost = createAuthedFormRoute<InviteUserFormValues>({
         : await wrapInviteDataKey(session, inviteCode);
     if (inviteWrappedDataKey instanceof Response) return inviteWrappedDataKey;
 
-    const user = await createInvitedUser(
+    await createInvitedUser(
       username,
       adminLevel,
       codeHash,
       expiry,
       inviteWrappedDataKey,
     );
-
-    // Agent users carry the logistics agents they drive. The call is ignored
-    // for staff.
-    if (adminLevel === "agent") {
-      await saveAgentSelection(user.id, form);
-    }
 
     const inviteLink = `https://${getEffectiveDomain()}/join/${inviteCode}`;
     await logActivity(`User '${username}' invited as ${adminLevel}`);
@@ -340,25 +244,6 @@ const handleUsersPost = createAuthedFormRoute<InviteUserFormValues>({
     );
   },
 });
-
-/** Handle GET /admin/users/:id/agents - edit an agent user's logistics agents */
-const handleUserAgentsGet: TypedRouteHandler<"GET /admin/users/:id/agents"> =
-  renderUserTab("agents");
-
-/** Handle POST /admin/users/:id/agents - save an agent user's logistics agents */
-const handleUserAgentsPost: TypedRouteHandler<"POST /admin/users/:id/agents"> =
-  entityFormById("/admin/users/:id/agents", async (id, session, form) => {
-    const user = await loadDisplayUser(id);
-    if (!user) {
-      return usersErrorResponse(session, t("error.user_not_found"), 404);
-    }
-    if (user.adminLevel !== "agent") {
-      return usersErrorResponse(session, t("error.not_agent_user"), 400);
-    }
-    await saveAgentSelection(user.id, form);
-    await logActivity(`Agents updated for user '${user.username}'`);
-    return adminRedirect("users", {}, t("success.agents_updated"), true);
-  });
 
 /** Confirmed-delete handlers for users */
 const userDelete = createConfirmedHandlers<DisplayUser>({
@@ -393,9 +278,7 @@ export const adminHandlers = defineAdminRoutes({
   "GET /admin/users/:id": handleUserManageGet,
   "GET /admin/users/:id/:tab": (request, { id, tab }) =>
     userPage.renderTab(request, id, tab),
-  "GET /admin/users/:id/agents": handleUserAgentsGet,
   "GET /admin/users/:id/delete": idRouteFor(userDelete.get),
   "POST /admin/users": handleUsersPost,
-  "POST /admin/users/:id/agents": handleUserAgentsPost,
   "POST /admin/users/:id/delete": idRouteFor(userDelete.post),
 });

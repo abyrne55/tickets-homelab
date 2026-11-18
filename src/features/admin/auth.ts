@@ -52,8 +52,8 @@ const randomDelay = (): Promise<void> =>
     : new Promise((resolve) => setTimeout(resolve, 100 + Math.random() * 100));
 
 /** Create a session and redirect to the page login is returning to, or to the
- * user's landing page when there is no safe target. Delivery agents go to
- * their run sheet, editors to listings, staff to the dashboard. When the
+ * user's landing page when there is no safe target. Editors go to
+ * listings, staff to the dashboard. When the
  * user holds a DATA_KEY, the session wraps it under the session token, so the
  * private key can be derived later. The keyless editor gets a null wrap and so
  * can never derive the private key. */

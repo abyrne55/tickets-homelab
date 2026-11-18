@@ -69,8 +69,6 @@ const EXPECTED_CONFIG_KEY_NAMES = lines(`
   LATEST_SCRIPT_VERSION_NAME
   LISTING_COLUMN_ORDER
   LISTING_DEFAULTS
-  LOGISTICS_RUN_SHEET_BODY
-  LOGISTICS_RUN_SHEET_HEADING
   ORDER_ENABLED
   ORDER_INTRO_TEXT
   ORPHAN_PURGE_RETENTION
@@ -138,8 +136,6 @@ const EXPECTED_SETTING_ROWS = [
   ],
   ["LISTING_COLUMN_ORDER", "plaintext", "listingColumnOrder"],
   ["ATTENDEE_COLUMN_ORDER", "plaintext", "attendeeColumnOrder"],
-  ["LOGISTICS_RUN_SHEET_BODY", "plaintext", "logisticsRunSheetBody"],
-  ["LOGISTICS_RUN_SHEET_HEADING", "plaintext", "logisticsRunSheetHeading"],
   ["INVOICE_BODY_TEMPLATE", "plaintext", "invoiceBodyTemplate"],
   ["SMS_GATEWAY_BASE_URL", "plaintext", "smsGatewayBaseUrl"],
   ["BUSINESS_EMAIL", "encrypted", "businessEmail"],

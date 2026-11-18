@@ -68,7 +68,7 @@ export type ResourceLabels = {
 
 /** The list-page facet of a resource: its table columns, empty-state markup,
  *  and optional intro/action-row content. Omitted entirely by resources whose
- *  list page is hand-rolled (logistics), which never call `listPage`. */
+ *  list page is hand-rolled, which never call `listPage`. */
 export type ResourceList<TEntity> = {
   columns: readonly TableColumn<TEntity>[];
   /** Optional move controls, hidden with their column in read-only mode. */
@@ -90,7 +90,7 @@ export type AdminResourcePagesConfig<TEntity extends { id: number }> = {
   basePath: string;
   labels: ResourceLabels;
   /** The list-page facet (columns + empty state + optional intro/actions).
-   *  Omitted by resources whose list page is hand-rolled (logistics). */
+   *  Omitted by resources whose list page is hand-rolled. */
   list?: ResourceList<TEntity>;
   /** Render the create form fields. */
   renderFields: (entity: TEntity | undefined) => Child;

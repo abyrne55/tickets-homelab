@@ -68,7 +68,6 @@ export const buildCreateListingForm = (
     date_time: dateParts.time,
     description: input.description ?? "",
     duration_days: optionalNumber(input.durationDays),
-    ...checked("uses_logistics", input.usesLogistics),
     ...dayPriceFormFields(input.dayPrices),
     fields: repeated(input.fields ?? "email"),
     ...checked("hidden", input.hidden),
@@ -123,10 +122,6 @@ const buildUpdateBoolFields = (
   ...checked(
     "use_defaults",
     pickField(updates.useDefaults, existing.use_defaults),
-  ),
-  ...checked(
-    "uses_logistics",
-    pickField(updates.usesLogistics, existing.uses_logistics),
   ),
 });
 
