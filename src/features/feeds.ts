@@ -30,7 +30,11 @@ import {
   loadSortedListings,
 } from "#shared/sort-listings.ts";
 import { escapeXml } from "#shared/xml.ts";
-import type { Attendee, NewsPostSummary } from "#types";
+import {
+  type Attendee,
+  type NewsPostSummary,
+  STAFF_ADMIN_LEVELS,
+} from "#types";
 
 /** Escape text for ICS (RFC 5545): backslash-escape special characters */
 export const escapeIcs = replacing(
@@ -283,7 +287,7 @@ const buildCalendarFeed = async (request: Request): Promise<Response> => {
   }
   return withAuth(
     request,
-    { allowApiKey: true, body: "json", roles: ["owner", "manager"] },
+    { allowApiKey: true, body: "json", roles: STAFF_ADMIN_LEVELS },
     async () => {
       const privateKey = await getRequestPrivateKey();
       const listings = await getAllListings();

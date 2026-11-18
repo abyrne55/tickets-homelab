@@ -125,14 +125,14 @@ const handleCheckinGet: TokenMethodHandler = (request, tokens) =>
     // The toggle form renders only when the POST has something it can change
     // — a token whose every row is refunded or no-check-in offers no action.
     const door = isDoorRole(session.adminLevel);
-    const canCheckIn =
-      door &&
-      entries.some((e) => !e.attendee.refunded && !e.listing.purchase_only);
+    const canCheckIn = entries.some(
+      (e) => !e.attendee.refunded && !e.listing.purchase_only,
+    );
     return !door
       ? authFailure("html", "forbidden")
       : renderAdminCheckin(request, tokens, entries, {
           canCheckIn,
-          doorOnly: door && !isStaffRole(session.adminLevel),
+          doorOnly: !isStaffRole(session.adminLevel),
           linkAdminPages: isStaffRole(session.adminLevel),
         });
   });

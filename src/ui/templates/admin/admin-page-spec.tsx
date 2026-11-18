@@ -117,9 +117,6 @@ export type AdminPageListPart<
   /** Replaces the table-or-empty section when set: the listing's source is
    *  unavailable (the images page: file storage not configured). */
   unavailable?: Child;
-  /** Wraps the table-or-empty section, when the page frames its list (the
-   *  page frames its list). */
-  frame?: (section: Child) => Child;
   /** Optional move controls, hidden with their column in read-only mode. */
   reorder?: ReorderColumnOptions<TItem> | undefined;
   guideFooter?: Child;
@@ -173,7 +170,7 @@ const listBody = <TItem, TContext>(
   return (
     <>
       {list.intro}
-      {list.frame !== undefined ? list.frame(section) : section}
+      {section}
       {list.guideFooter}
     </>
   );
