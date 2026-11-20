@@ -56,7 +56,7 @@
     "npm:fflate@~0.8.3": "0.8.3",
     "npm:happy-dom@20.0.11": "20.0.11",
     "npm:happy-dom@^21.0.4": "21.0.4",
-    "npm:intl-messageformat@^12.1.5": "12.1.5",
+    "npm:intl-messageformat@^12.2.0": "12.2.0",
     "npm:jsqr@^1.4.0": "1.4.0",
     "npm:liquidjs@^10.30.1": "10.30.1",
     "npm:mailgun.js@*": "13.2.0",
@@ -1141,8 +1141,8 @@
     "immutable@5.1.10": {
       "integrity": "sha512-Uu72qZXUtm+n98uML3Xr6pVFHl4xnmeCuAsrm0VqFlQim/Ib6NrPSJLpx6CrZ/G6DnoGaCUgtx8gY+o+ovxnCw=="
     },
-    "intl-messageformat@12.1.5": {
-      "integrity": "sha512-quhcDFAxy4wr/GrgWgmMjuegoedNUIxGNLORfXgDgdjuv8cBM88ClLTLXmfYC1roMSR1PPc55yUEkpJ5m67W2g==",
+    "intl-messageformat@12.2.0": {
+      "integrity": "sha512-zFzW80iYSSJm4V185g3ItJQ96lBZ2RDO8O8qmRiPAAVKYXJeHfDQN2ITdtLlV+CjSi9Lo7zVW9xGt9CPCx7J6A==",
       "dependencies": [
         "@formatjs/fast-memoize",
         "@formatjs/icu-messageformat-parser"
@@ -1549,7 +1549,7 @@
       "npm:fast-check@^4.10.2",
       "npm:fflate@~0.8.3",
       "npm:happy-dom@^21.0.4",
-      "npm:intl-messageformat@^12.1.5",
+      "npm:intl-messageformat@^12.2.0",
       "npm:jsqr@^1.4.0",
       "npm:liquidjs@^10.30.1",
       "npm:marked@^18.2.1",
