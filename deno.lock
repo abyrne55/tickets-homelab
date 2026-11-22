@@ -71,7 +71,7 @@
     "npm:prosemirror-keymap@^1.2.3": "1.2.3",
     "npm:prosemirror-markdown@^1.13.9": "1.13.9",
     "npm:prosemirror-model@^1.25.13": "1.25.13",
-    "npm:prosemirror-schema-list@^1.6.0": "1.6.0",
+    "npm:prosemirror-schema-list@^1.6.1": "1.6.1",
     "npm:prosemirror-state@^1.4.3": "1.4.4",
     "npm:prosemirror-state@^1.4.4": "1.4.4",
     "npm:prosemirror-view@^1.42.9": "1.42.9",
@@ -1350,8 +1350,8 @@
         "orderedmap"
       ]
     },
-    "prosemirror-schema-list@1.6.0": {
-      "integrity": "sha512-G1srDtan+VqWn+qpmWFj/6j0YsZ5zMU+ZIlGVIW41a5JF2jAI3jzfMRWmSABmEH2Qoq1PmAG/o2mucMMdLOsLg==",
+    "prosemirror-schema-list@1.6.1": {
+      "integrity": "sha512-QiL/QjgCWr+3Mhukm48E5d3XCC8lVEIanixGkXbWKUyxCUGy4ntVffFapmMwQ4vxhZw+8i7117W2N6FSyqyWfA==",
       "dependencies": [
         "prosemirror-model",
         "prosemirror-state",
@@ -1560,7 +1560,7 @@
       "npm:prosemirror-keymap@^1.2.3",
       "npm:prosemirror-markdown@^1.13.9",
       "npm:prosemirror-model@^1.25.13",
-      "npm:prosemirror-schema-list@^1.6.0",
+      "npm:prosemirror-schema-list@^1.6.1",
       "npm:prosemirror-state@^1.4.4",
       "npm:prosemirror-view@^1.42.9",
       "npm:sass@^1.108.2",
