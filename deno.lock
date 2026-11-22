@@ -66,7 +66,7 @@
     "npm:postmark@*": "4.0.7",
     "npm:promise-limit@2.7.0": "2.7.0",
     "npm:prosemirror-commands@^1.7.2": "1.7.2",
-    "npm:prosemirror-history@^1.5.1": "1.5.1",
+    "npm:prosemirror-history@^1.5.2": "1.5.2",
     "npm:prosemirror-inputrules@^1.5.1": "1.5.1",
     "npm:prosemirror-keymap@^1.2.3": "1.2.3",
     "npm:prosemirror-markdown@^1.13.9": "1.13.9",
@@ -1313,8 +1313,8 @@
         "prosemirror-transform"
       ]
     },
-    "prosemirror-history@1.5.1": {
-      "integrity": "sha512-onlwnqKvgtFg6srZOmDOAhlAy1FIHQpOExORybX0S+DvJepE5tPALrB9iGet/2sqqqrelSnB10OoiOJqAvu2DA==",
+    "prosemirror-history@1.5.2": {
+      "integrity": "sha512-/VCI9OUPT69PzzoKmLJ6xLTkMCXmpt/M6/tOlctR5DjSAinniYgjkw6Ao/Obmq/f5mG5csTQi6a9AWhwFVLSNA==",
       "dependencies": [
         "prosemirror-state",
         "prosemirror-transform",
@@ -1555,7 +1555,7 @@
       "npm:marked@^18.2.1",
       "npm:promise-limit@2.7.0",
       "npm:prosemirror-commands@^1.7.2",
-      "npm:prosemirror-history@^1.5.1",
+      "npm:prosemirror-history@^1.5.2",
       "npm:prosemirror-inputrules@^1.5.1",
       "npm:prosemirror-keymap@^1.2.3",
       "npm:prosemirror-markdown@^1.13.9",

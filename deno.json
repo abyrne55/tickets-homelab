@@ -69,7 +69,7 @@
     "marked": "npm:marked@^18.2.1",
     "promise-limit": "npm:promise-limit@2.7.0",
     "prosemirror-commands": "npm:prosemirror-commands@^1.7.2",
-    "prosemirror-history": "npm:prosemirror-history@^1.5.1",
+    "prosemirror-history": "npm:prosemirror-history@^1.5.2",
     "prosemirror-inputrules": "npm:prosemirror-inputrules@^1.5.1",
     "prosemirror-keymap": "npm:prosemirror-keymap@^1.2.3",
     "prosemirror-markdown": "npm:prosemirror-markdown@^1.13.9",
