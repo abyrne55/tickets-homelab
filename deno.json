@@ -72,7 +72,7 @@
     "prosemirror-history": "npm:prosemirror-history@^1.5.2",
     "prosemirror-inputrules": "npm:prosemirror-inputrules@^1.5.1",
     "prosemirror-keymap": "npm:prosemirror-keymap@^1.2.3",
-    "prosemirror-markdown": "npm:prosemirror-markdown@^1.13.9",
+    "prosemirror-markdown": "npm:prosemirror-markdown@^1.14.0",
     "prosemirror-model": "npm:prosemirror-model@^1.25.13",
     "prosemirror-schema-list": "npm:prosemirror-schema-list@^1.6.1",
     "prosemirror-state": "npm:prosemirror-state@^1.4.4",
