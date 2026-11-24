@@ -46,6 +46,13 @@ describe("db > settings accessors getters", () => {
   });
 });
 
+describe("db > settings accessors readOnly", () => {
+  test("gives a readOnly accessor no updater", () => {
+    expect(Object.hasOwn(stringAccessors.getters, "publicKey")).toBe(true);
+    expect(Object.hasOwn(stringAccessors.updaters, "publicKey")).toBe(false);
+  });
+});
+
 describeWithEnv(
   "db > settings accessors updaters",
   { db: true, encryptionKey: true },
