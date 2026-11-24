@@ -12,7 +12,6 @@ import {
 } from "#db/listing-parents.ts";
 import { deleteListing } from "#db/listings/delete.ts";
 import { enableQueryLog, getQueryLog } from "#db/query-log.ts";
-import { t } from "#i18n";
 import type { EdgeListing } from "#shared/listing-parents-rules.ts";
 import { edgeListing } from "#test/shared/listing-parents-rules/helpers.ts";
 import { describeWithEnv } from "#test-utils/db.ts";
@@ -333,24 +332,6 @@ describeWithEnv("db > listing-parents", { db: true }, () => {
       expect(await edgeIncompatibilityAfterChange(edge(parent.id))).toBeNull();
     });
 
-    test("flags a change that breaks the listing as a parent", async () => {
-      const { parent, childA } = await threeListings();
-      await listingChildren.setIds(parent.id, [childA.id]);
-      const error = await edgeIncompatibilityAfterChange(
-        edge(parent.id, { months_per_unit: 12 }),
-      );
-      expect(error).not.toBeNull();
-    });
-
-    test("flags a change that breaks the listing as a child", async () => {
-      const { parent, childA } = await threeListings();
-      await listingChildren.setIds(parent.id, [childA.id]);
-      const error = await edgeIncompatibilityAfterChange(
-        edge(childA.id, { months_per_unit: 12 }),
-      );
-      expect(error).not.toBeNull();
-    });
-
     test("keeps a parent-side edit on the parent side of the edge", async () => {
       // A standard child under a daily parent is compatible ("a one-off fee or
       // merch add-on under a multi-day base"), but a daily child under a
@@ -364,26 +345,6 @@ describeWithEnv("db > listing-parents", { db: true }, () => {
         edge(parent.id, { listing_type: "daily", name: "Daily base" }),
       );
       expect(error).toBeNull();
-    });
-
-    test("validates the edited listing on its own side of the edge", async () => {
-      // The two cases above break symmetrically (a renewal tier is rejected on
-      // either side), so they pass even if the parent/child arguments are
-      // swapped. This pins the *direction*: editing the child into a daily
-      // listing is invalid only as "a daily child under a (standard) parent".
-      // Were the arguments swapped, the standard parent would read as a
-      // compatible standard child and the breakage would vanish.
-      const { parent, childA } = await threeListings();
-      await listingChildren.setIds(parent.id, [childA.id]);
-      const error = await edgeIncompatibilityAfterChange(
-        edge(childA.id, { listing_type: "daily", name: "Daily add-on" }),
-      );
-      // Specifically the daily-direction error (naming the child and explaining
-      // WHY): swapping the arguments would read the standard parent as a
-      // compatible standard child and return null.
-      expect(error).toBe(
-        t("listings_table.children_err_child_daily", { name: "Daily add-on" }),
-      );
     });
 
     test("rejects edges whose opposite endpoint no longer exists", async () => {

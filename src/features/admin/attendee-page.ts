@@ -7,16 +7,12 @@
 
 import { attendeeStatuses } from "#db/attendee-statuses.ts";
 import { getAttendeeBalanceState } from "#db/attendees/balance.ts";
-import { hasAssignedBuiltSite } from "#db/built-sites/claims.ts";
 import { getAttendeeInvoices, type InvoiceSummary } from "#db/invoices.ts";
 import {
   loadPaymentMoveSnapshot,
   type PaymentMoveSnapshot,
 } from "#db/payment-admit-move.ts";
-import {
-  hasAnyPaymentReference,
-  type RefundPaymentReferenceSet,
-} from "#db/payment-references.ts";
+import type { RefundPaymentReferenceSet } from "#db/payment-references.ts";
 import { settings } from "#db/settings.ts";
 import { t } from "#i18n";
 import type { PaymentWorkStatus } from "#payment/admit-move.ts";
@@ -55,7 +51,6 @@ import { refundReferenceProblemMessage } from "#routes/admin/refunds/readiness-p
 import type { AdminDestinationId } from "#shared/admin-surface/ids.ts";
 import { adminPattern, adminRecordPath } from "#shared/admin-surface.ts";
 import { getEffectiveDomain } from "#shared/config.ts";
-import { isIncompletePayment } from "#shared/incomplete-payment.ts";
 import { withReturnUrl } from "#shared/return-url-field.tsx";
 import {
   AttendeeAnswersTable,
@@ -283,27 +278,8 @@ const overview: TabDef<AttendeePageEntity> = overviewTab([
       renderListings,
       [],
     );
-    // One site serves every plan row this buyer holds, so the cue asks
-    // whether the buyer has a site at all — not per row. A sale that never
-    // completed cannot owe a site, so an incomplete payment shows no cue.
-    const bookings = attendeeBookingsFromLines(parsed.lines);
-    // A refunded plan's claim still holds the buyer's site, so its row
-    // joins the lookup instead of hiding behind its refund.
-    const planListingIds = bookings
-      .filter((booking) => booking.assignBuiltSite)
-      .map((booking) => booking.listingId);
     return AttendeeBookingsTable({
-      bookings,
-      planSaleMissingSite:
-        planListingIds.length > 0 &&
-        // The same test the failed-payments delete uses.
-        !isIncompletePayment(
-          attendee,
-          // A site plan is a paid listing by definition.
-          true,
-          await hasAnyPaymentReference(attendee),
-        ) &&
-        !(await hasAssignedBuiltSite(attendee.id, planListingIds)),
+      bookings: attendeeBookingsFromLines(parsed.lines),
     });
   }),
   customSection(async ({ attendee, existing }) =>

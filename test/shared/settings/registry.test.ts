@@ -34,7 +34,6 @@ const EXPECTED_CONFIG_KEY_NAMES = lines(`
   AUTO_PURGE_ORPHANS
   BOOKING_FEE
   BULK_EMAIL_DRAFT
-  BUNNY_SUBDOMAIN
   BUSINESS_EMAIL
   CALENDAR_FEEDS_ENABLED
   CALENDAR_FEEDS_GROUP_BY
@@ -43,9 +42,6 @@ const EXPECTED_CONFIG_KEY_NAMES = lines(`
   COUNTRY
   CURRENT_TASK
   CUSTOM_CSS
-  CUSTOM_CSS_BUNNY_FONTS
-  CUSTOM_DOMAIN
-  CUSTOM_DOMAIN_LAST_VALIDATED
   EMAIL_API_KEY
   EMAIL_FROM_ADDRESS
   EMAIL_PROVIDER
@@ -65,8 +61,6 @@ const EXPECTED_CONFIG_KEY_NAMES = lines(`
   HOMEPAGE_TEXT
   INVOICE_BODY_TEMPLATE
   LAST_ACTIVE_PAYMENT_PROVIDER
-  LATEST_SCRIPT_VERSION
-  LATEST_SCRIPT_VERSION_NAME
   LISTING_COLUMN_ORDER
   LISTING_DEFAULTS
   ORDER_ENABLED
@@ -92,8 +86,6 @@ const EXPECTED_CONFIG_KEY_NAMES = lines(`
   STRIPE_WEBHOOK_SECRET
   SUMUP_API_KEY
   SUMUP_MERCHANT_CODE
-  SUPERUSER_CHOICE
-  SUPPORT_FORM_LAST_SUBMITTED
   TAX
   TERMS_AND_CONDITIONS
   THEME
@@ -110,30 +102,13 @@ const EXPECTED_SETTING_ROWS = [
   ["ENABLED_FEATURES", "plaintext", null],
   ["TAX", "plaintext", null],
   ["CUSTOM_CSS", "plaintext", "customCss"],
-  ["CUSTOM_DOMAIN", "plaintext", "customDomain"],
-  [
-    "CUSTOM_DOMAIN_LAST_VALIDATED",
-    "plaintext",
-    "customDomainLastValidated",
-    "readOnly",
-  ],
-  ["BUNNY_SUBDOMAIN", "plaintext", "bunnySubdomain"],
   ["CURRENT_TASK", "plaintext", "currentTask"],
   ["PUBLIC_KEY", "plaintext", "publicKey", "readOnly"],
   ["WRAPPED_PRIVATE_KEY", "plaintext", "wrappedPrivateKey", "readOnly"],
   ["SQUARE_LOCATION_ID", "plaintext", null],
   ["STRIPE_WEBHOOK_ENDPOINT_ID", "plaintext", null],
   ["SUMUP_MERCHANT_CODE", "plaintext", null],
-  ["LATEST_SCRIPT_VERSION", "plaintext", "latestScriptVersion"],
-  ["LATEST_SCRIPT_VERSION_NAME", "plaintext", "latestScriptVersionName"],
   ["LAST_ACTIVE_PAYMENT_PROVIDER", "plaintext", null],
-  ["SUPERUSER_CHOICE", "plaintext", null],
-  [
-    "SUPPORT_FORM_LAST_SUBMITTED",
-    "plaintext",
-    "supportFormLastSubmitted",
-    "readOnly",
-  ],
   ["LISTING_COLUMN_ORDER", "plaintext", "listingColumnOrder"],
   ["ATTENDEE_COLUMN_ORDER", "plaintext", "attendeeColumnOrder"],
   ["INVOICE_BODY_TEMPLATE", "plaintext", "invoiceBodyTemplate"],

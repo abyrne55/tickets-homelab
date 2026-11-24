@@ -173,25 +173,6 @@ describe("ticketPage (single listing)", () => {
     assert(!html.includes('<option value="4">4</option>'));
   });
 
-  test("a built-site plan sells months, not tickets", async () => {
-    const planListing = testListingWithCount({
-      assign_built_site: true,
-      attendee_count: 0,
-      initial_site_months: 3,
-      max_quantity: 5,
-    });
-    const html = await renderTicket(planListing);
-    expectIncludesAll(html, [
-      "Number of months",
-      // Each option states the months it buys: three units of a three-month
-      // plan are nine months.
-      '<option value="1">3 months</option>',
-      '<option value="3">9 months</option>',
-    ]);
-    assert(!html.includes("Number of Tickets"));
-    assert(!html.includes('">3</option>'));
-  });
-
   test("hides quantity selector when max_quantity is 1", async () => {
     const html = await renderTicket(listing); // max_quantity is 1
     assert(!html.includes("Number of Tickets"));

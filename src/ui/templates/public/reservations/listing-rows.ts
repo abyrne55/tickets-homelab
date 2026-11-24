@@ -31,9 +31,7 @@ import type { PageListingRow } from "./availability.ts";
 import { renderChildBlock } from "./child-block.ts";
 import { childLimitedMax } from "./child-pricing.ts";
 import { renderPayMoreInput } from "./controls.ts";
-import { monthsQuantity, termNoteFor } from "./plan-term.ts";
 import {
-  monthLabelsForListing,
   quantityOptions,
   restoredPackageQuantity,
   restoredQuantity,
@@ -59,14 +57,11 @@ export const remainingLabel = (info: TicketListing): string =>
 
 /** The fixed per-ticket price shown on a bookable card ("Free" at zero).
  * Empty where the price is not a single fixed figure: pay-what-you-want
- * listings show their own input, and customisable-days and renewal pages price
- * by a chosen span or count. */
-export const fixedPriceLabel = (
-  info: TicketListing,
-  renewal?: boolean,
-): string => {
+ * listings show their own input, and customisable-days pages price by a
+ * chosen span. */
+export const fixedPriceLabel = (info: TicketListing): string => {
   const { listing } = info;
-  if (listing.can_pay_more || listing.customisable_days || renewal) return "";
+  if (listing.can_pay_more || listing.customisable_days) return "";
   const text =
     listing.unit_price > 0
       ? formatCurrency(listing.unit_price)
@@ -87,8 +82,8 @@ const quantityId = (listingId: number): string =>
 
 /** The right-hand stub of a card: the fixed price, or a pay-what-you-like cue
  * for a listing that carries its own price input. Empty for neither. */
-const stubPrice = (info: TicketListing, renewal?: boolean): string =>
-  fixedPriceLabel(info, renewal) ||
+const stubPrice = (info: TicketListing): string =>
+  fixedPriceLabel(info) ||
   (info.listing.can_pay_more
     ? `<span class="ticket-price ticket-price-open">${t("public.ticket.pay_what_you_like")}</span>`
     : "");
@@ -115,21 +110,18 @@ const singleTicketRadio = (
 /** Render quantity selector for an listing row.
  *
  * An optional per-listing `prefill` pre-selects the quantity (clamped to the
- * available range) — used by multi-listing scenarios such as the order cart.
- * A renewal page prices its counts by the listings' months per unit. */
+ * available range) — used by multi-listing scenarios such as the order cart. */
 const listingControls = (
   info: TicketListing,
   node: BookingNode,
   hideQuantity: boolean,
   prefill: TicketPrefill | undefined,
   childCtx: ChildRenderCtx | undefined,
-  renewal?: boolean | undefined,
   singleTicket?: boolean | undefined,
 ): {
   childBlock: string;
   priceHtml: string;
   quantityHtml: string;
-  termNote: string;
 } => {
   const { listing } = info;
   // A one-ticket-per-order group never offers more than one ticket.
@@ -146,7 +138,6 @@ const listingControls = (
           priceFieldName,
           prefill?.customPriceMinor,
           true,
-          renewal,
         )
       : "",
     quantityHtml: hideQuantity
@@ -165,10 +156,9 @@ const listingControls = (
             maxPurchasable,
             listing.min_quantity,
           ),
-          monthLabelsForListing(listing, renewal),
+          undefined,
           listing.min_quantity,
         )}</select>`),
-    termNote: termNoteFor(listing, hideQuantity, renewal),
   };
 };
 
@@ -181,7 +171,6 @@ type RenderListingControls = (
   prefill?: TicketPrefill,
   childCtx?: ChildRenderCtx,
   attributes?: AttributeWithOptions[],
-  renewal?: boolean,
   singleTicket?: boolean,
 ) => string;
 const renderListingRow: RenderListingControls = (
@@ -191,7 +180,6 @@ const renderListingRow: RenderListingControls = (
   prefill,
   childCtx,
   attributes,
-  renewal,
   singleTicket,
 ): string => {
   const { listing, isClosed } = info;
@@ -225,13 +213,12 @@ const renderListingRow: RenderListingControls = (
     `;
   }
 
-  const { childBlock, priceHtml, quantityHtml, termNote } = listingControls(
+  const { childBlock, priceHtml, quantityHtml } = listingControls(
     info,
     node,
     hideQuantity,
     prefill,
     childCtx,
-    renewal,
     singleTicket,
   );
 
@@ -253,10 +240,9 @@ const renderListingRow: RenderListingControls = (
         ${renderListingDescription(listing.description)}
         ${attributesHtml}
         ${priceHtml}
-        ${termNote}
         ${childBlock}
       </div>
-      <div class="ticket-stub">${stubPrice(info, renewal)}</div>
+      <div class="ticket-stub">${stubPrice(info)}</div>
     </div>
   `;
   }
@@ -274,10 +260,9 @@ const renderListingRow: RenderListingControls = (
         ${renderListingDescription(listing.description)}
         ${attributesHtml}
         ${priceHtml}
-        ${termNote}
         ${childBlock}
       </div>
-      <div class="ticket-stub">${stubPrice(info, renewal)}${quantityHtml}</div>
+      <div class="ticket-stub">${stubPrice(info)}${quantityHtml}</div>
     </div>
   `;
 };
@@ -388,20 +373,12 @@ const renderSingleListingControls: RenderListingControls = (
   prefill,
   childCtx,
   _attributes,
-  renewal,
 ): string => {
-  const controls = listingControls(
-    info,
-    node,
-    hideQuantity,
-    prefill,
-    childCtx,
-    renewal,
-  );
+  const controls = listingControls(info, node, hideQuantity, prefill, childCtx);
   const labelledQuantity = hideQuantity
     ? controls.quantityHtml
-    : `<label>${monthsQuantity(info.listing, renewal)}${controls.quantityHtml}</label>`;
-  return `${labelledQuantity}${remainingLabel(info)}${controls.priceHtml}${controls.termNote}${controls.childBlock}`;
+    : `<label>${t("public.ticket.number_of_tickets")}${controls.quantityHtml}</label>`;
+  return `${labelledQuantity}${remainingLabel(info)}${controls.priceHtml}${controls.childBlock}`;
 };
 
 /** Render the per-listing rows (with their child blocks). A single-listing page
@@ -416,7 +393,6 @@ const buildListingRows = (
   prefill: BookingPrefill | undefined,
   childCtxFor: (info: TicketListing) => ChildRenderCtx | undefined,
   attributesByListing: ListingAttributesById = new Map(),
-  renewal?: boolean,
   singleTicket?: boolean,
 ): string =>
   isSingleListing
@@ -427,7 +403,6 @@ const buildListingRows = (
         prefill?.listings.get(rows[0]!.info.listing.id),
         childCtxFor(rows[0]!.info),
         undefined,
-        renewal,
       )
     : wrapSingleTicketRows(
         joinRenderedRows(rows, ({ info, node }) =>
@@ -438,7 +413,6 @@ const buildListingRows = (
             prefill?.listings.get(info.listing.id),
             childCtxFor(info),
             attributesByListing.get(info.listing.id),
-            renewal,
             singleTicket,
           ),
         ),
@@ -466,7 +440,6 @@ export const buildPageListingRows = (opts: {
   /** Every page package with its bundle limit, in page order. */
   packageLimits: readonly PackageBundleLimit<PagePackage>[];
   prefill?: BookingPrefill | undefined;
-  renewal?: boolean | undefined;
   /** Every page listing with its booking node, in page order. */
   rows: readonly PageListingRow[];
   /** Offer radio cards: the page is a one-ticket-per-order group. */
@@ -544,7 +517,6 @@ export const buildPageListingRows = (opts: {
       (info) =>
         claimedChildParents.has(info.listing.id) ? undefined : opts.childCtx,
       attributesByListing,
-      opts.renewal,
       opts.singleTicket,
     )
   );

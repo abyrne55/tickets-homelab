@@ -37,7 +37,6 @@ import {
   standInNameFor,
 } from "#shared/package-privacy.ts";
 import type { CheckoutItem } from "#shared/payments.ts";
-import { validateSiteAssignmentConfig } from "#shared/site-assignment.ts";
 import {
   applyQrTokenOverride,
   computeListingAnswerMap,
@@ -199,9 +198,6 @@ export const prepareOrder = async (
       fold.quantities,
       fold.customPrices,
       dayCount,
-      // A renewal page carries its token on the page ctx, and prices each
-      // tier by its months per unit rather than by tickets.
-      { renewal: ctx.siteToken !== undefined },
     ),
     selectedStandIns,
     namedListingIds,
@@ -211,12 +207,6 @@ export const prepareOrder = async (
   // per-listing step below reads the set from here, so an answer cannot be
   // filed under a listing the order has no line for.
   const selectedListingIds = new Set(items.map((item) => item.listingId));
-
-  const selected = listingsWithQuantity(foldedCtx.listings, quantities);
-  const siteAssignmentCheck = await validateSiteAssignmentConfig(selected);
-  if (!siteAssignmentCheck.ok) {
-    return { error: siteAssignmentCheck.message, ok: false };
-  }
 
   const activeQuestions = foldedCtx.questions.filter((q) => {
     const listingIds = foldedCtx.questionListingMap.get(q.id);

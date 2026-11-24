@@ -2,15 +2,13 @@ import { assert, assertStringIncludes } from "@std/assert";
 import { expect } from "@std/expect";
 import { describe, it as test } from "@std/testing/bdd";
 import { getListingWithCount, listingsTable } from "#db/listings/records.ts";
-import { runWithStorageConfig } from "#shared/storage.ts";
 import { assertAdminHtml, expectIncludesAll } from "#test-utils/assertions.ts";
 import { describeWithEnv } from "#test-utils/db.ts";
 import {
   createTestListing,
   updateTestListing,
 } from "#test-utils/db-helpers/listings.ts";
-import { TEST_STORAGE_ZONE } from "#test-utils/internal.ts";
-import { awaitTestRequest } from "#test-utils/mocks.ts";
+import { awaitTestRequest, withStorageEnabled } from "#test-utils/mocks.ts";
 import { setupListingAndLogin } from "#test-utils/session.ts";
 
 describeWithEnv("server listings > hidden listings", { db: true }, () => {
@@ -86,7 +84,7 @@ describeWithEnv("server listings > hidden listings", { db: true }, () => {
         attachmentUrl: "uuid-guide.pdf",
       });
 
-      await runWithStorageConfig(TEST_STORAGE_ZONE, async () => {
+      await withStorageEnabled(async () => {
         const response = await awaitTestRequest(
           `/admin/listing/${listing.id}/edit`,
           { cookie },
@@ -103,7 +101,7 @@ describeWithEnv("server listings > hidden listings", { db: true }, () => {
     test("admin listing edit page does not show attachment info when empty", async () => {
       const { listing, cookie } = await setupListingAndLogin();
 
-      await runWithStorageConfig(TEST_STORAGE_ZONE, async () => {
+      await withStorageEnabled(async () => {
         const response = await awaitTestRequest(
           `/admin/listing/${listing.id}/edit`,
           { cookie },

@@ -1,101 +1,12 @@
 import { expect } from "@std/expect";
 import { describe, it as test } from "@std/testing/bdd";
 import {
-  monthLabelsForListing,
   quantityOptions,
   restoredChildQty,
   restoredPackageQuantity,
   restoredQuantity,
 } from "#templates/public/reservations/quantities.ts";
 import { withSubmittedValues } from "#test-utils/saved-form.ts";
-
-describe("monthLabelsForListing", () => {
-  test("names the months each count buys on a plan", () => {
-    const labels = monthLabelsForListing({
-      assign_built_site: true,
-      initial_site_months: 3,
-      months_per_unit: 0,
-    });
-    expect(labels?.(1)).toBe("3 months");
-    expect(labels?.(2)).toBe("6 months");
-  });
-
-  test("prices a renewal page's counts by months per unit", () => {
-    // A real renewal tier: purchase-only, hidden, priced by months per unit.
-    expect(
-      monthLabelsForListing(
-        {
-          assign_built_site: false,
-          initial_site_months: 0,
-          months_per_unit: 1,
-        },
-        true,
-      )?.(2),
-    ).toBe("2 months");
-    // Every renewal tier prices by its months per unit, plan or not.
-    expect(
-      monthLabelsForListing(
-        {
-          assign_built_site: false,
-          initial_site_months: 0,
-          months_per_unit: 2,
-        },
-        true,
-      )?.(3),
-    ).toBe("6 months");
-  });
-
-  test("keeps the plain count on a renewal page for a non-tier listing", async () => {
-    // A renewal page only offers qualifying tiers, so a listing that prices
-    // no months per unit never reaches one; outside a renewal its units stay
-    // plain tickets.
-    expect(
-      monthLabelsForListing(
-        {
-          assign_built_site: false,
-          initial_site_months: 0,
-          months_per_unit: 0,
-        },
-        true,
-      ),
-    ).toBeUndefined();
-  });
-
-  test("leaves ordinary listings to the plain count", () => {
-    expect(
-      monthLabelsForListing({
-        assign_built_site: false,
-        initial_site_months: 0,
-        months_per_unit: 0,
-      }),
-    ).toBeUndefined();
-  });
-
-  test("a retired plan keeps the plain count", () => {
-    // Disabling site assignment retains the stored month term; the count is
-    // plain tickets again from the moment the flag is off.
-    expect(
-      monthLabelsForListing({
-        assign_built_site: false,
-        initial_site_months: 3,
-        months_per_unit: 0,
-      }),
-    ).toBeUndefined();
-  });
-
-  test("a one-month renewal tier still prices its counts in months", () => {
-    expect(
-      monthLabelsForListing(
-        {
-          assign_built_site: false,
-          initial_site_months: 0,
-          months_per_unit: 1,
-        },
-        true,
-      )?.(4),
-    ).toBe("4 months");
-  });
-});
 
 describe("quantityOptions", () => {
   test("lists zero through max with the chosen count selected", () => {

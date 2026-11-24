@@ -52,7 +52,7 @@ describe("admin debug template rendering", () => {
       "debug.section.payments",
       "common.email",
       "debug.section.notifications",
-      "debug.section.bunny",
+      "debug.section.storage",
       "debug.section.database_domain",
       "debug.section.limits",
     ] as const;
@@ -80,10 +80,6 @@ describe("admin debug template rendering", () => {
       "debug.field.issuer_id",
       "debug.field.mode",
       "debug.field.from_address",
-      "debug.field.cdn_hostname",
-      "debug.field.custom_domain",
-      "debug.field.subdomain_suffix",
-      "debug.field.registered_subdomain",
       "debug.field.database_host",
     ] as const;
 
@@ -123,7 +119,6 @@ describe("admin debug template rendering", () => {
         },
         availability: {
           cutoff: "cutoff-marker",
-          renewalConfigured: true,
           serverTime: "server-time-marker",
           state: "active",
         },
@@ -131,17 +126,8 @@ describe("admin debug template rendering", () => {
           commit: "commit-marker",
           timestamp: "timestamp-marker",
         },
-        bunny: {
-          cdnEnabled: true,
-          cdnHostname: "cdn-host-marker",
-          customDomain: "custom-domain-marker",
-          dnsEnabled: true,
-          registeredSubdomain: "registered-subdomain-marker",
-          storageBackend: "bunny",
-          subdomainSuffix: "subdomain-suffix-marker",
-        },
         database: {
-          host: "turso" as const,
+          host: "remote" as const,
           hostConfigured: true,
           schemaHash: "schema-hash-marker",
           schemaInSync: true,
@@ -188,6 +174,7 @@ describe("admin debug template rendering", () => {
           spamProtection: true,
           timezone: "timezone-marker",
         },
+        storage: { storageBackend: "local" as const },
         theme: "dark",
       }),
     );
@@ -201,10 +188,6 @@ describe("admin debug template rendering", () => {
       "server-time-marker",
       "commit-marker",
       "timestamp-marker",
-      "cdn-host-marker",
-      "custom-domain-marker",
-      "registered-subdomain-marker",
-      "subdomain-suffix-marker",
       "schema-hash-marker",
       "domain-marker",
       "from-address-marker",
@@ -280,14 +263,13 @@ describe("admin debug template rendering", () => {
 
   test("renders each storage backend", () => {
     const expected = {
-      bunny: { label: "Bunny CDN", variant: "ok" },
       local: { label: "Local filesystem", variant: "ok" },
       none: { label: "Not configured", variant: "missing" },
     } as const;
 
     for (const [backend, backendBadge] of Object.entries(expected)) {
       const pageState = makeDebugState();
-      pageState.bunny.storageBackend = backend as keyof typeof expected;
+      pageState.storage.storageBackend = backend as keyof typeof expected;
       const html = adminDebugPage(debugOwnerSession, pageState);
       expectBadgeRow(
         html,

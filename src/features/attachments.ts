@@ -1,5 +1,5 @@
 /**
- * Attachment download route — serves encrypted listing attachments from Bunny CDN.
+ * Attachment download route — serves encrypted listing attachments from local storage.
  * GET /attachment/:id?a=attendeeId&exp=timestamp&sig=hmacSignature
  *
  * URLs are signed with HMAC and time-limited (1 hour) to prevent sharing.

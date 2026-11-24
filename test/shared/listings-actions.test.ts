@@ -35,37 +35,31 @@ describe("listingInputToEdge", () => {
   test("defaults every optional field for a sparse input", () => {
     const sparse = { name: "Bare" } as unknown as ListingInput;
     expect(listingInputToEdge(sparse, 7)).toEqual({
-      assign_built_site: false,
       customisable_days: false,
       day_prices: {},
       duration_days: 1,
       id: 7,
       listing_type: "standard",
       min_quantity: 1,
-      months_per_unit: 0,
       name: "Bare",
     });
   });
 
   test("carries through populated fields", () => {
     const input = {
-      assignBuiltSite: true,
       customisableDays: true,
       dayPrices: { 1: 100, 2: 200 },
       durationDays: 2,
       listingType: "daily",
-      monthsPerUnit: 12,
       name: "Full",
     } as unknown as ListingInput;
     expect(listingInputToEdge(input, 3)).toEqual({
-      assign_built_site: true,
       customisable_days: true,
       day_prices: { 1: 100, 2: 200 },
       duration_days: 2,
       id: 3,
       listing_type: "daily",
       min_quantity: 1,
-      months_per_unit: 12,
       name: "Full",
     });
   });
@@ -84,58 +78,6 @@ describeWithEnv("validateListingInput", { db: true }, () => {
     ...testListingInput(overrides),
     slug: "test-listing",
     slugIndex: "test-index" as BlindIndex,
-  });
-
-  test("rejects assignBuiltSite with initialSiteMonths <= 0", async () => {
-    const input: ListingInput = sluggedInput({
-      assignBuiltSite: true,
-      hidden: true,
-      initialSiteMonths: 0,
-      monthsPerUnit: 1,
-      purchaseOnly: true,
-    });
-    const error = await validateListingInput(input);
-    expect(error).toBe(
-      "Initial site months is required when a site is assigned.",
-    );
-  });
-
-  test("rejects assignBuiltSite without initial site months", async () => {
-    const input: ListingInput = sluggedInput({
-      assignBuiltSite: true,
-      hidden: true,
-      monthsPerUnit: 1,
-      purchaseOnly: true,
-    });
-    const error = await validateListingInput(input);
-    expect(error).toBe(
-      "Initial site months is required when a site is assigned.",
-    );
-  });
-
-  test("rejects a built-site plan that is also a renewal tier", async () => {
-    const input: ListingInput = sluggedInput({
-      assignBuiltSite: true,
-      hidden: true,
-      initialSiteMonths: 1,
-      monthsPerUnit: 1,
-      purchaseOnly: true,
-    });
-    const error = await validateListingInput(input);
-    expect(error).toBe(
-      "A listing that assigns a site cannot also be a renewal tier. Turn off months per unit or stop assigning a site.",
-    );
-  });
-
-  test("accepts assignBuiltSite when its only selling rule is the plan", async () => {
-    // monthsPerUnit stays unstated: a plan is not a renewal tier.
-    const input: ListingInput = sluggedInput({
-      assignBuiltSite: true,
-      hidden: false,
-      initialSiteMonths: 1,
-      purchaseOnly: false,
-    });
-    await expect(validateListingInput(input)).resolves.toBeNull();
   });
 
   test("rejects unsafe thank_you_url before webhook validation", async () => {
@@ -280,29 +222,6 @@ describeWithEnv("validateListingInput package membership", { db: true }, () => {
     expect(error).toBe(
       t("error.package_member_gates_children_hidden", { name: "Gate Parent" }),
     );
-  });
-});
-
-describeWithEnv("validateListingInput renewal config", { db: true }, () => {
-  test("rejects months-per-unit without No check-in and Hidden", async () => {
-    const error = await validateListingInput(
-      inputFor({ monthsPerUnit: 1, name: "Renewal One" }),
-    );
-    expect(error).toBe(
-      "Months per unit requires No check-in and Hidden listing to be enabled.",
-    );
-  });
-
-  test("accepts months-per-unit with No check-in and Hidden", async () => {
-    const error = await validateListingInput(
-      inputFor({
-        hidden: true,
-        monthsPerUnit: 1,
-        name: "Renewal Two",
-        purchaseOnly: true,
-      }),
-    );
-    expect(error).toBeNull();
   });
 });
 

@@ -191,8 +191,6 @@ const seedPopulatedMigrationFixture = () =>
        VALUES (911, 907, 903, 2, 500, '2024-01-02T00:25:00Z')`,
       `INSERT INTO holidays (id, name, start_date, end_date)
        VALUES (912, 'Fixture holiday', '2024-03-01', '2024-03-03')`,
-      `INSERT INTO built_sites (id, site_data, assignable, assigned_attendee_id, assigned_listing_id, created, renewal_token_index, read_only_from)
-       VALUES (913, '{"site":"fixture"}', 1, 903, 902, '2024-01-03T00:00:00Z', 'renewal-index', '')`,
       `INSERT INTO email_templates (id, subject, body)
        VALUES (914, 'Fixture subject', 'Fixture body')`,
       `INSERT INTO sms_messages (id, attendee_id, listing_id, provider_id, created)
@@ -234,11 +232,6 @@ const assertPopulatedFixtureSurvived = async (
   expect(
     await scalar(
       "SELECT COUNT(*) AS value FROM groups WHERE id = 901 AND slug_index = 'group-index'",
-    ),
-  ).toBe(1);
-  expect(
-    await scalar(
-      "SELECT COUNT(*) AS value FROM built_sites WHERE id = 913 AND assigned_listing_id = 902 AND assigned_attendee_id = 903",
     ),
   ).toBe(1);
   expect(
@@ -345,9 +338,6 @@ export const ownsSchemaObjects = (req: SchemaRequirement): boolean =>
 const columnsRemovedByMigration: Partial<Record<string, string[]>> = {
   "2026-07-05_first_class_images": [
     "ALTER TABLE listings ADD COLUMN image_url TEXT NOT NULL DEFAULT ''",
-  ],
-  "2026-07-18_drop_built_sites_last_pruned": [
-    "ALTER TABLE built_sites ADD COLUMN last_pruned TEXT NOT NULL DEFAULT ''",
   ],
 };
 

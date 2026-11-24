@@ -1,7 +1,6 @@
 import type { settings } from "#db/settings.ts";
 import { t } from "#i18n";
 import type { Child } from "#jsx/jsx-runtime.ts";
-import { isBuilderEnabled } from "#shared/config.ts";
 import { CsrfForm } from "#shared/forms/csrf-form.tsx";
 import { Flash } from "#shared/forms/flash.tsx";
 import type { FieldValues } from "#shared/forms/values.ts";
@@ -188,7 +187,6 @@ export const adminDuplicateListingPage = (
 ): string => {
   const values = listingToFieldValues(listing);
   values.name = "";
-  const builderEnabled = isBuilderEnabled();
   const template = inferTemplate(listing);
   const form = listingFormPageState(
     session,
@@ -208,7 +206,7 @@ export const adminDuplicateListingPage = (
       <input name="duplicated_from" type="hidden" value={String(listing.id)} />
       <CreateListingFormBody>
         {form.formSections({
-          advancedOpen: advancedSectionHasValues(listing, builderEnabled),
+          advancedOpen: advancedSectionHasValues(listing),
           customiseOpen: false,
           dayPricesListing: listing,
           durationWarning: "",

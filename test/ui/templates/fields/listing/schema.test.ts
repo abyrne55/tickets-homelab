@@ -34,16 +34,6 @@ describe("listing field schemas", () => {
     );
   });
 
-  test("the builder view only reveals the built-site boxes", () => {
-    expect(getListingForm({ builder: true }).fields.map(shape)).toEqual(
-      revealing([
-        "months_per_unit",
-        "initial_site_months",
-        "assign_built_site",
-      ]),
-    );
-  });
-
   test("the autofocus view puts the cursor in the name box and changes nothing else", () => {
     const focused = LISTING_FIELDS.map((field) =>
       field.name === "name" ? { autofocus: true, ...field } : field,

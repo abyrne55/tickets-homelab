@@ -36,7 +36,7 @@ export const guideSections = (hostConfig?: GuideHostConfig): GuideSection[] => [
   ...ticketsSections(hostConfig),
   ...accountsSections(),
   ...emailSections(hostConfig),
-  ...domainsSections(hostConfig),
+  ...domainsSections(),
   ...integrationsSections(),
   ...operationsSections(),
 ];

@@ -2,10 +2,8 @@ import { assertStringIncludes } from "@std/assert";
 import { expect } from "@std/expect";
 import { it as test } from "@std/testing/bdd";
 import { ALL_SETTINGS_KEYS, CONFIG_KEYS, settings } from "#db/settings.ts";
-import { expectIncludesAll } from "#test-utils/assertions.ts";
 import { hasCheckedInput, inputTagWithValue } from "#test-utils/csrf.ts";
 import { describeWithEnv } from "#test-utils/db.ts";
-import { withEnv } from "#test-utils/env.ts";
 import { adminGet } from "#test-utils/session.ts";
 import { setupStripe } from "#test-utils/settings.ts";
 
@@ -13,23 +11,6 @@ describeWithEnv(
   "settings-advanced state carries lastActivePaymentProvider",
   { db: true },
   () => {
-    test("renders the domain-change warning via the last-active provider when sales are off", async () => {
-      await setupStripe();
-      await settings.update.setPaymentProviderNone();
-      using _env = withEnv({
-        BUNNY_API_KEY: "bunny-key",
-        BUNNY_DNS_ZONE_ID: "zone-id",
-        BUNNY_SCRIPT_ID: undefined,
-      });
-      const html = await (await adminGet("/admin/settings-advanced")).text();
-      expectIncludesAll(html, [
-        "Changing your domain changes your payment webhook",
-        'href="/admin/settings#settings-stripe"',
-      ]);
-      const settingsHtml = await (await adminGet("/admin/settings")).text();
-      assertStringIncludes(settingsHtml, 'id="settings-stripe"');
-    });
-
     test("requires a provider choice when stored credentials are ambiguous", async () => {
       await setupStripe();
       await settings.update.square.accessToken("square-recovery-token");

@@ -1,6 +1,5 @@
 import type { BlindIndex } from "#crypto/sealed.ts";
 import type { ListingAttendeeRow } from "#db/attendee-types.ts";
-import type { BuiltSite } from "#db/built-sites/types.ts";
 import type {
   Answer,
   QuestionDisplayType,
@@ -24,7 +23,6 @@ import type {
 
 export const testListing = (overrides: Partial<Listing> = {}): Listing => ({
   active: true,
-  assign_built_site: false,
   attachment_name: "",
   attachment_url: "",
   bookable_alone: false,
@@ -51,7 +49,6 @@ export const testListing = (overrides: Partial<Listing> = {}): Listing => ({
   image_alt_text: "",
   image_thumb_url: "",
   image_url: "",
-  initial_site_months: 0,
   listing_type: "standard",
   location: "",
   max_attendees: 100,
@@ -60,7 +57,6 @@ export const testListing = (overrides: Partial<Listing> = {}): Listing => ({
   maximum_days_after: 0,
   min_quantity: 1,
   minimum_days_before: 0,
-  months_per_unit: 0,
   name: "Test Listing",
   non_transferable: false,
   purchase_only: false,
@@ -241,30 +237,6 @@ export const testQuestion = (
   ...overrides,
 });
 
-export const testBuiltSite = (
-  overrides: Partial<BuiltSite> = {},
-): BuiltSite => ({
-  assignable: false,
-  assignedAttendeeId: null,
-  assignedListingId: null,
-  created: "2026-01-01T00:00:00Z",
-  dbProvider: "bunny",
-  dbToken: "",
-  dbUrl: "",
-  hostingId: "",
-  hostingProvider: "bunny",
-  id: 1,
-  name: "Test Site",
-  readOnlyFrom: "",
-  renewalToken: null,
-  renewalTokenIndex: null,
-  scheduledTaskKey: null,
-  siteDataRevision: 0,
-  siteUrl: "https://test.b-cdn.net",
-  updates: "release",
-  ...overrides,
-});
-
 /** Test-listing overrides accept the legacy single `groupId` (mapped to a
  * one-group membership) as well as the new `groupIds` array, so existing call
  * sites passing `{ groupId }` keep working while multi-group tests can pass
@@ -320,7 +292,6 @@ export const webhookMeta = (
   phone: "",
   price_proof: "",
   reservation_amount: "",
-  site_token_index: "",
   special_instructions: "",
   tax_policy: "",
   text_answer_ids: "",
@@ -399,7 +370,6 @@ export const makeTestListing = (
   overrides: Partial<EmailListing> = {},
 ): EmailListing => ({
   active: true,
-  assign_built_site: false,
   attendee_count: 10,
   can_pay_more: false,
   customisable_days: false,
@@ -408,11 +378,9 @@ export const makeTestListing = (
   duration_days: 1,
   hidden: false,
   id: 1,
-  initial_site_months: 0,
   listing_type: "standard",
   location: "",
   max_attendees: 100,
-  months_per_unit: 0,
   name: "Test Listing",
   purchase_only: false,
   slug: "test-listing",

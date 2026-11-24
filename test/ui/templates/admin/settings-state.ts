@@ -19,7 +19,6 @@ export const defaultSettingsState = (): SettingsPageState => ({
   siteFooter: "",
   squareWebhookConfigured: false,
   storageEnabled: false,
-  superuser: { available: false, reason: "missing-env" },
   taxMode: "none",
   taxRate: "",
   termsAndConditions: "",

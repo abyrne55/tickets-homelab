@@ -101,16 +101,19 @@ export const listingDataToInput = (
   groupIds: number[],
 ): ListingInput => {
   const {
+    assignBuiltSite: _assignBuiltSite,
     bookableDays,
     closesAt,
     dayPrices,
     description,
+    initialSiteMonths: _initialSiteMonths,
     location,
     maxAttendees,
     minimumDaysBefore,
+    monthsPerUnit: _monthsPerUnit,
     nonTransferable,
     useDefaults,
-    usesLogistics: _retired,
+    usesLogistics: _usesLogistics,
     ...rest
   } = data;
   return {

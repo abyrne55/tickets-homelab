@@ -3,7 +3,6 @@ import { expect } from "@std/expect";
 import { describe, it as test } from "@std/testing/bdd";
 import type { TicketListing } from "#booking/model.ts";
 import type { PagePackage } from "#booking/page-packages.ts";
-import { t } from "#i18n";
 import { buildPageTree } from "#templates/public/reservations/availability.ts";
 import {
   buildPageListingRows,
@@ -129,11 +128,9 @@ describe("fixedPriceLabel and priced rows", () => {
     );
   });
 
-  test("is empty for pay-what-you-want, customisable-days and renewal", () => {
+  test("is empty for pay-what-you-want and customisable-days", () => {
     expect(fixedPriceLabel(priced(500, { can_pay_more: true }))).toBe("");
     expect(fixedPriceLabel(priced(500, { customisable_days: true }))).toBe("");
-    expect(fixedPriceLabel(priced(500), true)).toBe("");
-    assert(!hasPrice(renderRows({ listings: [priced(500)], renewal: true })));
   });
 
   test("is absent from sold-out and closed rows", () => {
@@ -178,8 +175,6 @@ type RowOptions = {
   /** Each package's remaining bundle count; defaults to 5 for every package. */
   limitsByGroupId?: ReadonlyMap<number, number>;
   prefill?: BookingPrefill;
-  /** A renewal page prices its counts by months per unit. */
-  renewal?: boolean;
   singlePackagePage?: boolean;
   singleTicket?: boolean;
   /** Members of a package that the cart also added by their own slug. */
@@ -193,7 +188,6 @@ const renderRows = ({
   limitsByGroupId,
   packages = [],
   prefill,
-  renewal,
   singlePackagePage = false,
   singleTicket,
   ...rest
@@ -219,7 +213,6 @@ const renderRows = ({
       pkg,
     })),
     prefill,
-    renewal,
     rows,
     singlePackagePage,
     singleTicket,
@@ -366,78 +359,6 @@ describe("buildPageListingRows", () => {
     );
     assert(!html.includes("Number of"));
     assert(!html.includes('<select id="ticket-quantity-1" name="quantity_1">'));
-  });
-
-  test("a hidden quantity still states the term a plan grants", () => {
-    const plan = tl(1, 1, {
-      assign_built_site: true,
-      initial_site_months: 3,
-      name: "Listing A",
-      slug: "ab12c",
-    });
-    const html = renderRows({
-      hideQuantity: true,
-      isSingleListing: true,
-      listings: [plan],
-    });
-    expectIncludesAll(html, [
-      '<input type="hidden" name="quantity_1" value="1" />',
-      t("public.ticket.fixed_term_granted", { count: 3 }),
-    ]);
-  });
-
-  test("a built-site plan is sold in months, an ordinary listing in tickets", () => {
-    const plan = tl(1, 5, {
-      assign_built_site: true,
-      initial_site_months: 3,
-      name: "Listing A",
-      slug: "ab12c",
-    });
-    const planHtml = renderRows({
-      isSingleListing: true,
-      listings: [plan],
-    });
-    // Each option states the months it buys: three units of a three-month
-    // plan are nine months.
-    expectIncludesAll(planHtml, [
-      '<option value="1">3 months</option>',
-      '<option value="2">6 months</option>',
-      '<label>Number of months<select id="ticket-quantity-1" name="quantity_1">',
-    ]);
-    assert(!planHtml.includes("Number of Tickets"));
-    assert(!planHtml.includes('">2</option>'));
-
-    const ordinaryHtml = renderRows({
-      isSingleListing: true,
-      listings: [rowListing(1, "Listing A", "ab12c")],
-    });
-    expectIncludesAll(ordinaryHtml, [
-      '<label>Number of Tickets<select id="ticket-quantity-1" name="quantity_1">',
-      '<option value="2">2</option>',
-    ]);
-    assert(!ordinaryHtml.includes("Number of months"));
-  });
-
-  test("a renewal page prices every tier by its months per unit", () => {
-    const tier = tl(1, 5, {
-      assign_built_site: false,
-      initial_site_months: 0,
-      months_per_unit: 1,
-      name: "Monthly",
-      slug: "ab12c",
-    });
-    const html = renderRows({
-      isSingleListing: true,
-      listings: [tier],
-      renewal: true,
-    });
-    expectIncludesAll(html, [
-      '<label>Number of months<select id="ticket-quantity-1" name="quantity_1">',
-      // Fulfillment extends the site by months per unit: two units of a
-      // one-month-per-unit tier are two months.
-      '<option value="2">2 months</option>',
-    ]);
-    assert(!html.includes("6 months"));
   });
 
   test("a single-package page counts bundles and renders each member at its fixed quantity", () => {

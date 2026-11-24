@@ -10,7 +10,6 @@ import {
   isNameTakenAnywhere,
   loadCatalogNameIndex,
 } from "#db/name-registry.ts";
-import { t } from "#i18n";
 import { matchKey as nameKey } from "#shared/keys.ts";
 import type { BundleFailure } from "./bundle-plan.ts";
 import { nameTakenError } from "./import-listing.ts";
@@ -51,8 +50,7 @@ export type ItemNameIndexes = {
 
 /** The name checks every item shares. The name is unique inside the document
  * (one namespace for listings and groups) and inside the site's length cap.
- * No row on the site holds it. A listing that assigns a built site never
- * imports. */
+ * No row on the site holds it. */
 export const checkItemNames = async (
   bundle: CatalogBundle,
   fail: FailureCollector,
@@ -87,16 +85,6 @@ export const checkItemNames = async (
     ((await isNameTakenAnywhere(name)) ? nameTakenError(name) : null) ??
     catalogNameLengthError(name);
   for (const body of bundle.listings) {
-    // A built-site plan never imports, whatever its name — the same refusal
-    // the single import raises before its name checks.
-    fail.failIf(
-      body.listing.name,
-      body.listing.assignBuiltSite
-        ? t("catalog_transfer.site_plan_listing_refused", {
-            name: body.listing.name,
-          })
-        : null,
-    );
     fail.failIf(body.listing.name, await nameProblem(body.listing.name));
   }
   for (const body of bundle.groups) {

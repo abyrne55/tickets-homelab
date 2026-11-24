@@ -37,7 +37,7 @@ import { addPendingWork } from "#shared/pending-work.ts";
 import { getRequestClientIp } from "#shared/request-context.ts";
 import type { RequestRoute, ResponseHandler } from "#shared/response-steps.ts";
 import { getCachedSession, setCachedSession } from "#shared/session-context.ts";
-import { getSettingsNagItemsForOwner } from "#shared/settings-nags.ts";
+import { getSettingsNagItems } from "#shared/settings-nags.ts";
 import {
   type AdminLevel,
   ALL_ADMIN_LEVELS,
@@ -123,7 +123,7 @@ export const getAuthenticatedSession = async (
   };
 
   if (adminLevel === "owner") {
-    result.settingsNagItems = await getSettingsNagItemsForOwner();
+    result.settingsNagItems = getSettingsNagItems();
   }
 
   setCachedSession(result);

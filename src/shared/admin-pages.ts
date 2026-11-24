@@ -102,26 +102,14 @@ const routePatterns = (
     .filter(keep)
     .map((route) => route.pattern);
 
-/** The admin writes read-only mode keeps open. In update mode it keeps only
- * the ones declared `"always"`, because the migration must see a still
- * database. */
-export const readOnlyWriteRoutePatterns = (
-  updating: boolean,
-): readonly string[] =>
-  routePatterns(
-    (route) =>
-      route.readOnlyWrite !== undefined &&
-      (!updating || route.readOnlyWrite === "always"),
-  );
+/** The admin writes read-only mode keeps open. */
+export const readOnlyWriteRoutePatterns = (): readonly string[] =>
+  routePatterns((route) => route.readOnlyWrite !== undefined);
 
-/** A write whose declaration carries `readOnlyGet` serves a page on its GET
- * (the built-site support message), so read-only mode keeps serving it instead
- * of redirecting it. A write declared `readOnlyWrite` keeps its GET through
- * the same declaration. */
+/** The write forms read-only mode redirects away on GET. A write declared
+ * `readOnlyWrite` keeps its GET through the same declaration. */
 export const readOnlyGetRoutePatterns = (): readonly string[] =>
   routePatterns(
     (route) =>
-      route.intent === "write-form" &&
-      route.readOnlyGet !== true &&
-      route.readOnlyWrite === undefined,
+      route.intent === "write-form" && route.readOnlyWrite === undefined,
   );

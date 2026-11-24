@@ -268,7 +268,7 @@ export const firstTouchingEdgeError = async (
 
 /**
  * Re-validate every edge touching a listing against its *would-be* field values,
- * for a listing save (a type / duration / day-price / renewal-tier edit can
+ * for a listing save (a type / duration / day-price edit can
  * break an existing edge the booking gate then can't date or price). `updated`
  * carries the post-save fields with the listing's own id; opposite endpoints are
  * loaded by their linked ids. Returns the first incompatibility's

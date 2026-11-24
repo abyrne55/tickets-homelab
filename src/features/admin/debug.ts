@@ -24,13 +24,9 @@ import {
 } from "#shared/apple-wallet/certificate.ts";
 import { isValidAppleSigningPair } from "#shared/apple-wallet/cms.ts";
 import { BUILD_COMMIT, BUILD_TIMESTAMP } from "#shared/build-info.ts";
-import { getCdnHostname } from "#shared/bunny-cdn.ts";
 import {
-  getBunnyDnsSubdomainSuffix,
   getEffectiveDomain,
   isBotpoisonEnabled,
-  isBunnyCdnEnabled,
-  isBunnyDnsEnabled,
   isPaymentsEnabled,
   providerValue,
 } from "#shared/config.ts";
@@ -38,7 +34,6 @@ import { hostEmail } from "#shared/email.ts";
 import {
   getEnv,
   getReadOnlyCutoffIso,
-  getRenewalUrl,
   isReadOnly,
   isReadOnlyWarning,
 } from "#shared/env.ts";
@@ -198,12 +193,6 @@ const resolveAvailabilityState =
 
 /** Gather debug state concurrently */
 const getDebugPageState = async (): Promise<DebugPageState> => {
-  const bunnyCdnEnabled = isBunnyCdnEnabled();
-  const bunnyCdnResult = bunnyCdnEnabled ? await getCdnHostname() : null;
-  const bunnyCdnCdnHostname = bunnyCdnResult?.ok
-    ? bunnyCdnResult.hostname
-    : EMPTY_DEBUG_VALUE;
-
   const hostEmailConfig = hostEmail.getHostConfig();
   const appleWalletEnvConfigured = settings.appleWallet.hostConfig !== null;
   const googleWalletEnvConfigured = settings.googleWallet.hostConfig !== null;
@@ -229,22 +218,12 @@ const getDebugPageState = async (): Promise<DebugPageState> => {
     },
     availability: {
       cutoff: showOrEmpty(getReadOnlyCutoffIso()),
-      renewalConfigured: getRenewalUrl() !== null,
       serverTime: nowIso(),
       state: resolveAvailabilityState(),
     },
     build: {
       commit: BUILD_COMMIT,
       timestamp: BUILD_TIMESTAMP,
-    },
-    bunny: {
-      cdnEnabled: bunnyCdnEnabled,
-      cdnHostname: bunnyCdnCdnHostname,
-      customDomain: bunnyCdnEnabled ? settings.customDomain : EMPTY_DEBUG_VALUE,
-      dnsEnabled: isBunnyDnsEnabled(),
-      registeredSubdomain: settings.bunnySubdomain,
-      storageBackend: getStorageBackend(),
-      subdomainSuffix: getBunnyDnsSubdomainSuffix(),
     },
     database: {
       host: dbUrl === undefined ? null : databaseHostFor(dbUrl),
@@ -297,6 +276,7 @@ const getDebugPageState = async (): Promise<DebugPageState> => {
       spamProtection: isBotpoisonEnabled(),
       timezone: settings.timezone,
     },
+    storage: { storageBackend: getStorageBackend() },
     theme: settings.theme,
   };
 };

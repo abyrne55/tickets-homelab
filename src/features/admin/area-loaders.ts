@@ -46,13 +46,7 @@ const guideMessageGroups = messageGroupsBySegment({
   formatting: ["guide-formatting"],
   // "settings" is here because the email-templates section renders the
   // variable reference the settings form also shows.
-  guide: [
-    "attendees",
-    "builder",
-    "listings-table",
-    "settings",
-    ...GUIDE_MESSAGE_GROUPS,
-  ],
+  guide: ["attendees", "listings-table", "settings", ...GUIDE_MESSAGE_GROUPS],
 });
 
 // Import specifiers stay literal so esbuild can bundle every target.
@@ -101,14 +95,6 @@ export const ADMIN_AREA_LOADERS: Record<AdminAreaId, AdminAreaLoader> = {
   backup: area(
     () => import("#routes/admin/backup.ts"),
     ["backup", "validation"],
-  ),
-  builder: area(
-    () => import("#routes/admin/builder.ts"),
-    ["builder", "built-sites", "validation"],
-  ),
-  builtSites: area(
-    () => import("#routes/admin/built-sites.ts"),
-    ["builder", "built-sites", "entity-pages", "validation"],
   ),
   bulkActions: area(
     () => import("#routes/admin/bulk-actions.ts"),
@@ -210,7 +196,6 @@ export const ADMIN_AREA_LOADERS: Record<AdminAreaId, AdminAreaLoader> = {
       "attendees",
       "attributes",
       "availability",
-      "built-sites",
       "capacity",
       "csv",
       "date-picker",
@@ -310,11 +295,6 @@ export const ADMIN_AREA_LOADERS: Record<AdminAreaId, AdminAreaLoader> = {
     () => import("#routes/admin/sms.ts"),
     ["attendees", "sms", "validation"],
   ),
-  support: area(
-    () => import("#routes/admin/support.ts"),
-    ["support", "validation"],
-  ),
-  update: area(() => import("#routes/admin/update.ts"), ["update"]),
   users: area(
     () => import("#routes/admin/users.ts"),
     ["entity-pages", "login", "users", "validation"],

@@ -8,7 +8,6 @@ const requires: SchemaRequirement = {
   absentTables: ["events", "event_attendees", "event_questions"],
   columns: {
     activity_log: ["listing_id"],
-    built_sites: ["assigned_listing_id"],
     listing_attendees: ["listing_id"],
     listing_questions: ["listing_id"],
     listings: ["listing_type"],

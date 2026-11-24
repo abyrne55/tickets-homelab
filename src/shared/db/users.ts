@@ -76,18 +76,6 @@ const usersCache = createKeyedCache<User>({
   keyOf: (u) => u.username_index,
   ttlMs: USERS_CACHE_TTL_MS,
 });
-/**
- * Callbacks fired on every users-cache invalidation, so derived caches (e.g.
- * the superuser account-state cache) can clear in lockstep with user writes.
- * Registered once per module at load time, mirroring the cache-stats registry.
- */
-const usersInvalidationListeners: Array<() => void> = [];
-
-/** Register a callback to run whenever the users cache is invalidated. */
-export const onUsersInvalidated = (listener: () => void): void => {
-  usersInvalidationListeners.push(listener);
-};
-
 export const getAllUsers = (): Promise<User[]> => usersCache.getAll();
 
 registerCache(() => ({ entries: usersCache.size(), name: "users" }));
@@ -97,12 +85,9 @@ export const invalidateUsersCache = (
   cause: CacheInvalidation = "manual",
 ): void => {
   usersCache.invalidate(cause);
-  for (const listener of usersInvalidationListeners) listener();
 };
 
 // Any write to the users table clears the cache automatically (db-client layer).
-// Must call invalidateUsersCache() (not just usersCache.invalidate()) so that
-// onUsersInvalidated listeners such as the superuser account-state cache also fire.
 registerTableInvalidation(["users"], invalidateUsersCache);
 
 /** Fields needed to build a users row. */

@@ -2,8 +2,7 @@
  * A prose panel: a `<div class="prose">` with an optional leading
  * `<strong>label</strong> {value}` paragraph followed by free-form body.
  *
- * Built-sites uses it for the secrets panel and renewal-tier section, and
- * bulk-email uses the same shape for the "provider sending unavailable"
+ * Bulk-email uses the same shape for the "provider sending unavailable"
  * notice (label="Sending disabled", value=reason). Pulling the shared shape
  * into one component stops the per-file `<div class="prose"><p>…</p>…</div>`
  * from drifting.

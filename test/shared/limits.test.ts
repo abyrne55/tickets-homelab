@@ -228,7 +228,6 @@ describe("limits", () => {
         "SUMUP_RECOVERY_BATCH",
         "SUMUP_RECOVERY_INTERVAL_MINUTES",
         "SUMUP_UNANSWERED_AFTER_HOURS",
-        "SUPPORT_FORM_NAG_DAYS",
         "TOKEN_LOCKOUT_MS",
         "TOKEN_WINDOW_MS",
       ].sort();

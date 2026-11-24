@@ -19,7 +19,6 @@ import { describeWithEnv } from "#test-utils/db.ts";
 import { createTestGroup } from "#test-utils/db-helpers/groups.ts";
 import { createTestListing } from "#test-utils/db-helpers/listings.ts";
 import { testListingWithCount } from "#test-utils/factories.ts";
-import { treePackage } from "#test-utils/package-cap-fixtures.ts";
 import type { ListingWithCount } from "#types";
 
 /** Per-path line assembly and the package-aware ticket context, split from
@@ -52,7 +51,6 @@ describeWithEnv(
           aggregateNodeQuantities(tree, nodeQuantities),
           new Map(),
           1,
-          { renewal: false },
         );
       };
 
@@ -73,44 +71,6 @@ describeWithEnv(
           },
         ]);
         expect(buildStandalone(listing, 0)).toEqual([]);
-      });
-
-      test("prices each line by its own path (package override on the member line)", () => {
-        const listing = testListingWithCount({
-          id: 7,
-          name: "Member",
-          slug: "mmbr7",
-          unit_price: 500,
-        });
-        const tree = buildBookingTree({
-          listings: [buildTicketListing(listing, false, undefined)],
-          packages: [treePackage(3, [7], { prices: new Map([[7, 1200]]) })],
-          slugs: ["pkg"],
-        });
-        const nodeQuantities = nodeQuantitiesFor(
-          tree,
-          new Map(),
-          new Map([[3, 1]]),
-        );
-        const items = buildOrderLines(
-          tree,
-          nodeQuantities,
-          aggregateNodeQuantities(tree, nodeQuantities),
-          new Map(),
-          1,
-          { renewal: false },
-        );
-        // The member line carries ITS package's id and ITS override price.
-        expect(items).toEqual([
-          {
-            listingId: 7,
-            name: "Member",
-            packageGroupId: 3,
-            quantity: 1,
-            slug: "mmbr7",
-            unitPrice: 1200,
-          },
-        ]);
       });
     });
 

@@ -15,7 +15,6 @@ import { getAllPageItems } from "#db/site-page-items.ts";
 import { sitePages } from "#db/site-pages.ts";
 import { fieldById, requiredMapValue } from "#fp";
 import { t } from "#i18n";
-import { isQualifyingTierListing } from "#shared/renewal-tier.ts";
 import { buildForest, eligibleChildPages } from "#shared/site-pages/core.ts";
 import { loadPageForest } from "#shared/site-pages/load.ts";
 import {
@@ -31,15 +30,13 @@ import type {
 import type { SitePage, SitePageItemType } from "#types";
 
 /** Can this listing be placed on a page? Active (its public page must not
- * 404), not a renewal tier, and not a child listing. A renewal tier needs a
- * site token the normal ticket flow never supplies
- * ({@link isQualifyingTierListing}). A booking can never start from a child
+ * 404) and not a child listing. A booking can never start from a child
  * (`childIds`), so its `/ticket` page 404s too. */
 export const offerableListing = (
   id: number,
   row: ListingOfferFlags,
   childIds: ReadonlySet<number>,
-): boolean => row.active && !isQualifyingTierListing(row) && !childIds.has(id);
+): boolean => row.active && !childIds.has(id);
 
 /** Build the list-page model: root pages (reorderable) and nested pages (shown
  * with their parent, edited through the item manager). */
@@ -116,8 +113,7 @@ export const buildEditModel = async (page: SitePage): Promise<EditModel> => {
       )
       .map(([id, name]) => opt(id, name));
   // The listing picker offers only OFFERABLE listings. Active, because an
-  // inactive listing's public page 404s. Not a renewal tier: a tier bought
-  // through a normal public link takes payment without extending the site.
+  // inactive listing's public page 404s.
   // Not a non-standalone child: its public page 404s by construction. A
   // `bookable_alone` child keeps its page, so it stays offerable. Labels
   // above still read the full map.

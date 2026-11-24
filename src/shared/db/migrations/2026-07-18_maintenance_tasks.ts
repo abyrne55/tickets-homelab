@@ -42,7 +42,6 @@ export default schemaMigration(
   "2026-07-18_maintenance_tasks",
   "Add durable scheduled maintenance task claims.",
   {
-    columns: { built_sites: ["site_data_revision"] },
     indexes: ["idx_maintenance_tasks_due"],
     newTables: ["maintenance_tasks"],
   },

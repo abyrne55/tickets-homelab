@@ -154,8 +154,11 @@ const ListingFieldsSchema = v.strictObject({
     "schema",
     TRANSFER_FIELD_SCHEMAS,
   ),
-  // Retired: exports made while logistics existed still carry it. It is
-  // accepted so those files keep importing, and ignored.
+  // Retired: exports made while logistics or site plans existed still carry
+  // these. They are accepted so those files keep importing, and ignored.
+  assignBuiltSite: v.optional(v.boolean()),
+  initialSiteMonths: v.optional(v.number()),
+  monthsPerUnit: v.optional(v.number()),
   usesLogistics: v.optional(v.boolean()),
 });
 

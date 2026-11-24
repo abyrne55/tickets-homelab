@@ -68,8 +68,8 @@ export const ENTRIES_RECENT: MigrationRegistryEntry[] = [
     "2026-10-07_holiday_date_padding",
     () => import("./2026-10-07_holiday_date_padding.ts"),
   ),
-  // The saved flag the CSP builder reads, backfilled by scanning the stored
-  // stylesheet once.
+  // Historical: stored the Bunny-fonts flag the CSP builder once read (now a
+  // no-op; the setting is deleted by 2026-11-24_remove_hosting_platform).
   entry(
     "2026-10-11_custom_css_bunny_fonts",
     () => import("./2026-10-11_custom_css_bunny_fonts.ts"),
@@ -138,6 +138,12 @@ export const ENTRIES_RECENT: MigrationRegistryEntry[] = [
   entry(
     "2026-11-18_remove_address_lookup_and_logistics",
     () => import("./2026-11-18_remove_address_lookup_and_logistics.ts"),
+  ),
+  // The hosting platform is gone: built_sites, the site-plan listing columns
+  // and the settings of its features with them.
+  entry(
+    "2026-11-24_remove_hosting_platform",
+    () => import("./2026-11-24_remove_hosting_platform.ts"),
   ),
 ];
 /* jscpd:ignore-end */

@@ -91,16 +91,6 @@ export const operationsSections = (): GuideSection[] => [
   },
   {
     entries: [
-      faq("how_do_i_check_for_updates"),
-      faq("what_does_the_version_number_mean"),
-      faq("how_do_i_install_an_update"),
-      faq("where_can_i_read_the_release_notes"),
-    ],
-    id: "software-updates",
-    titleKey: "software_updates",
-  },
-  {
-    entries: [
       faq("customise_system"),
       faq("customise_for_me"),
       faq("custom_css"),

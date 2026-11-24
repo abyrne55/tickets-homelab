@@ -68,18 +68,8 @@ export const isInWarningWindow = (
     (cutoffMs) => now >= cutoffMs - warnDays * DAY_MS && now < cutoffMs,
   );
 
-/** Check if an update is in progress: UPDATE_IN_PROGRESS is set non-empty.
- * The deploy workflows set it around a site code update, and every write
- * refuses while it is set. */
-export const isUpdateInProgress = (): boolean => {
-  const value = getEnv("UPDATE_IN_PROGRESS");
-  return value !== undefined && value !== "";
-};
-
-/** Check if the system is read-only: an update is running, or the
- * READ_ONLY_FROM cutoff is in the past */
+/** Check if the system is read-only: the READ_ONLY_FROM cutoff is in the past */
 export const isReadOnly = (): boolean => {
-  if (isUpdateInProgress()) return true;
   const cutoff = getEnv("READ_ONLY_FROM");
   if (!cutoff) return false;
   if (parseDateMs(cutoff) === null) {
@@ -109,9 +99,6 @@ export const getReadOnlyCutoffIso = (): string | null => {
   if (!cutoff) return null;
   return parseDateMs(cutoff) === null ? null : cutoff;
 };
-
-/** Get the RENEWAL_URL, or null if not set */
-export const getRenewalUrl = (): string | null => getEnv("RENEWAL_URL") ?? null;
 
 /**
  * Get a required environment variable, throwing if not set.

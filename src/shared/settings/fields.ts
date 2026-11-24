@@ -46,9 +46,6 @@ export const CUSTOM_SETTINGS_FIELDS: Record<string, () => readonly Field[]> = {
       "textarea",
     ),
   ],
-  "settings-custom-domain": () => [
-    text("custom_domain", "settings.advanced.domain_label"),
-  ],
   "settings-email": () => [
     secret("email_api_key", "settings.advanced.api_key"),
     text("email_from_address", "settings.advanced.from_address", "email"),
@@ -65,9 +62,6 @@ export const CUSTOM_SETTINGS_FIELDS: Record<string, () => readonly Field[]> = {
       "settings.advanced.google_service_key",
       "textarea",
     ),
-  ],
-  "settings-host-subdomain": () => [
-    text("subdomain", "settings.subdomain.subdomain_label"),
   ],
   "settings-sms-gateway": () => [
     text("sms_gateway_username", "sms.settings.username"),

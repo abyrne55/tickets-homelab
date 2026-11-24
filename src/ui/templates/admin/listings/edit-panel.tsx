@@ -1,7 +1,6 @@
 import { map } from "#fp";
 import { t } from "#i18n";
 import { adminPath } from "#shared/admin-surface.ts";
-import { isBuilderEnabled } from "#shared/config.ts";
 import { isReadOnly } from "#shared/env.ts";
 import { CsrfForm } from "#shared/forms/csrf-form.tsx";
 import { Flash } from "#shared/forms/flash.tsx";
@@ -130,7 +129,6 @@ export const ListingEditPanel = ({
       ? offeredUnder.map((parent) => parent.name).join(", ")
       : null;
   const storageEnabled = isStorageEnabled();
-  const builderEnabled = isBuilderEnabled();
   const durationWarning = String(<DurationWarning listing={listing} />);
   const template = inferTemplate(listing);
   const showFinancials = session.adminLevel !== "editor";
@@ -159,8 +157,7 @@ export const ListingEditPanel = ({
           <AssignUndatedDayCard card={assignUndatedDay.card} />
         )}
         {form.formSections({
-          advancedOpen:
-            advancedSectionHasValues(listing, builderEnabled) || !!error,
+          advancedOpen: advancedSectionHasValues(listing) || !!error,
           childOfNote:
             childOfNames !== null
               ? t("listings_table.child_field_inherited")

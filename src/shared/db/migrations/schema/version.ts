@@ -1,7 +1,7 @@
 /** Schema version label and the migrations bookkeeping table name. */
 
 export const LATEST_UPDATE =
-  "Remove the address lookup and logistics: drop their tables, columns and triggers, delete agent users and retire their settings.";
+  "Remove the hosting platform: drop built_sites and the site-plan listing columns, and retire the settings of the superuser, self-update, Bunny and custom domain features.";
 
 export const SCHEMA_MIGRATIONS_TABLE = "schema_migrations";
 export const LATEST_DB_UPDATE_KEY = "latest_db_update";

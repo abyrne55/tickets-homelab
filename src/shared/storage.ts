@@ -1,12 +1,12 @@
 /**
- * Bunny CDN storage integration for uploaded images and listing attachments.
- * Uses @bunny.net/storage-sdk to upload/delete files.
- * Only enabled when STORAGE_ZONE_NAME and STORAGE_ZONE_KEY env vars are set.
- * Files are encrypted with DB_ENCRYPTION_KEY before upload.
+ * Local filesystem storage for uploaded images and listing attachments.
+ * Only enabled when LOCAL_STORAGE_PATH is set; the path must be under /data
+ * in the container. Files are encrypted with DB_ENCRYPTION_KEY before they
+ * are written.
  */
 
 import { decryptBytes, encryptBytes } from "#crypto/encryption.ts";
-import { lazyRef, once } from "#fp";
+import { lazyRef } from "#fp";
 import { getEnv } from "#shared/env.ts";
 import { formatBytes } from "#shared/format-units.ts";
 import {
@@ -20,9 +20,6 @@ import type { ImageTargetTranscoder } from "#shared/images/transcode.ts";
 import { MAX_ATTACHMENT_SIZE, MAX_IMAGE_SIZE } from "#shared/limits.ts";
 import { sortByName } from "#shared/name-order.ts";
 import { createScopedValue } from "#shared/request-scoped.ts";
-import { listBunnyDir } from "#shared/storage/bunny-listing.ts";
-import { streamChunks } from "#shared/stream-chunks.ts";
-import { countExternalSubrequest } from "#shared/subrequest-budget.ts";
 import { getDeleteOverride } from "#shared/test-overrides.ts";
 
 // ---------------------------------------------------------------------------
@@ -32,14 +29,12 @@ import { getDeleteOverride } from "#shared/test-overrides.ts";
 interface StorageConfig {
   /** Override local storage path for tests. "" = disabled, undefined = use env var. */
   localPath?: string;
-  zoneKey: string;
-  zoneName: string;
 }
 
 // Suite-level storage config for tests (describeWithEnv's `storage` option).
 // Layered *under* the per-call runWithStorageConfig scope and *over* the process
 // env, so a whole suite can declare its backend once — without wrapping each test
-// body or mutating STORAGE_ZONE_*/LOCAL_STORAGE_PATH env vars. Held as a typed
+// body or mutating the LOCAL_STORAGE_PATH env var. Held as a typed
 // StorageConfig object, not env strings, so it can't reintroduce the env-var
 // races runWithStorageConfig exists to avoid; a per-test runWithStorageConfig
 // scope still wins over it.
@@ -71,19 +66,6 @@ export function setStorageConfigForTest(config: StorageConfig | null): void {
 }
 
 /**
- * Read storage config: per-call scope first, then the suite-level test
- * default, then env vars.
- */
-const getStorageConfig = (): StorageConfig => {
-  const ctx = configOverride.read();
-  if (ctx) return ctx;
-  return {
-    zoneKey: getEnv("STORAGE_ZONE_KEY") || "",
-    zoneName: getEnv("STORAGE_ZONE_NAME") || "",
-  };
-};
-
-/**
  * Get the effective local storage path.
  * Returns null if local storage is not configured or explicitly disabled.
  */
@@ -101,24 +83,15 @@ const EXT_TO_MIME = Object.fromEntries(
 ) as Record<string, ImageMime>;
 
 /**
- * Returns which storage backend is active: "bunny", "local", or "none".
+ * Returns which storage backend is active: "local" or "none".
  */
-export const getStorageBackend = (): "bunny" | "local" | "none" => {
-  const config = getStorageConfig();
-  if (config.zoneName && config.zoneKey) return "bunny";
-  if (getLocalStoragePath()) return "local";
-  return "none";
-};
+export const getStorageBackend = (): "local" | "none" =>
+  getLocalStoragePath() ? "local" : "none";
 
 /**
- * Check if image storage is enabled (Bunny CDN or local filesystem).
+ * Check if image storage is enabled (local filesystem).
  */
 export const isStorageEnabled = (): boolean => getStorageBackend() !== "none";
-
-/** Name of the configured Bunny storage zone, or null when Bunny is not the
- * active backend. Shown to operators so they can tell which zone a page reads. */
-export const storageZoneName = (): string | null =>
-  getStorageBackend() === "bunny" ? getStorageConfig().zoneName : null;
 
 /**
  * Get the MIME type for an image filename from its extension.
@@ -201,20 +174,29 @@ export const generateWebpFilename = (): string => `${crypto.randomUUID()}.webp`;
 // Local filesystem backend
 // ---------------------------------------------------------------------------
 
+/** The configured local storage directory. Throws when storage is off. */
+const requireLocalPath = (): string => {
+  const dir = getLocalStoragePath();
+  if (dir === null) {
+    throw new Error("Storage is not configured. Set LOCAL_STORAGE_PATH.");
+  }
+  return dir;
+};
+
 /** Write encrypted bytes to the local storage directory. Filenames may include
  *  a subfolder (e.g. "acme/backup-…zip"), so create the file's parent first. */
 const localWrite = async (
   data: Uint8Array,
   filename: string,
 ): Promise<void> => {
-  const path = `${getLocalStoragePath() as string}/${filename}`;
+  const path = `${requireLocalPath()}/${filename}`;
   await Deno.mkdir(path.slice(0, path.lastIndexOf("/")), { recursive: true });
   await Deno.writeFile(path, data);
 };
 
 /** Read encrypted bytes from the local storage directory. Returns null if missing. */
 const localRead = async (filename: string): Promise<Uint8Array | null> => {
-  const dir = getLocalStoragePath() as string;
+  const dir = requireLocalPath();
   try {
     return await Deno.readFile(`${dir}/${filename}`);
   } catch (err) {
@@ -225,60 +207,16 @@ const localRead = async (filename: string): Promise<Uint8Array | null> => {
 
 /** Remove a file from the local storage directory */
 const localRemove = async (filename: string): Promise<void> => {
-  const dir = getLocalStoragePath() as string;
+  const dir = requireLocalPath();
   await Deno.remove(`${dir}/${filename}`);
 };
 
-// ---------------------------------------------------------------------------
-// Bunny CDN backend
-// ---------------------------------------------------------------------------
-
-/**
- * Lazily load the Bunny storage SDK. It is a heavy dependency (it drags in zod)
- * that only the Bunny backend's upload/download/delete calls actually use. The
- * SDK loads on the first Bunny operation, the same way the Stripe and Sentry
- * SDKs and the image codecs are dynamically imported.
- */
-const loadStorageSdk = once(() => import("@bunny.net/storage-sdk"));
-
-/** Connect to the Bunny storage zone, loading the SDK on first use. Returns both
- * the connected zone and the loaded SDK so callers can reach `sdk.file.*`. */
-const connectZone = async () => {
-  const config = getStorageConfig();
-  if (!config.zoneName || !config.zoneKey) {
-    throw new Error(
-      "Storage is not configured. Set STORAGE_ZONE_NAME and STORAGE_ZONE_KEY for Bunny CDN, or LOCAL_STORAGE_PATH for local storage.",
-    );
-  }
-  const sdk = await loadStorageSdk();
-  const sz = sdk.zone.connect_with_accesskey(
-    sdk.regions.StorageRegion.Falkenstein,
-    config.zoneName,
-    config.zoneKey,
-  );
-  return { sdk, sz };
-};
-
-/** Upload raw bytes to storage, routing to local or Bunny based on config */
+/** Upload raw bytes to local storage */
 export const uploadRaw = async (
   data: Uint8Array,
   filename: string,
 ): Promise<string> => {
-  if (getLocalStoragePath() !== null) {
-    await localWrite(data, filename);
-    return filename;
-  }
-  const { sdk, sz } = await connectZone();
-  const stream = new ReadableStream<Uint8Array>({
-    start(controller) {
-      controller.enqueue(data);
-      controller.close();
-    },
-  });
-  countExternalSubrequest("storage upload");
-  await sdk.file.upload(sz, `/${filename}`, stream as never, {
-    contentType: "application/octet-stream",
-  });
+  await localWrite(data, filename);
   return filename;
 };
 
@@ -307,48 +245,9 @@ export const uploadImageTargets: ImageTargetTranscoder<string[]> = async (
   );
 };
 
-/**
- * Collect a ReadableStream into a single Uint8Array.
- */
-const collectStream = async (
-  stream: ReadableStream<Uint8Array>,
-): Promise<Uint8Array> => {
-  const chunks: Uint8Array[] = [];
-  let totalLength = 0;
-  for await (const value of streamChunks(stream)) {
-    chunks.push(value);
-    totalLength += value.length;
-  }
-  const result = new Uint8Array(totalLength);
-  let offset = 0;
-  for (const chunk of chunks) {
-    result.set(chunk, offset);
-    offset += chunk.length;
-  }
-  return result;
-};
-
-/** Check if an error is a storage SDK "file not found" error */
-const isFileNotFound = (err: Error): boolean =>
-  err.message.startsWith("File not found:");
-
 /** Download raw bytes from storage. Returns null if the file does not exist. */
-export const downloadRaw = async (
-  filename: string,
-): Promise<Uint8Array | null> => {
-  if (getLocalStoragePath() !== null) {
-    return localRead(filename);
-  }
-  try {
-    const { sdk, sz } = await connectZone();
-    countExternalSubrequest("storage download");
-    const { stream } = await sdk.file.download(sz, `/${filename}`);
-    return collectStream(stream as ReadableStream<Uint8Array>);
-  } catch (err) {
-    if (isFileNotFound(err as Error)) return null;
-    throw err;
-  }
-};
+export const downloadRaw = (filename: string): Promise<Uint8Array | null> =>
+  localRead(filename);
 
 /**
  * Download and decrypt a file.
@@ -363,18 +262,12 @@ export const downloadImage = async (
 };
 
 /**
- * Delete a file, routing to local or Bunny based on config.
+ * Delete a file from local storage.
  */
 export const deleteFile = async (filename: string): Promise<void> => {
   const override = getDeleteOverride();
   if (override) throw override;
-  if (getLocalStoragePath() !== null) {
-    await localRemove(filename);
-    return;
-  }
-  const { sdk, sz } = await connectZone();
-  countExternalSubrequest("storage delete");
-  await sdk.file.remove(sz, `/${filename}`);
+  await localRemove(filename);
 };
 
 // ---------------------------------------------------------------------------
@@ -431,17 +324,17 @@ export const sanitizeBasename = (
   return cleaned || "file";
 };
 
-/** Sanitize a filename for use in CDN storage (strip path, collapse whitespace) */
+/** Sanitize a filename for use in storage (strip path, collapse whitespace) */
 const sanitizeFilename = (name: string): string =>
   sanitizeBasename(name, [/[^a-zA-Z0-9._-]/g, "_"]);
 
-/** Generate a random CDN filename preserving the original name for readability */
+/** Generate a random storage filename preserving the original name for readability */
 export const generateAttachmentFilename = (originalName: string): string =>
   `${crypto.randomUUID()}-${sanitizeFilename(originalName)}`;
 
 /**
- * Upload an attachment to Bunny storage.
- * Encrypts the file bytes before uploading.
+ * Upload an attachment to local storage.
+ * Encrypts the file bytes before writing.
  * Uses the provided filename (caller generates via generateAttachmentFilename).
  * Returns the filename on success.
  */
@@ -487,46 +380,23 @@ const splitListingPrefix = (
 /**
  * List files (with size metadata) matching a path prefix, sorted by name. The
  * prefix may name a subfolder (see `splitListingPrefix`); returned names always
- * include that folder so callers can download/delete them directly. For Bunny
- * CDN the size comes from the `Length` field of the listing API.
+ * include that folder so callers can download/delete them directly.
  */
 export const listFilesWithMeta = async (
   prefix: string,
 ): Promise<StorageFileMeta[]> => {
   const { dir, namePrefix } = splitListingPrefix(prefix);
-  if (getLocalStoragePath() !== null) {
-    const base = `${getLocalStoragePath() as string}/${dir}`;
-    const entries = await readDirSafe(base);
-    const files = await Promise.all(
-      entries
-        .filter((e) => e.isFile && e.name.startsWith(namePrefix))
-        .map(async (e) => ({
-          name: `${dir}${e.name}`,
-          size: (await Deno.stat(`${base}${e.name}`)).size,
-        })),
-    );
-    return sortByName(files);
-  }
-  const config = getStorageConfig();
-  const items = await listBunnyDir(
-    config.zoneName,
-    config.zoneKey,
-    dir,
-    prefix,
+  const base = `${requireLocalPath()}/${dir}`;
+  const entries = await readDirSafe(base);
+  const files = await Promise.all(
+    entries
+      .filter((e) => e.isFile && e.name.startsWith(namePrefix))
+      .map(async (e) => ({
+        name: `${dir}${e.name}`,
+        size: (await Deno.stat(`${base}${e.name}`)).size,
+      })),
   );
-  return sortByName(
-    items
-      // Bunny lists directories alongside files; keep only files so per-site
-      // backup folders don't surface as entries (the local backend filters to
-      // isFile for the same reason).
-      .filter((item) => !item.IsDirectory)
-      .map((item) => ({
-        name: String(item.ObjectName || ""),
-        size: Number(item.Length) || 0,
-      }))
-      .filter((f) => f.name !== "" && f.name.startsWith(namePrefix))
-      .map((f) => ({ name: `${dir}${f.name}`, size: f.size })),
-  );
+  return sortByName(files);
 };
 
 /** List files in storage matching a prefix (names only), sorted by name. */

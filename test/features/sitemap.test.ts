@@ -320,20 +320,4 @@ describeWithEnv("server public > sitemap.xml", { db: true }, () => {
       await disablePublicSite();
     }
   });
-
-  test("names the configured domain over the request's host", async () => {
-    await enablePublicSite();
-    try {
-      await settings.update.customDomain("custom.example");
-      await settings.update.customDomainLastValidated();
-      const response = await handleRequest(mockRequest("/sitemap.xml"));
-      assertStringIncludes(
-        await response.text(),
-        "<loc>https://custom.example/</loc>",
-      );
-    } finally {
-      await settings.update.customDomain("");
-      await disablePublicSite();
-    }
-  });
 });

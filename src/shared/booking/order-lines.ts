@@ -6,7 +6,6 @@ import {
 } from "#booking/tree.ts";
 import { requiredMapValue, sumByKey } from "#fp";
 import { type CheckoutItem, checkoutItem } from "#shared/payments.ts";
-import type { PurchaseContext } from "#shared/purchase-unit.ts";
 
 /**
  * Build an order's checkout lines from the booking tree: **one line per booked
@@ -88,15 +87,13 @@ const childNodesByListingId = (tree: BookingTree): Map<number, BookingNode> => {
  *  (a `bookable_alone` child beside its parent) — because the create paths
  *  split a child's line by the fold's allocations, and would mistake a second
  *  same-listing line for more folded units. `customPrices` carries pay-more
- *  inputs and QR overrides by listing id. `purchase` decides what one booked
- *  unit buys, so the lines state the term the buyer chose. */
+ *  inputs and QR overrides by listing id. */
 export const buildOrderLines = (
   tree: BookingTree,
   nodeQuantities: ReadonlyMap<string, number>,
   foldedQuantities: ReadonlyMap<number, number>,
   customPrices: ReadonlyMap<number, number>,
   dayCount: number,
-  purchase: PurchaseContext,
 ): CheckoutItem[] => {
   const childById = childNodesByListingId(tree);
   const pathLines = tree.nodes.flatMap((node): CheckoutItem[] => {
@@ -109,7 +106,6 @@ export const buildOrderLines = (
           node.listing,
           quantity,
           effectivePrice(node.priceRule, node.listing, customPrices, dayCount),
-          purchase,
         ),
         ...(packageGroupId === undefined ? {} : { packageGroupId }),
       },
@@ -144,7 +140,6 @@ export const buildOrderLines = (
             customPrices,
             dayCount,
           ),
-          purchase,
         ),
       ];
     },

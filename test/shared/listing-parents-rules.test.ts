@@ -226,18 +226,6 @@ describe("edgeFieldError", () => {
   // sides, so these assertions are what catch it.
   const blamedNameCases: [string, EdgeListing, EdgeListing, string][] = [
     [
-      "parent renewal",
-      listing({ months_per_unit: 1, name: "Membership" }),
-      listing(),
-      "Membership",
-    ],
-    [
-      "child renewal",
-      listing(),
-      listing({ months_per_unit: 1, name: "Gold Tier" }),
-      "Gold Tier",
-    ],
-    [
       "daily child under a non-daily parent",
       listing(),
       listing({ listing_type: "daily", name: "Cabin" }),
@@ -258,22 +246,6 @@ describe("edgeFieldError", () => {
       assert(!(message ?? "").includes("children_err"));
     });
   }
-
-  test("the parent-renewal error when the parent is a renewal tier", () => {
-    const parent = listing({ months_per_unit: 1, name: "Membership" });
-    const child = listing({ name: "Child" });
-    expect(edgeFieldError(parent, child)).toBe(
-      ruleError("parent_renewal", "Membership"),
-    );
-  });
-
-  test("the child-renewal error when the child is a renewal tier", () => {
-    const parent = listing({ name: "Parent" });
-    const child = listing({ months_per_unit: 1, name: "Membership" });
-    expect(edgeFieldError(parent, child)).toBe(
-      ruleError("child_renewal", "Membership"),
-    );
-  });
 
   test("the daily error when a daily child sits under a non-daily parent", () => {
     const parent = listing({ listing_type: "standard", name: "Parent" });
@@ -387,30 +359,6 @@ describe("edgeFieldError", () => {
       );
     });
   }
-
-  test("the parent-renewal check wins over every other violation", () => {
-    const parent = listing({ months_per_unit: 1, name: "Parent" });
-    const child = listing({
-      listing_type: "daily",
-      months_per_unit: 1,
-      name: "Child",
-    });
-    expect(edgeFieldError(parent, child)).toBe(
-      ruleError("parent_renewal", "Parent"),
-    );
-  });
-
-  test("the child-renewal check wins over the daily and duration checks", () => {
-    const parent = listing({ listing_type: "standard", name: "Parent" });
-    const child = listing({
-      listing_type: "daily",
-      months_per_unit: 1,
-      name: "Child",
-    });
-    expect(edgeFieldError(parent, child)).toBe(
-      ruleError("child_renewal", "Child"),
-    );
-  });
 
   test("the daily check wins over the duration check", () => {
     // Also incompatible on duration (5 vs the non-daily parent's fixed 1),

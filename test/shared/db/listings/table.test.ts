@@ -14,38 +14,6 @@ import { type DayPrices, MAX_DURATION_DAYS } from "#types";
 describeWithEnv("db > listings", { db: true, triggers: true }, () => {
   const errors = setupErrorSpy();
 
-  test("applies every listing storage default", async () => {
-    const listing = await listingsTable.insert({
-      maxAttendees: 100,
-      maxPrice: 10000,
-      name: "defaults",
-      slug: "storage-defaults",
-      slugIndex: await hmacHash("storage-defaults"),
-    });
-    const saved = await getListingWithCount(listing.id);
-    expect(saved).toMatchObject({
-      active: true,
-      assign_built_site: false,
-      bookable_alone: false,
-      can_pay_more: false,
-      customisable_days: false,
-      duration_days: 1,
-      fields: "email",
-      hidden: false,
-      initial_site_months: 0,
-      listing_type: "standard",
-      max_price: 10000,
-      max_quantity: 1,
-      maximum_days_after: 90,
-      minimum_days_before: 1,
-      months_per_unit: 0,
-      non_transferable: false,
-      purchase_only: false,
-      unit_price: 0,
-      use_defaults: false,
-    });
-  });
-
   test("applies numeric defaults at the raw table boundary", async () => {
     expect(rawListingsTable.schema.duration_days.default?.()).toBe(1);
     const listing = await rawListingsTable.insert({

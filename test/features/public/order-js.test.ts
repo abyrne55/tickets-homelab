@@ -217,26 +217,6 @@ describeWithEnv("order.js", { db: true, triggers: true }, () => {
     expectIncludesAll(body, ["const CATALOG", slug]);
   });
 
-  test("a Hidden=No default never reveals a renewal tier", async () => {
-    await settings.update.externalOrderEnabled(true);
-    await settings.update.listingDefaults({ hidden: false });
-    // A renewal tier (months_per_unit > 0) is excluded from the inheriting set,
-    // so a Hidden=No default can't surface it — it must stay hidden (or renewal
-    // extension breaks). Guards catalogVisibleSql's renewal-tier clause against
-    // drift from resolveListingDefaults' hidden gate.
-    const tier = await createTestListing({
-      hidden: true,
-      monthsPerUnit: 12,
-      name: "Renewal Tier",
-      purchaseOnly: true,
-      useDefaults: true,
-    });
-
-    const body = await (await orderJs()).text();
-    assertStringIncludes(body, "const CATALOG");
-    assert(!body.includes(tier.slug));
-  });
-
   test("excludes a required child even when a Hidden=No default would reveal it", async () => {
     await settings.update.externalOrderEnabled(true);
     await settings.update.listingDefaults({ hidden: false });

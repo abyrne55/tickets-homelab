@@ -6,46 +6,8 @@ import {
 } from "#routes/admin/catalog-transfer/bundle-names.ts";
 import type { CatalogBundle } from "#routes/admin/catalog-transfer/schema.ts";
 import { describeWithEnv } from "#test-utils/db.ts";
-import { createTestListing } from "#test-utils/db-helpers/listings.ts";
-
-/** A one-listing bundle item body. */
-const listingBundle = (
-  name: string,
-  over: Partial<CatalogBundle["listings"][number]["listing"]> = {},
-): CatalogBundle => ({
-  groups: [],
-  kind: "bundle",
-  listings: [
-    {
-      groups: [],
-      listing: { maxAttendees: 5, maxPrice: 0, name, unitPrice: 100, ...over },
-      parents: [],
-    },
-  ],
-  version: 1,
-});
 
 describeWithEnv("bundle name checks", { db: true }, () => {
-  test("collects one entry per failing item, naming every reason", async () => {
-    await createTestListing({ name: "Taken" });
-    const bundle = listingBundle("Taken", { assignBuiltSite: true });
-    const fail = failureCollector();
-    await checkItemNames(bundle, fail);
-    expect(fail.failures).toEqual([
-      {
-        item: "Taken",
-        reasons: [
-          // The site-plan refusal leads, matching the single import's guard
-          // order: a built-site plan never imports, whatever its name.
-          "Listings that assign a site on booking can't be imported. Create 'Taken' on this site instead.",
-          'A listing or group named "Taken" already exists — rename or remove it before importing.',
-        ],
-      },
-    ]);
-    expect(fail.hasFailed("Taken")).toBe(true);
-    expect(fail.hasFailed("Other")).toBe(false);
-  });
-
   test("reports the same duplicate reason once per item", async () => {
     const bundle: CatalogBundle = {
       groups: [],

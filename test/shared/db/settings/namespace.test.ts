@@ -1,11 +1,6 @@
 import { expect } from "@std/expect";
 import { describe, it as test } from "@std/testing/bdd";
-import {
-  isSet,
-  known,
-  snapGetters,
-  withProperties,
-} from "#db/settings/namespace.ts";
+import { known, snapGetters, withProperties } from "#db/settings/namespace.ts";
 import { settings } from "#db/settings.ts";
 
 describe("db > settings namespace", () => {
@@ -43,19 +38,6 @@ describe("db > settings namespace", () => {
     const getters = snapGetters({ theme: "theme" });
 
     expect(Object.keys(getters)).toEqual(["theme"]);
-  });
-
-  test("reads an is-set getter from the snapshot", () => {
-    const getters = snapGetters({ hasKey: isSet("superuser_choice") });
-
-    settings.setForTest({ superuser_choice: "enabled" });
-    try {
-      expect(getters.hasKey).toBe(true);
-      settings.setForTest({ superuser_choice: "" });
-      expect(getters.hasKey).toBe(false);
-    } finally {
-      settings.clearTestOverrides();
-    }
   });
 
   test("reads a known-value getter through its guard and fallback", () => {

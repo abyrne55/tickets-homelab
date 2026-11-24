@@ -3,7 +3,7 @@ import { expect } from "@std/expect";
 import { describe, it as test } from "@std/testing/bdd";
 import { logActivities } from "#db/activity-log.ts";
 import { backupDir } from "#db/backup-storage.ts";
-import { runWithStorageConfig, uploadRaw } from "#shared/storage.ts";
+import { uploadRaw } from "#shared/storage.ts";
 import {
   expectFlashRedirect,
   expectHtmlResponse,
@@ -13,13 +13,7 @@ import {
 import { describeWithEnv } from "#test-utils/db.ts";
 import { createTestListing } from "#test-utils/db-helpers/listings.ts";
 import { withEnv } from "#test-utils/env.ts";
-import { TEST_STORAGE_ZONE } from "#test-utils/internal.ts";
-import {
-  awaitTestRequest,
-  installUrlHandler,
-  withFetchMock,
-  withStorageDisabled,
-} from "#test-utils/mocks.ts";
+import { awaitTestRequest, withStorageDisabled } from "#test-utils/mocks.ts";
 import {
   adminFormPost,
   adminGet,
@@ -74,31 +68,6 @@ describeWithEnv("server (admin backup)", { db: true, storage: "local" }, () => {
       assertStringIncludes(
         html,
         `Backups for this database live in the ${backupDir()} folder.`,
-      );
-    });
-
-    test("shows the failure when the storage listing fails", async () => {
-      await runWithStorageConfig(TEST_STORAGE_ZONE, () =>
-        withFetchMock(async (originalFetch) => {
-          installUrlHandler(originalFetch, (url) =>
-            url.includes("storage.bunnycdn.com")
-              ? Promise.reject(new Error("list failed"))
-              : null,
-          );
-          const html = await (await adminGet("/admin/backup")).text();
-          // The key and restore instructions still render, but the failure is
-          // named instead of masquerading as an empty backup list.
-          expectIncludesAll(html, [
-            "deno task restore",
-            "Could not read the list of backups: list failed",
-          ]);
-          assert(!html.includes("No backups found"));
-          // Under Bunny storage the page also names the zone it reads.
-          assertStringIncludes(
-            html,
-            `of the ${TEST_STORAGE_ZONE.zoneName} storage zone`,
-          );
-        }),
       );
     });
   });

@@ -27,7 +27,6 @@ import {
   isStorageEnabled,
   listFilesWithMeta,
   type StorageFileMeta,
-  storageZoneName,
 } from "#shared/storage.ts";
 import {
   adminBackupPage,
@@ -60,7 +59,6 @@ const getBackupPageState = async (): Promise<BackupPageState> => {
     listingError: null,
     maxBackups: MAX_BACKUPS,
     storageEnabled: isStorageEnabled(),
-    storageZone: storageZoneName(),
   };
   if (!base.storageEnabled) {
     return { ...base, backups: [], createBlocked: null };

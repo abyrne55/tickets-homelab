@@ -391,11 +391,6 @@ const resendNotification = async (
       freeTexts,
       recoverSides: recover,
       sides,
-      // One site serves the whole buyer, so the assignment reads every
-      // line they hold, refunded ones too. A claim recorded on another
-      // purchase's plan keeps the buyer served. So does a claim on a line
-      // refunded later.
-      siteAssignmentEntries: entries,
       source,
     });
   } catch (error) {

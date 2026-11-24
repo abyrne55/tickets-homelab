@@ -14,7 +14,6 @@ describeWithEnv("server (owner-only route authorization)", { db: true }, () => {
     "/admin/backup",
     "/admin/debug",
     "/admin/schema",
-    "/admin/update",
     "/admin/questions",
     "/admin/sessions",
   ];
@@ -29,7 +28,6 @@ describeWithEnv("server (owner-only route authorization)", { db: true }, () => {
       path: "/admin/api-keys",
     },
     { body: { csrf_token: "mgr-csrf" }, path: "/admin/backup/create" },
-    { body: { csrf_token: "mgr-csrf" }, path: "/admin/update/check" },
     { body: { csrf_token: "mgr-csrf" }, path: "/admin/sessions" },
     // The manual money-correction routes post to the source-of-truth ledger, so
     // they are owner-only (decision 14). The role check fires before the entity

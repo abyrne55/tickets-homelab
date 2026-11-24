@@ -19,8 +19,6 @@ import {
   listingStatesTx,
   memberCapErrorTx,
   packageMembersErrorTx,
-  sitePlanMemberErrorTx,
-  storedPlanMemberErrorTx,
   submittedMembersCapErrorTx,
 } from "#db/groups/membership.ts";
 import { listingGroups } from "#db/groups/table.ts";
@@ -37,8 +35,7 @@ import { groupLeavingOrphanedAddOnError } from "#shared/add-on-reachability.ts";
 import type { PackageMemberInput } from "#shared/catalog-fields/fields.ts";
 
 /** Rechecks every member after a group becomes a package or hides its members.
- *  A built-site plan can be no group's final member — ordinary or package —
- *  so that check runs before the package-only rules. With the stored pick
+ *  With the stored pick
  *  counts kept (no members submitted), each stored member faces the pick-count
  *  judge at its stored count. A group that becomes a package keeps its
  *  members, and one whose minimum rose above its stored count must not
@@ -69,10 +66,7 @@ const packageGroupMembersErrorTx = async (
       if (quantityError) return quantityError;
     }
   }
-  return (
-    (await sitePlanMemberErrorTx(listings)) ??
-    packageMembersErrorTx(listings, state)
-  );
+  return packageMembersErrorTx(listings, state);
 };
 
 /** Stops the containing write when its changed group no longer has valid package members. */
@@ -235,7 +229,7 @@ export const assignListingsToGroup: MembershipWrite = membershipWrite(
     if (listings.length !== ids.length) {
       return t("error.selected_listing_deleted");
     }
-    const batchError = await addListingsBatchError(tx, listings, state);
+    const batchError = await addListingsBatchError(listings, state);
     if (batchError) return batchError;
     // A package join grants the default pick count of one. A listing whose
     // minimum sits above one can never be booked inside the bundle, so the
@@ -302,19 +296,12 @@ export const removeListingsFromGroup: MembershipWrite = membershipWrite(
   },
 );
 
-/** The rejection reasons for one add-listings batch: a built-site plan joins
- *  no group (ordinary or package), a stored plan member holds every joiner
- *  out, every joiner must match the group's settings, and package rules hold
- *  for every joiner. */
+/** The rejection reasons for one add-listings batch: every joiner must match
+ *  the group's settings, and package rules hold for every joiner. */
 const addListingsBatchError = async (
-  tx: TxScope,
   listings: readonly ListingState[],
   state: GroupState,
 ): Promise<string | null> => {
-  const sitePlanError = await sitePlanMemberErrorTx(listings);
-  if (sitePlanError) return sitePlanError;
-  const storedPlanError = await storedPlanMemberErrorTx(tx, [state]);
-  if (storedPlanError) return storedPlanError;
   const siblings: GroupListingSettings[] = [...state.members];
   for (const checked of listings) {
     const typeError = groupListingSettingsError(siblings, checked);

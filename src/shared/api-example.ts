@@ -17,7 +17,6 @@ import type { ListingWithCount } from "#types";
 /** Example listing matching the webhook example data */
 export const API_EXAMPLE_LISTING: ListingWithCount = {
   active: true,
-  assign_built_site: false,
   attachment_name: "",
   attachment_url: "",
   attendee_count: 3,
@@ -40,7 +39,6 @@ export const API_EXAMPLE_LISTING: ListingWithCount = {
   image_thumb_url: "",
   image_url: "",
   income: 7500,
-  initial_site_months: 0,
   listing_type: "standard",
   location: "Village Hall",
   max_attendees: 20,
@@ -49,7 +47,6 @@ export const API_EXAMPLE_LISTING: ListingWithCount = {
   maximum_days_after: 30,
   min_quantity: 1,
   minimum_days_before: 1,
-  months_per_unit: 0,
   name: EXAMPLE_LISTING.name,
   non_transferable: false,
   profit: 7500,

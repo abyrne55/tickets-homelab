@@ -9,7 +9,6 @@ import {
   boolUpdate,
   rawUpdate,
   stringAccessors,
-  timestampUpdate,
 } from "#db/settings/accessors.ts";
 import {
   ALL_SETTINGS_KEYS,
@@ -24,12 +23,7 @@ import {
 } from "#db/settings/cache.ts";
 import { withCurrentTask } from "#db/settings/current-task.ts";
 import { invalidateCache, loadKeys } from "#db/settings/load.ts";
-import {
-  isSet,
-  known,
-  snapGetters,
-  withProperties,
-} from "#db/settings/namespace.ts";
+import { isSet, snapGetters, withProperties } from "#db/settings/namespace.ts";
 import { updateUserPassword } from "#db/settings/password.ts";
 import { paymentProviderAccessors } from "#db/settings/payment-provider.ts";
 import {
@@ -56,7 +50,6 @@ import {
   snap,
 } from "#db/settings/snapshot.ts";
 import { parseTaxPolicy, updateTaxPolicy } from "#db/settings/tax.ts";
-import { cssUsesBunnyFonts } from "#routes/public/bunny-fonts.ts";
 import {
   type EnabledFeatures,
   parseEnabledFeatures,
@@ -78,13 +71,7 @@ import type { TaxPolicy } from "#shared/tax/types.ts";
 import { appleWallet } from "#shared/wallets/apple-wallet-settings.ts";
 import { googleWallet } from "#shared/wallets/google-wallet-settings.ts";
 import type { EmailContent } from "#templates/email/shared.ts";
-import {
-  type EmailTemplateFormat,
-  type EmailTemplateType,
-  isSuperuserChoice,
-  type SuperuserChoice,
-  type Theme,
-} from "#types";
+import type { EmailTemplateFormat, EmailTemplateType, Theme } from "#types";
 
 export type { SettingsData };
 export {
@@ -191,7 +178,7 @@ const settingsBase = {
     hasWebhookSecret: isSet("sms_gateway_webhook_secret"),
   }),
 
-  // --- Superuser ---
+  // --- Tax ---
   get tax(): TaxPolicy {
     return parseTaxPolicy(snap(CONFIG_KEYS.TAX));
   },
@@ -224,22 +211,10 @@ const settingsBase = {
       CONFIG_KEYS.CONTACT_FORM_ENABLED,
       "contact_form_enabled",
     ),
-    /** Save the stylesheet and the fonts flag it derives in one batch. A save
-     *  without a Bunny reference clears the flag. No reader sees the CSS
-     *  without its flag. */
     customCss: async (v: string): Promise<void> => {
-      const bunnyFonts = cssUsesBunnyFonts(v);
-      await writeRawBatch([
-        [CONFIG_KEYS.CUSTOM_CSS, v],
-        [CONFIG_KEYS.CUSTOM_CSS_BUNNY_FONTS, bunnyFonts ? "true" : "false"],
-      ]);
+      await writeRawBatch([[CONFIG_KEYS.CUSTOM_CSS, v]]);
       setSnapshotField(CONFIG_KEYS.CUSTOM_CSS, v);
-      setSnapshotField(CONFIG_KEYS.CUSTOM_CSS_BUNNY_FONTS, bunnyFonts);
     },
-    customDomainLastValidated: timestampUpdate(
-      CONFIG_KEYS.CUSTOM_DOMAIN_LAST_VALIDATED,
-      "custom_domain_last_validated",
-    ),
 
     // --- Email writes ---
     email: {
@@ -273,14 +248,6 @@ const settingsBase = {
       "orphan_purge_retention",
     ),
     showPublicApi: boolUpdate(CONFIG_KEYS.SHOW_PUBLIC_API, "show_public_api"),
-
-    superuserChoice: plaintextUpdate(CONFIG_KEYS.SUPERUSER_CHOICE) as (
-      v: SuperuserChoice,
-    ) => Promise<void>,
-    supportFormLastSubmitted: timestampUpdate(
-      CONFIG_KEYS.SUPPORT_FORM_LAST_SUBMITTED,
-      "support_form_last_submitted",
-    ),
     tax: updateTaxPolicy,
     theme: rawUpdate(CONFIG_KEYS.THEME, "theme") as (v: Theme) => Promise<void>,
     underlineLinks: boolUpdate(CONFIG_KEYS.UNDERLINE_LINKS, "underline_links"),
@@ -312,19 +279,11 @@ const storedSettingGetters = snapGetters({
   contactFormEnabled: "contact_form_enabled",
   country: "country",
   currency: "currency",
-  /** Derived when the stylesheet is saved, so the CSP builder reads a flag
-   *  instead of scanning it on every response. */
-  customCssBunnyFonts: "custom_css_bunny_fonts",
   externalOrderEnabled: "external_order_enabled",
   orderEnabled: "order_enabled",
   orphanPurgeRetention: "orphan_purge_retention",
   phonePrefix: "phone_prefix",
   showPublicApi: "show_public_api",
-  superuserChoice: known({
-    fallback: "",
-    isKnown: isSuperuserChoice,
-    key: "superuser_choice",
-  }),
   theme: "theme",
   timezone: "timezone",
   underlineLinks: "underline_links",

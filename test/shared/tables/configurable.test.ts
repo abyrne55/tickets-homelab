@@ -17,36 +17,11 @@ const ATTENDEE_COLUMNS = [
   "registered",
 ];
 
-const LISTING_DEFAULT_COLUMNS = [
-  "name",
-  "description",
-  "status",
-  "attendees",
-  "tickets",
-  "revenue",
-  "cost",
-  "profit",
-  "created",
-];
-
 describe("configurable table layouts", () => {
   test("declares every attendee column as visible by default", () => {
     expect(configurableTableLayouts.attendee.keys).toEqual(ATTENDEE_COLUMNS);
     expect(configurableTableLayouts.attendee.defaultColumnKeys).toEqual(
       ATTENDEE_COLUMNS,
-    );
-  });
-
-  test("keeps optional listing columns out of the default layout", () => {
-    expect(configurableTableLayouts.listing.keys).toEqual([
-      ...LISTING_DEFAULT_COLUMNS,
-      "date",
-      "location",
-      "price",
-      "renewal",
-    ]);
-    expect(configurableTableLayouts.listing.defaultColumnKeys).toEqual(
-      LISTING_DEFAULT_COLUMNS,
     );
   });
 

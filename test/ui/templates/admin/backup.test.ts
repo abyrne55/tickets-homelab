@@ -23,7 +23,6 @@ const baseState: BackupPageState = {
   listingError: null,
   maxBackups: 30,
   storageEnabled: true,
-  storageZone: null,
 };
 
 describeWithEnv("backup template", { encryptionKey: true }, () => {
@@ -94,17 +93,6 @@ describeWithEnv("backup template", { encryptionKey: true }, () => {
     assertStringIncludes(
       html,
       "Backups for this database live in the my-site/ folder.",
-    );
-  });
-
-  test("names the storage zone when one is configured", () => {
-    const html = adminBackupPage(mockSession, {
-      ...baseState,
-      storageZone: "zone-a",
-    });
-    assertStringIncludes(
-      html,
-      "Backups for this database live in the my-site/ folder of the zone-a storage zone.",
     );
   });
 

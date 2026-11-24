@@ -1,8 +1,6 @@
 import { expect } from "@std/expect";
 import { it as test } from "@std/testing/bdd";
-import { takePooledSiteForBuyer } from "#db/built-sites/claims.ts";
-import { getAssignableBuiltSites, insertBuiltSite } from "#db/built-sites.ts";
-import { queryAll, queryOne } from "#db/client.ts";
+import { queryAll } from "#db/client.ts";
 import {
   createMergePair,
   runMerge,
@@ -51,32 +49,5 @@ describeWithEnv("attendee merge cleanup", { db: true }, () => {
       ),
     ).toEqual([{ confirmation_identity: targetConfirmation.identity }]);
     expect(sourceConfirmation.identity).not.toBe(targetConfirmation.identity);
-  });
-
-  test("moves a built-site assignment from the source to the target", async () => {
-    const { listing2, source, target } = await createMergePair();
-    const site = await insertBuiltSite(
-      "Merged attendee site",
-      "merged-attendee.example.test",
-      "",
-      "",
-      true,
-    );
-    await takePooledSiteForBuyer(
-      await getAssignableBuiltSites(),
-      source.id,
-      [listing2.id],
-      listing2.id,
-    );
-
-    const { result } = await runMerge({ source, target });
-
-    expect(result.success).toBe(true);
-    expect(
-      await queryOne<{ assigned_attendee_id: number | null }>(
-        "SELECT assigned_attendee_id FROM built_sites WHERE id = ?",
-        [site.id],
-      ),
-    ).toEqual({ assigned_attendee_id: target.id });
   });
 });

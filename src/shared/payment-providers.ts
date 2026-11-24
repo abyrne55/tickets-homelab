@@ -39,15 +39,12 @@ export type PaymentProviderMeta = {
   /** How this provider's webhook is wired, or null when it sends none.
    *
    * One nullable column, because the three facts that hang off it must never
-   * disagree: the header a signature arrives in, whether the endpoint refuses
-   * an unsigned request, and whether an operator has a webhook to repoint
-   * after the site's domain changes. A provider whose webhooks are unsigned
+   * disagree: the header a signature arrives in and whether the endpoint
+   * refuses an unsigned request. A provider whose webhooks are unsigned
    * re-establishes authenticity by reading its own API back instead. */
   readonly webhook: {
     /** Request header carrying the signature. */
     readonly signatureHeader: string;
-    /** Catalog key naming what the operator must redo after a domain change. */
-    readonly domainChangeFixKey: string;
   } | null;
   /** Upper-case ISO 4217 codes, or `null` when it takes every currency. */
   readonly currencies: ReadonlySet<string> | null;
@@ -91,7 +88,6 @@ export const PAYMENT_PROVIDERS = {
     refundCapability: "keyed",
     secretField: "square_access_token",
     webhook: {
-      domainChangeFixKey: "settings.domain_warning.square",
       signatureHeader: "x-square-hmacsha256-signature",
     },
   },
@@ -103,7 +99,6 @@ export const PAYMENT_PROVIDERS = {
     refundCapability: "keyed",
     secretField: "stripe_secret_key",
     webhook: {
-      domainChangeFixKey: "settings.domain_warning.stripe",
       signatureHeader: "stripe-signature",
     },
   },

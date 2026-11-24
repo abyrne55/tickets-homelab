@@ -66,9 +66,6 @@ describeWithEnv(
           "listing_id",
         ]);
         assertArrayIncludes(await columnNames("activity_log"), ["listing_id"]);
-        assertArrayIncludes(await columnNames("built_sites"), [
-          "assigned_listing_id",
-        ]);
 
         const listings = await getAllListings();
         expect(listings.length).toBe(1);
@@ -76,15 +73,11 @@ describeWithEnv(
 
       test("skips column renames for tables that do not exist", async () => {
         await downgradeListingDomainToLegacyNames();
-        await getDb().execute("DROP TABLE built_sites");
 
         await renameEventsToListings();
 
         const tables = await tableNames();
         expect(tables.has("listings")).toBe(true);
-        assertArrayIncludes(await columnNames("built_sites"), [
-          "assigned_listing_id",
-        ]);
       });
 
       test("is a no-op when listing tables already exist", async () => {

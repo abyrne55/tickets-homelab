@@ -96,26 +96,6 @@ describe("listingToFieldValues", () => {
     // pinned here.
     expect(values.date).toMatch(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}$/);
   });
-
-  test("carries site months only while the listing holds a plan", () => {
-    const kept = listingToFieldValues(
-      testListingWithCount({
-        initial_site_months: 6,
-        months_per_unit: 3,
-      }),
-    );
-    expect(kept.initial_site_months).toBe("6");
-    expect(kept.months_per_unit).toBe("3");
-
-    const planless = listingToFieldValues(
-      testListingWithCount({
-        initial_site_months: 0,
-        months_per_unit: 0,
-      }),
-    );
-    expect(planless.initial_site_months).toBe("");
-    expect(planless.months_per_unit).toBe("");
-  });
 });
 
 describe("defaultsToFieldValues", () => {

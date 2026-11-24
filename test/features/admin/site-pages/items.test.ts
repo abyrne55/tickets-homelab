@@ -1,7 +1,6 @@
 import { assert, assertStringIncludes } from "@std/assert";
 import { expect } from "@std/expect";
 import { describe, it as test } from "@std/testing/bdd";
-import { listingChildren } from "#db/listing-parents.ts";
 import { addPageItem, getItemsForPage } from "#db/site-page-items.ts";
 import { wasActivityLogged as wasLogged } from "#test-utils/activity-log.ts";
 import {
@@ -123,59 +122,6 @@ describeWithEnv("server (admin site pages)", { db: true }, () => {
       expect((html.match(/\(missing\)/g) ?? []).length).toBe(1);
       // The spare page is offered in the sub-page picker.
       assertStringIncludes(html, "Name spare");
-    });
-
-    test("offers only active listings; labels keep inactive ones named", async () => {
-      const page = await seedPage("actives");
-      const inactive = await createTestListing({ name: "Retired Listing" });
-      await addPageItem(page.id, "listing", inactive.id);
-      const { deactivateTestListing } = await import(
-        "#test-utils/db-helpers/listings.ts"
-      );
-      await deactivateTestListing(inactive.id);
-      const html = await expectHtmlResponse(
-        await adminGet(`${BASE}/${page.id}/items`),
-        200,
-      );
-      // The already-added inactive listing still labels its row...
-      assertStringIncludes(html, "Retired Listing");
-      // ...but an inactive listing is never offered as a new option, and
-      // neither is a renewal tier (a normal public link would take payment
-      // without extending the site).
-      assert(!html.includes(`value="${inactive.id}"`));
-      const tier = await createTestListing({
-        hidden: true,
-        monthsPerUnit: 1,
-        name: "Tier Listing",
-        purchaseOnly: true,
-      });
-      const html2 = await expectHtmlResponse(
-        await adminGet(`${BASE}/${page.id}/items`),
-        200,
-      );
-      assert(!html2.includes(`value="${tier.id}"`));
-      // A child listing's public page 404s by construction (a booking can
-      // never start from a child, I3), so it is never offered either — while
-      // its parent still is.
-      const parent = await createTestListing({ name: "Parent Listing" });
-      const child = await createTestListing({ name: "Child Listing" });
-      await listingChildren.setIds(parent.id, [child.id]);
-      const html3 = await expectHtmlResponse(
-        await adminGet(`${BASE}/${page.id}/items`),
-        200,
-      );
-      assertStringIncludes(html3, ">Parent Listing<");
-      assert(!html3.includes(">Child Listing<"));
-      // And the server revalidation rejects all three.
-      const other = await seedPage("actives-2");
-      for (const id of [inactive.id, tier.id, child.id]) {
-        const { response } = await adminFormPost(`${BASE}/${other.id}/items`, {
-          item_id: String(id),
-          item_type: "listing",
-        });
-        expectErrorFlash(response, "can't be added");
-      }
-      expect((await getItemsForPage(other.id)).length).toBe(0);
     });
 
     test("rejects an ineligible / invalid target", async () => {

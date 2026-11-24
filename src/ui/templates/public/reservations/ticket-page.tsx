@@ -190,7 +190,6 @@ export const ticketPage = ({
   actionUrl,
   addOns,
   promoCodesEnabled,
-  renewal,
   childrenByParentId,
   childDatesById,
   groupRemainingByGroupId = new Map(),
@@ -287,8 +286,6 @@ export const ticketPage = ({
     isSingleListing,
     packageLimits,
     prefill,
-    // A renewal page prices its tiers by months per unit, not tickets.
-    renewal: renewal === true,
     rows: withShortNames(listingNamePrefix, rows),
     singlePackagePage,
     singleTicket: singleTicketGroupId !== undefined,
@@ -331,9 +328,7 @@ export const ticketPage = ({
           listingAttributes={listingAttributes}
           pastDays={pastDays}
           priceHtml={
-            isSingleListing && rows[0]
-              ? fixedPriceLabel(rows[0].info, renewal === true)
-              : ""
+            isSingleListing && rows[0] ? fixedPriceLabel(rows[0].info) : ""
           }
           sharedWhen={groupSharedWhen(singleListing, packages, listings)}
           singleListing={singleListing}

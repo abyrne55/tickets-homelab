@@ -3,28 +3,9 @@ import { afterEach, describe, it as test } from "@std/testing/bdd";
 import {
   getBotpoisonPublicKey,
   getBotpoisonSecretKey,
-  getBunnyApiKey,
-  getBunnyDnsSubdomainSuffix,
-  getBunnyDnsZoneId,
-  getBunnyScriptId,
   getDebugKey,
-  getDefaultDbProvider,
-  getDenoDeployOrgId,
-  getDenoDeployOrgSlug,
-  getDenoDeployToken,
-  getMainInstanceKey,
-  getTursoApiToken,
-  getTursoGroup,
-  getTursoOrganization,
   isBotpoisonEnabled,
-  isBuilderEnabled,
-  isBunnyCdnEnabled,
-  isBunnyDbEnabled,
-  isBunnyDnsEnabled,
-  isDenoDeployEnabled,
-  isInstanceApiEnabled,
   isSecureMode,
-  isTursoEnabled,
   resetEffectiveDomain,
   seedEffectiveDomainHost,
   setEffectiveDomainForTest,
@@ -53,13 +34,6 @@ const expectEnvGetter =
       });
     });
   };
-
-const expectRequiredEnvGetter = expectEnvGetter({
-  check: (getValue, key) => {
-    expect(getValue).toThrow(`Required environment variable ${key} is not set`);
-  },
-  name: "throws when the required value is missing",
-});
 
 const expectOptionalEnvGetter = expectEnvGetter({
   check: (getValue) => {
@@ -142,52 +116,6 @@ describe("isSecureMode", () => {
   });
 });
 
-expectEnabledByAllKeys("isBunnyCdnEnabled", isBunnyCdnEnabled, [
-  "BUNNY_API_KEY",
-  "BUNNY_SCRIPT_ID",
-]);
-
-expectEnabledByAllKeys("isBunnyDnsEnabled", isBunnyDnsEnabled, [
-  "BUNNY_API_KEY",
-  "BUNNY_DNS_ZONE_ID",
-]);
-
-describe("isBunnyDbEnabled", () => {
-  test("returns true when the API key is set", () => {
-    using _env = withEnv({ BUNNY_API_KEY: "bunny_key" });
-    expect(isBunnyDbEnabled()).toBe(true);
-  });
-
-  test("returns false when the API key is missing", () => {
-    using _env = withEnv({ BUNNY_API_KEY: undefined });
-    expect(isBunnyDbEnabled()).toBe(false);
-  });
-});
-
-expectRequiredEnvGetter(
-  "getBunnyApiKey",
-  getBunnyApiKey,
-  "BUNNY_API_KEY",
-  "bunny_key",
-);
-expectRequiredEnvGetter(
-  "getBunnyDnsZoneId",
-  getBunnyDnsZoneId,
-  "BUNNY_DNS_ZONE_ID",
-  "zone_123",
-);
-expectOptionalEnvGetter(
-  "getBunnyDnsSubdomainSuffix",
-  getBunnyDnsSubdomainSuffix,
-  "BUNNY_DNS_SUBDOMAIN_SUFFIX",
-  ".tickets",
-);
-expectRequiredEnvGetter(
-  "getBunnyScriptId",
-  getBunnyScriptId,
-  "BUNNY_SCRIPT_ID",
-  "script_123",
-);
 expectOptionalEnvGetter("getDebugKey", getDebugKey, "DEBUG_KEY", "debug_key");
 
 expectOptionalEnvGetter(
@@ -206,98 +134,3 @@ expectEnabledByAllKeys("isBotpoisonEnabled", isBotpoisonEnabled, [
   "BOTPOISON_PUBLIC_KEY",
   "BOTPOISON_SECRET_KEY",
 ]);
-
-describe("isInstanceApiEnabled", () => {
-  test("returns true when the main instance key is set", () => {
-    using _env = withEnv({ MAIN_INSTANCE_KEY: "main_key" });
-    expect(isInstanceApiEnabled()).toBe(true);
-  });
-
-  test("returns false when the main instance key is missing", () => {
-    using _env = withEnv({ MAIN_INSTANCE_KEY: undefined });
-    expect(isInstanceApiEnabled()).toBe(false);
-  });
-});
-
-expectRequiredEnvGetter(
-  "getMainInstanceKey",
-  getMainInstanceKey,
-  "MAIN_INSTANCE_KEY",
-  "main_key",
-);
-
-expectEnabledByAllKeys("isDenoDeployEnabled", isDenoDeployEnabled, [
-  "DENO_DEPLOY_TOKEN",
-  "DENO_DEPLOY_ORG_ID",
-  "DENO_DEPLOY_ORG_SLUG",
-]);
-expectRequiredEnvGetter(
-  "getDenoDeployToken",
-  getDenoDeployToken,
-  "DENO_DEPLOY_TOKEN",
-  "deploy_token",
-);
-expectRequiredEnvGetter(
-  "getDenoDeployOrgId",
-  getDenoDeployOrgId,
-  "DENO_DEPLOY_ORG_ID",
-  "deploy_org",
-);
-expectRequiredEnvGetter(
-  "getDenoDeployOrgSlug",
-  getDenoDeployOrgSlug,
-  "DENO_DEPLOY_ORG_SLUG",
-  "deploy-org",
-);
-
-describe("getDefaultDbProvider", () => {
-  test("returns turso only when DEFAULT_DB_HOST is turso", () => {
-    using _env = withEnv({ DEFAULT_DB_HOST: "turso" });
-    expect(getDefaultDbProvider()).toBe("turso");
-  });
-
-  test("returns bunny when DEFAULT_DB_HOST is missing", () => {
-    using _env = withEnv({ DEFAULT_DB_HOST: undefined });
-    expect(getDefaultDbProvider()).toBe("bunny");
-  });
-
-  test("returns bunny for any other configured value", () => {
-    using _env = withEnv({ DEFAULT_DB_HOST: "some-unrecognised-host" });
-    expect(getDefaultDbProvider()).toBe("bunny");
-  });
-});
-
-describe("isBuilderEnabled", () => {
-  test("reads CAN_BUILD_SITES as a switch with a safe default", () => {
-    using _builder = withEnv({ CAN_BUILD_SITES: "true" });
-    expect(isBuilderEnabled()).toBe(true);
-    using _notBuilder = withEnv({ CAN_BUILD_SITES: "false" });
-    expect(isBuilderEnabled()).toBe(false);
-    using _unset = withEnv({ CAN_BUILD_SITES: undefined });
-    expect(isBuilderEnabled()).toBe(false);
-  });
-});
-
-expectEnabledByAllKeys("isTursoEnabled", isTursoEnabled, [
-  "TURSO_API_TOKEN",
-  "TURSO_ORGANIZATION",
-  "TURSO_GROUP",
-]);
-expectRequiredEnvGetter(
-  "getTursoApiToken",
-  getTursoApiToken,
-  "TURSO_API_TOKEN",
-  "turso_token",
-);
-expectRequiredEnvGetter(
-  "getTursoOrganization",
-  getTursoOrganization,
-  "TURSO_ORGANIZATION",
-  "turso_org",
-);
-expectRequiredEnvGetter(
-  "getTursoGroup",
-  getTursoGroup,
-  "TURSO_GROUP",
-  "turso_group",
-);

@@ -1,9 +1,5 @@
-import { expect } from "@std/expect";
 import { describe, it as test } from "@std/testing/bdd";
-import {
-  contentEntityEditPanel,
-  contentGuideFooter,
-} from "#templates/admin/site-content.tsx";
+import { contentEntityEditPanel } from "#templates/admin/site-content.tsx";
 import { setupAdminPageTest } from "#test-utils/admin-page-test.ts";
 import { expectIncludesAll } from "#test-utils/assertions.ts";
 
@@ -28,16 +24,5 @@ describe("contentEntityEditPanel", () => {
       'value="Launch &amp; Learn"',
       "Save Changes",
     ]);
-  });
-
-  test("the site content guide footer links staff and hides from editors", () => {
-    const owner = String(contentGuideFooter("built-sites", "owner"));
-    expectIncludesAll(owner, [
-      'href="/admin/guide#built-sites"',
-      "Guide: pages, news &amp; images",
-    ]);
-    // Editors cannot open the staff-only guide, so the footer renders nothing
-    // rather than a link that 403s.
-    expect(String(contentGuideFooter("built-sites", "editor"))).toBe("");
   });
 });

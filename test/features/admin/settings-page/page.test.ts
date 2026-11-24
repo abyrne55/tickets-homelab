@@ -2,8 +2,6 @@ import { assert, assertStringIncludes } from "@std/assert";
 import { expect } from "@std/expect";
 import { describe, it as test } from "@std/testing/bdd";
 import { settings } from "#db/settings.ts";
-import type { bunnyCdnApi } from "#shared/bunny-cdn.ts";
-import { buildFlashCookie } from "#shared/cookies.ts";
 import {
   expectHtml,
   expectHtmlResponse,
@@ -14,8 +12,7 @@ import {
 } from "#test-utils/assertions.ts";
 import { describeWithEnv } from "#test-utils/db.ts";
 import { withEnv } from "#test-utils/env.ts";
-import { awaitTestRequest, withMockBunnyCdnApi } from "#test-utils/mocks.ts";
-import { secureAdminCookie, secureAdminGet } from "#test-utils/secure-admin.ts";
+import { awaitTestRequest } from "#test-utils/mocks.ts";
 import { adminGet, testCookie } from "#test-utils/session.ts";
 
 describeWithEnv("server (admin settings)", { db: true }, () => {
@@ -32,35 +29,6 @@ describeWithEnv("server (admin settings)", { db: true }, () => {
       },
     );
     return expectHtml(response, opts);
-  };
-
-  const advancedPageWithResult = async (result: string): Promise<string> => {
-    const flashCookie = buildFlashCookie(
-      FLASH_TEST_ID,
-      "Subdomain available",
-      true,
-      result,
-    ).split(";")[0]!;
-    const response = await awaitTestRequest(
-      `/admin/settings-advanced?flash=${FLASH_TEST_ID}`,
-      { cookie: `${await testCookie()}; ${flashCookie}` },
-    );
-    expect(response.status).toBe(200);
-    return await response.text();
-  };
-
-  const withCdnHostname = async (
-    result: Awaited<ReturnType<typeof bunnyCdnApi.getCdnHostname>>,
-    body: () => Promise<void>,
-  ): Promise<void> => {
-    using _env = withEnv({
-      BUNNY_API_KEY: "bunny-key",
-      BUNNY_SCRIPT_ID: "script-id",
-    });
-    await withMockBunnyCdnApi(
-      { getCdnHostname: () => Promise.resolve(result) },
-      body,
-    );
   };
 
   describe("GET /admin/settings", () => {
@@ -213,31 +181,6 @@ describeWithEnv("server (admin settings)", { db: true }, () => {
       ]);
     });
 
-    test("shows exact empty host settings and scheduled-key state", async () => {
-      using _env = withEnv({
-        APPLE_WALLET_PASS_TYPE_ID: undefined,
-        BUNNY_API_KEY: undefined,
-        BUNNY_DNS_ZONE_ID: undefined,
-        BUNNY_SCRIPT_ID: undefined,
-        GOOGLE_WALLET_ISSUER_ID: undefined,
-        HOST_EMAIL_PROVIDER: undefined,
-        SCHEDULED_TASK_KEY: undefined,
-      });
-      settings.appleWallet.setHostConfigForTest(null);
-      settings.googleWallet.setHostConfigForTest(null);
-      try {
-        const html = await (await adminGet("/admin/settings-advanced")).text();
-        expectIncludesAll(html, [
-          ">None (disabled)</option>",
-          "No scheduled maintenance key is set on this site.",
-        ]);
-        assert(!html.includes("Currently using:"));
-      } finally {
-        settings.appleWallet.resetHostConfig();
-        settings.googleWallet.resetHostConfig();
-      }
-    });
-
     test("shows the exact configured wallet host labels", async () => {
       settings.appleWallet.setHostConfigForTest({
         passTypeId: "pass.com.host.tickets",
@@ -262,98 +205,6 @@ describeWithEnv("server (admin settings)", { db: true }, () => {
         settings.googleWallet.resetHostConfig();
       }
     });
-
-    test("shows the exact DNS suffix without a pending preview", async () => {
-      using _env = withEnv({
-        BUNNY_API_KEY: "bunny-key",
-        BUNNY_DNS_SUBDOMAIN_SUFFIX: ".tickets.test",
-        BUNNY_DNS_ZONE_ID: "zone-id",
-        BUNNY_SCRIPT_ID: undefined,
-      });
-
-      const html = await (await adminGet("/admin/settings-advanced")).text();
-
-      assertStringIncludes(html, '<span class="muted">.tickets.test</span>');
-      // No pending preview: the hidden subdomain input only appears after a
-      // successful check.
-      assert(!html.includes('<input name="subdomain" type="hidden"'));
-    });
-
-    test("splits an exact subdomain preview from its full domain", async () => {
-      using _env = withEnv({
-        BUNNY_API_KEY: "bunny-key",
-        BUNNY_DNS_SUBDOMAIN_SUFFIX: ".tickets.test",
-        BUNNY_DNS_ZONE_ID: "zone-id",
-        BUNNY_SCRIPT_ID: undefined,
-      });
-
-      const html = await advancedPageWithResult(
-        "my-site\nmy-site.tickets.test",
-      );
-
-      expectIncludesAll(html, [
-        "<strong>my-site.tickets.test</strong>",
-        '<input name="subdomain" type="hidden" value="my-site">',
-      ]);
-    });
-
-    test("uses an empty full domain when a preview result has one line", async () => {
-      using _env = withEnv({
-        BUNNY_API_KEY: "bunny-key",
-        BUNNY_DNS_ZONE_ID: "zone-id",
-        BUNNY_SCRIPT_ID: undefined,
-      });
-
-      const html = await advancedPageWithResult("my-site");
-
-      expectIncludesAll(html, [
-        "<strong></strong>",
-        '<input name="subdomain" type="hidden" value="my-site">',
-      ]);
-    });
-
-    test("shows an unvalidated custom domain and exact empty CDN target", () =>
-      withCdnHostname({ error: "unavailable", ok: false }, async () => {
-        await settings.update.customDomain("tickets.example.com");
-
-        const html = await (await adminGet("/admin/settings-advanced")).text();
-
-        expectIncludesAll(html, [
-          "Your custom domain is not yet validated.",
-          "<strong>Value:</strong> <code></code>",
-        ]);
-        assert(!html.includes("Last validated:"));
-      }));
-
-    test("shows the exact validated custom domain and CDN target", () =>
-      withCdnHostname({ hostname: "site.b-cdn.net", ok: true }, async () => {
-        const cookie = await secureAdminCookie();
-        await settings.update.customDomain("tickets.example.com");
-        await settings.update.customDomainLastValidated();
-        const validatedAt = settings.customDomainLastValidated;
-
-        const response = await secureAdminGet(
-          "/admin/settings-advanced",
-          "tickets.example.com",
-          cookie,
-        );
-        const html = await response.text();
-
-        expect(response.status).toBe(200);
-        expectIncludesAll(html, [
-          "<code>tickets.example.com</code>",
-          "<strong>Value:</strong> <code>site.b-cdn.net</code>",
-          `Last validated: ${validatedAt}`,
-        ]);
-      }));
-
-    test("keeps an empty custom domain empty when Bunny CDN is configured", () =>
-      withCdnHostname({ hostname: "site.b-cdn.net", ok: true }, async () => {
-        const html = await (await adminGet("/admin/settings-advanced")).text();
-
-        assert(!html.includes("Your custom domain is not yet validated."));
-        assert(!html.includes("Last validated:"));
-      }));
 
     test("shows warning about careful changes", async () => {
       const response = await adminGet("/admin/settings-advanced");

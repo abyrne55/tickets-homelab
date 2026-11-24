@@ -19,16 +19,12 @@ import {
   visibleTopLevel,
 } from "#shared/admin-pages.ts";
 import type { AdminSurfaceContext } from "#shared/admin-surface/definitions.ts";
-import { isBuilderEnabled } from "#shared/config.ts";
 import {
   getReadOnlyCutoffIso,
-  getRenewalUrl,
   isReadOnly,
   isReadOnlyWarning,
-  isUpdateInProgress,
 } from "#shared/env.ts";
 import { isStorageEnabled } from "#shared/storage.ts";
-import { isSupportEnabled } from "#shared/support.ts";
 import { markAdminFooter } from "#templates/admin/footer.tsx";
 import { SettingsNagBanner } from "#templates/admin/settings-nag-banner.tsx";
 import {
@@ -90,44 +86,24 @@ const resolveSectionItems = (sec: NavSection): Section => ({
   topHref: sec.topHref,
 });
 
-/** The " — Renew" link appended to a read-only/warning banner, or an empty
- *  string when there is no renewal URL to point at. */
-const renewalBannerLink = (renewalUrl: string | null): string =>
-  renewalUrl ? ` — <a href="${renewalUrl}">${t("nav.readonly.renew")}</a>` : "";
-
-/** Render read-only or warning banner with optional renewal URL */
+/** Render the read-only or warning banner */
 const renderReadOnlyBanner = (
-  updating: boolean,
   readOnly: boolean,
   warning: boolean,
   cutoffIso: string | null,
-  renewalUrl: string | null,
 ): JSX.Element | null => {
-  // No renewal link while an update runs: the renewal form is a blocked
-  // write during that window.
-  if (updating) {
-    return (
-      <Raw
-        html={`<div class="read-only-banner">${t("nav.readonly.updating")}</div>`}
-      />
-    );
-  }
   if (readOnly) {
-    const link = renewalBannerLink(renewalUrl);
     return (
       <Raw
-        html={`<div class="read-only-banner">${t(
-          "nav.readonly.banner",
-        )}${link}</div>`}
+        html={`<div class="read-only-banner">${t("nav.readonly.banner")}</div>`}
       />
     );
   }
   if (warning) {
-    const link = renewalBannerLink(renewalUrl);
     const dateStr = new Date(String(cutoffIso)).toLocaleDateString();
     const msg = dateStr
-      ? `${t("nav.readonly.expires", { date: dateStr })}${link}`
-      : `${t("nav.readonly.expiring")}${link}`;
+      ? t("nav.readonly.expires", { date: dateStr })
+      : t("nav.readonly.expiring");
     return <Raw html={`<div class="read-only-banner-warning">${msg}</div>`} />;
   }
   return null;
@@ -142,11 +118,9 @@ const navCtx = (
 ): AdminSurfaceContext => ({
   active,
   adminLevel,
-  builder: isBuilderEnabled(),
   enabledFeatures: settings.features,
   isReadOnly: isReadOnly(),
   storage: isStorageEnabled(),
-  support: isSupportEnabled(),
 });
 
 /** A section owns the active route when it's the section's landing link or one
@@ -247,11 +221,9 @@ export const AdminNav = ({ session, active }: AdminNavProps): JSX.Element => {
   return (
     <>
       {renderReadOnlyBanner(
-        isUpdateInProgress(),
         isReadOnly(),
         isReadOnlyWarning(),
         getReadOnlyCutoffIso(),
-        getRenewalUrl(),
       )}
       {session.adminLevel === "owner" && (
         <SettingsNagBanner

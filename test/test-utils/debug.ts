@@ -17,20 +17,10 @@ export const makeDebugState = (
   },
   availability: {
     cutoff: "",
-    renewalConfigured: false,
     serverTime: "1970-01-01T00:00:00.000Z",
     state: "active",
   },
   build: { commit: "", timestamp: "" },
-  bunny: {
-    cdnEnabled: false,
-    cdnHostname: "",
-    customDomain: "",
-    dnsEnabled: false,
-    registeredSubdomain: "",
-    storageBackend: "none",
-    subdomainSuffix: "",
-  },
   database: {
     host: null,
     hostConfigured: false,
@@ -79,6 +69,7 @@ export const makeDebugState = (
     spamProtection: false,
     timezone: "",
   },
+  storage: { storageBackend: "none" },
   theme: "light",
   ...overrides,
 });

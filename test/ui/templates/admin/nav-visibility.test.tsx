@@ -4,7 +4,6 @@ import { it as test } from "@std/testing/bdd";
 import { AdminNav } from "#templates/admin/nav.tsx";
 import { expectIncludesAll } from "#test-utils/assertions.ts";
 import { describeWithEnv } from "#test-utils/db.ts";
-import { withEnv } from "#test-utils/env.ts";
 import { withStorageDisabled, withStorageEnabled } from "#test-utils/mocks.ts";
 import {
   featureSetting,
@@ -117,35 +116,6 @@ describeWithEnv("AdminNav visibility", {}, () => {
     }
   });
 
-  test("Builds is a top-level link on a site that can build", () => {
-    using _builder = withEnv({ CAN_BUILD_SITES: "true" });
-    // The landing nav renders no section sub-nav, so a link here can only
-    // sit at the top level.
-    const html = String(
-      AdminNav({ active: "/admin/", session: { adminLevel: "owner" } }),
-    );
-    expectIncludesAll(html, ['href="/admin/built-sites"', "Builds"]);
-  });
-
-  test("Builds is absent on a site that cannot build", () => {
-    const html = String(
-      AdminNav({ active: "/admin/", session: { adminLevel: "owner" } }),
-    );
-    assert(!html.includes('href="/admin/built-sites"'));
-  });
-
-  test("Builds no longer sits in the Settings sub-nav", () => {
-    using _builder = withEnv({ CAN_BUILD_SITES: "true" });
-    const html = String(
-      AdminNav({
-        active: "/admin/settings",
-        session: { adminLevel: "owner" },
-      }),
-    );
-    const sub = subNav(html);
-    assert(!sub.includes('href="/admin/built-sites"'));
-  });
-
   test("editors get no section sub-nav away from the Site editor", () => {
     const html = String(
       AdminNav({
@@ -192,54 +162,5 @@ describeWithEnv("AdminNav visibility", {}, () => {
       );
       assert(!html.includes('href="/admin/guide"'), adminLevel);
     }
-  });
-
-  test("Support sits in the Guide sub-nav for owners when the host offers it", () => {
-    using _env = withEnv({ ADMIN_EMAIL_ADDRESS: "admin@example.com" });
-    const html = String(
-      AdminNav({ active: "/admin/guide", session: { adminLevel: "owner" } }),
-    );
-    const sub = subNav(html);
-    expectIncludesAll(sub, ['href="/admin/support"', "Support"]);
-  });
-
-  test("Support is hidden from managers even when the host offers it", () => {
-    using _env = withEnv({ ADMIN_EMAIL_ADDRESS: "admin@example.com" });
-    const html = String(
-      AdminNav({ active: "/admin/guide", session: { adminLevel: "manager" } }),
-    );
-    assertStringIncludes(html, 'href="/admin/guide"');
-    assert(!html.includes('href="/admin/support"'));
-  });
-
-  test("Support is hidden when the host has no admin contact address", () => {
-    using _env = withEnv({ ADMIN_EMAIL_ADDRESS: undefined });
-    const html = String(
-      AdminNav({ active: "/admin/guide", session: { adminLevel: "owner" } }),
-    );
-    assert(!html.includes('href="/admin/support"'));
-    assertStringIncludes(html, 'href="/admin/guide"');
-  });
-
-  test("Support is gone from the Settings sub-nav", () => {
-    using _env = withEnv({ ADMIN_EMAIL_ADDRESS: "admin@example.com" });
-    const html = String(
-      AdminNav({
-        active: "/admin/settings",
-        session: { adminLevel: "owner" },
-      }),
-    );
-    assert(!html.includes('href="/admin/support"'));
-  });
-
-  test("the Support page highlights Guide and its own sub-nav link", () => {
-    using _env = withEnv({ ADMIN_EMAIL_ADDRESS: "admin@example.com" });
-    const html = String(
-      AdminNav({ active: "/admin/support", session: { adminLevel: "owner" } }),
-    );
-    expectIncludesAll(html, [
-      'class="active" href="/admin/guide"',
-      'class="active" href="/admin/support"',
-    ]);
   });
 });

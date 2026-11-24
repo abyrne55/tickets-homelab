@@ -108,8 +108,6 @@ describeWithEnv("local storage", STORAGE_TEST_ENV, () => {
     await runWithStorageConfig(
       {
         localPath: `/tmp/nonexistent-dir-${crypto.randomUUID()}`,
-        zoneKey: "",
-        zoneName: "",
       },
       async () => expect(await listFiles("backup-")).toEqual([]),
     );

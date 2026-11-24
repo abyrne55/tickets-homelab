@@ -184,12 +184,3 @@ export const postListingEdit = async (
     ),
   );
 };
-
-/** Turn a listing into a renewal tier (months_per_unit > 0). `execute`
- * invalidates the listings cache, so subsequent reads see the change. */
-export const makeRenewalTier = async (listingId: number): Promise<void> => {
-  const { execute } = await import("#db/client.ts");
-  await execute("UPDATE listings SET months_per_unit = 12 WHERE id = ?", [
-    listingId,
-  ]);
-};

@@ -112,40 +112,6 @@ export const AREAS_A_L = {
       },
     },
   },
-  builder: {
-    audience: OWNER_AUDIENCE,
-    view: { builder: "/admin/builder" },
-  },
-  builtSites: {
-    audience: OWNER_AUDIENCE,
-    view: {
-      builtSite: "/admin/built-sites/:id",
-      builtSites: { afterSave: "builtSite", pattern: "/admin/built-sites" },
-    },
-    write: {
-      builtSiteAddSecrets: "/admin/built-sites/:id/add-secrets",
-      builtSiteBumpDeadline: "/admin/built-sites/:id/bump-deadline",
-      builtSiteDelete: "/admin/built-sites/:id/delete",
-      builtSiteEdit: {
-        afterSave: "builtSite",
-        pattern: "/admin/built-sites/:id/edit",
-      },
-      builtSiteNew: "/admin/built-sites/new",
-      builtSiteOverrideDeadline: "/admin/built-sites/:id/override-deadline",
-      builtSiteProvisionRenewal: "/admin/built-sites/:id/provision-renewal",
-      builtSiteProvisionScheduler: "/admin/built-sites/:id/provision-scheduler",
-      builtSiteReSyncDeadline: "/admin/built-sites/:id/re-sync-deadline",
-      builtSiteRotateRenewalToken:
-        "/admin/built-sites/:id/rotate-renewal-token",
-      builtSiteSupportMessage: {
-        // The tab renders the stored message for a read-only viewer, so
-        // read-only mode keeps serving the route's GET.
-        pattern: "/admin/built-sites/:id/support-message",
-        readOnlyGet: true,
-      },
-      builtSiteUpdate: "/admin/built-sites/:id/update",
-    },
-  },
   bulkActions: {
     audience: STAFF_ADMIN_LEVELS,
     write: {

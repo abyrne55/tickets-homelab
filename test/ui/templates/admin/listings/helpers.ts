@@ -21,18 +21,6 @@ import {
   setupAdminPageTest,
 } from "#test-utils/admin-page-test.ts";
 import { shownLineBookings } from "#test-utils/attendees/pair-bookings.ts";
-import { withEnv } from "#test-utils/env.ts";
-
-/** Run fn with CAN_BUILD_SITES pinned to `value` in this worker's env overlay
- *  — never the real process env, which every parallel test worker shares. */
-export const withBuilderEnv =
-  (value: string | undefined): ((fn: () => void) => void) =>
-  (fn: () => void): void => {
-    using _env = withEnv({ CAN_BUILD_SITES: value });
-    fn();
-  };
-export const withBuilder = withBuilderEnv("true");
-export const withoutBuilder = withBuilderEnv(undefined);
 
 /** The roster options with the filter/sort choices written the way the old
  *  panel took them, so fixture-building tests stay terse: the helper builds

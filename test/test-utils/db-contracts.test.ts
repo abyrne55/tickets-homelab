@@ -18,10 +18,6 @@ import {
   createTestAttendee,
   existingAttendeeLines,
 } from "#test-utils/db-helpers/attendees.ts";
-import {
-  createTestBuiltSite,
-  updateTestBuiltSite,
-} from "#test-utils/db-helpers/built-sites.ts";
 import { createTestListing } from "#test-utils/db-helpers/listings.ts";
 import {
   addAttendee,
@@ -322,25 +318,6 @@ describe("test-utils — db-backed & settings contracts", () => {
       expect(() => lineIndexOnPage(browser, 42)).toThrow(
         "no editor line for listing 42",
       );
-    });
-
-    test("updateTestBuiltSite handles assignable and validation failure paths", async () => {
-      const site = await createTestBuiltSite({
-        name: "Assignable Site",
-      });
-      const assignable = await updateTestBuiltSite(site.id, {
-        assignable: true,
-      });
-      const updated = await updateTestBuiltSite(site.id, { assignable: false });
-
-      expect(assignable.assignable).toBe(true);
-      expect(updated.assignable).toBe(false);
-
-      const { cookie } = await loginAsAdmin();
-      setTestSession({ cookie, csrfToken: "not-a-signed-csrf-token" });
-      await expect(
-        createTestBuiltSite({ name: "Forbidden Site" }),
-      ).rejects.toThrow("Failed to create built site: 403");
     });
   });
 

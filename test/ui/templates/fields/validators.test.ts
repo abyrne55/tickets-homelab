@@ -23,7 +23,6 @@ import {
   validateNonNegativePrice,
   validatePhone,
   validateSpecialInstructions,
-  validateUpdateTier,
   validateUsername,
   validateWholeNumber,
 } from "#templates/fields/validators.ts";
@@ -163,13 +162,6 @@ describe("fields validators", () => {
         validateListingFields("email, unknown") ?? "",
         "unknown",
       );
-    });
-
-    test("accepts exact update tiers only", () => {
-      for (const tier of ["alpha", "beta", "release"]) {
-        accepts(validateUpdateTier, tier);
-      }
-      rejects(validateUpdateTier, "stable");
     });
   });
 

@@ -89,9 +89,6 @@ export const ATTENDEE_DATA_RULES: readonly AttendeeDataRule[] = [
   direct("retain")("modifier_usages"),
   direct("retain")("sms_messages"),
 
-  // A built site's assignment follows the person through a merge. A deletion
-  // clears only that live link. The provisioned site keeps its own lifecycle.
-  direct("repoint")("built_sites", "assigned_attendee_id"),
   // A durable payment session has a lifecycle of its own. Its eventual
   // detach/redaction rule must not be guessed by an attendee purge.
   direct("retain")("payment_sessions"),

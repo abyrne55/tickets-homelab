@@ -42,11 +42,10 @@ export const deleteListingAttachmentFile = async (
   }
 };
 
-/** True for a "the file is already gone" deletion error from either backend, so
- * a retried delete treats an already-removed file as success. */
+/** True for a "the file is already gone" deletion error, so a retried delete
+ * treats an already-removed file as success. */
 const isAlreadyDeleted = (err: unknown): boolean =>
-  err instanceof Error &&
-  (err.message.startsWith("File not found:") || err.name === "NotFound");
+  err instanceof Deno.errors.NotFound;
 
 /**
  * Delete an image's storage files. Throws when a file stays in place. A file

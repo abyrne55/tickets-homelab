@@ -1,10 +1,8 @@
-import { assert, assertStringIncludes } from "@std/assert";
+import { assertStringIncludes } from "@std/assert";
 import { expect } from "@std/expect";
 import { it as test } from "@std/testing/bdd";
 import { allTransfers } from "#accounting/queries.ts";
 import { handleRequest } from "#routes";
-import { setBuildTimestampForTest } from "#shared/update.ts";
-import { updateBuildTagMeta } from "#shared/update-guard.ts";
 import { expectIncludesAll } from "#test-utils/assertions.ts";
 import { describeWithEnv } from "#test-utils/db.ts";
 import { jsonRequest, mockRequest } from "#test-utils/mocks.ts";
@@ -42,23 +40,6 @@ describeWithEnv(
       expect(res.status).toBe(200);
       const html = await res.text();
       assertStringIncludes(html, "This site is in read-only mode.");
-    });
-
-    test("the page names the running build for the post-update wait", async () => {
-      setBuildTimestampForTest("2026-03-28T14:30:22.000Z");
-      try {
-        const res = await handleRequest(mockRequest("/read-only"));
-        const html = await res.text();
-        assertStringIncludes(html, updateBuildTagMeta("v2026-03-28-143022"));
-      } finally {
-        setBuildTimestampForTest(null);
-      }
-    });
-
-    test("a build with no timestamp reports no build tag", async () => {
-      const res = await handleRequest(mockRequest("/read-only"));
-      const html = await res.text();
-      assert(!html.includes('name="update-build-tag"'));
     });
 
     const api403Cases: ReadonlyArray<{
@@ -283,8 +264,6 @@ describeWithEnv(
       "/unsubscribe",
       "/contact",
       "/admin/debug/sentry",
-      "/admin/support",
-      "/instance/site-credentials",
       "/admin/backup/create",
       "/checkin/abc123+def456",
       "/admin/listing/42/attendee/99/checkin",
@@ -330,119 +309,6 @@ describeWithEnv(
         mockRequest("/read-only", { method: "HEAD" }),
       );
       expect(res.status).toBe(404);
-    });
-  },
-);
-
-describeWithEnv(
-  "update mode (UPDATE_IN_PROGRESS set)",
-  { db: true, env: { READ_ONLY_FROM: undefined, UPDATE_IN_PROGRESS: "1" } },
-  () => {
-    test("GET /read-only shows the update message and the marker", async () => {
-      const res = await handleRequest(mockRequest("/read-only"));
-      expect(res.status).toBe(200);
-      const html = await res.text();
-      expectIncludesAll(html, [
-        "The site is being updated.",
-        'name="update-in-progress" content="active"',
-      ]);
-    });
-
-    test("a mutating /api/ request returns 503 with the update message", async () => {
-      const res = await handleRequest(
-        jsonRequest("/api/admin/listings", {
-          body: { name: "test" },
-          method: "POST",
-        }),
-      );
-      expect(res.status).toBe(503);
-      const body = await res.json();
-      expect(body.error).toBe(
-        "The site is being updated. Please try again in a few minutes.",
-      );
-    });
-
-    test("POST /payment/webhook returns the retryable 503", async () => {
-      // The webhook endpoints take JSON only; the guard runs before the
-      // handler, so the delivery gets the 503 its sender redelivers.
-      const res = await handleRequest(
-        jsonRequest("/payment/webhook", { body: {}, method: "POST" }),
-      );
-      expect(res.status).toBe(503);
-    });
-
-    test("POST /sms/webhook returns the retryable 503", async () => {
-      const res = await handleRequest(
-        jsonRequest("/sms/webhook", { body: {}, method: "POST" }),
-      );
-      expect(res.status).toBe(503);
-    });
-
-    test("update mode refuses the public writes read-only mode allows, with the redirect", async () => {
-      expectReadOnlyRedirect(await postForm("/renew"));
-      expectReadOnlyRedirect(await postForm("/join/some-code"));
-      expectReadOnlyRedirect(await postForm("/contact"));
-    });
-
-    test("the admin can still sign in and read pages", async () => {
-      const login = await postForm("/admin/login", "password=test");
-      expect(login.headers.get("location")).not.toBe("/read-only");
-      const page = await handleRequest(mockRequest("/admin/listings"));
-      expect(page.headers.get("location")).not.toBe("/read-only");
-    });
-
-    test("update mode refuses the listed admin writes, with the redirect", async () => {
-      // The migration must see a still database, so even the operations
-      // ordinary read-only mode allows stop while an update runs. The scan
-      // API takes JSON; the check-in form takes a form post.
-      expectReadOnlyRedirect(
-        await postForm("/admin/listing/42/attendee/99/checkin"),
-      );
-      expectReadOnlyRedirect(
-        await handleRequest(
-          jsonRequest("/admin/listing/42/scan", {
-            body: {},
-            method: "POST",
-          }),
-        ),
-      );
-    });
-    test("an admin mutation still redirects to /read-only", async () => {
-      expectReadOnlyRedirect(await postForm("/admin/listing"));
-    });
-  },
-);
-
-describeWithEnv(
-  "update mode takes over an expired site's message",
-  {
-    db: true,
-    env: {
-      READ_ONLY_FROM: "2020-01-01T00:00:00.000Z",
-      UPDATE_IN_PROGRESS: "1",
-    },
-  },
-  () => {
-    test("the page shows the update message, not the expired one", async () => {
-      const res = await handleRequest(mockRequest("/read-only"));
-      const html = await res.text();
-      assertStringIncludes(html, "The site is being updated.");
-      assert(!html.includes("This site is in read-only mode."));
-    });
-  },
-);
-
-describeWithEnv(
-  "the expired read-only page keeps the update marker",
-  { db: true, env: { READ_ONLY_FROM: "2020-01-01T00:00:00.000Z" } },
-  () => {
-    test("the marker says supported, so a later deploy's wait can run", async () => {
-      const res = await handleRequest(mockRequest("/read-only"));
-      const html = await res.text();
-      expectIncludesAll(html, [
-        "This site is in read-only mode.",
-        'name="update-in-progress" content="supported"',
-      ]);
     });
   },
 );

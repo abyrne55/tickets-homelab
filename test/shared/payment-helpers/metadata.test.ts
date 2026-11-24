@@ -304,27 +304,6 @@ describe("payment-helpers", () => {
       expect("answer_ids" in metadata).toBe(false);
     });
 
-    test("buildMetadata includes site_token_index when present", () => {
-      const metadata = buildMetadata({
-        date: null,
-        email: "renew@example.com",
-        items: [{ e: 5, p: 1500, q: 3 }],
-        name: "Renewer",
-        siteTokenIndex: "hashed-index-value",
-      });
-      expect(metadata.site_token_index).toBe("hashed-index-value");
-    });
-
-    test("buildMetadata omits site_token_index when absent", () => {
-      const metadata = buildMetadata({
-        date: null,
-        email: "x@x.com",
-        items: [{ e: 1, p: 0, q: 1 }],
-        name: "X",
-      });
-      expect("site_token_index" in metadata).toBe(false);
-    });
-
     test("buildMetadata includes day_count when present", () => {
       const metadata = buildMetadata({
         date: "2026-07-01",
@@ -356,25 +335,6 @@ describe("payment-helpers", () => {
         }),
       );
       expect(extracted.day_count).toBe("3");
-    });
-
-    test("extractSessionMetadata surfaces site_token_index when present", () => {
-      const extracted = extractSessionMetadata(
-        wireMetadata({
-          email: "renew@example.com",
-          items: "[]",
-          name: "Renewer",
-          site_token_index: "hashed-index-value",
-        }),
-      );
-      expect(extracted.site_token_index).toBe("hashed-index-value");
-    });
-
-    test("extractSessionMetadata defaults site_token_index to empty string", () => {
-      const extracted = extractSessionMetadata(
-        wireMetadata({ email: "x@x.com", items: "[]", name: "X" }),
-      );
-      expect(extracted.site_token_index).toBe("");
     });
 
     const checkoutIntent = (

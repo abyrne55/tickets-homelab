@@ -3,7 +3,6 @@ import { describe, it as test } from "@std/testing/bdd";
 import { ensureMessageGroups } from "#i18n";
 import { MESSAGE_GROUPS } from "#locales/message-groups.generated.ts";
 import {
-  getBuiltSiteForm,
   getChangePasswordForm,
   getHolidayForm,
   getInviteUserForm,
@@ -66,105 +65,6 @@ describe("admin field schemas", () => {
         name: "end_date",
         required: true,
         type: "date",
-      },
-    ]);
-  });
-
-  test("the built-site form serves exactly its declared fields", () => {
-    expect(getBuiltSiteForm().fields.map(shape)).toEqual([
-      {
-        label: "Site name",
-        name: "name",
-        placeholder: "My Ticket Site",
-        required: true,
-        type: "text",
-      },
-      {
-        label: "Site URL",
-        name: "site_url",
-        placeholder: "https://example.b-cdn.net",
-        required: true,
-        type: "url",
-      },
-      {
-        label: "Database URL",
-        name: "db_url",
-        placeholder: "libsql://your-db.turso.io",
-        type: "url",
-      },
-      {
-        label: "Database token",
-        name: "db_token",
-        placeholder: "Database auth token",
-        type: "password",
-      },
-      {
-        label: "Hosting ID",
-        name: "hosting_id",
-        placeholder: "Script ID or app ID",
-        type: "text",
-      },
-      {
-        label: "Hosting provider",
-        name: "hosting_provider",
-        options: [
-          {
-            label: "Bunny",
-            value: "bunny",
-          },
-          {
-            label: "Deno Deploy",
-            value: "deno",
-          },
-        ],
-        type: "select",
-      },
-      {
-        label: "Database provider",
-        name: "db_provider",
-        options: [
-          {
-            label: "Bunny DB",
-            value: "bunny",
-          },
-          {
-            label: "Turso",
-            value: "turso",
-          },
-        ],
-        type: "select",
-      },
-      {
-        hint: "Make this site available for automatic assignment when a ticket is purchased",
-        label: "Assignable",
-        name: "assignable",
-        options: [
-          {
-            label: "Available for assignment",
-            value: "1",
-          },
-        ],
-        type: "checkbox-group",
-      },
-      {
-        hint: "Which deploys this site accepts. Alpha takes every release, beta takes beta and stable, release takes stable releases only.",
-        label: "Update channel",
-        name: "updates",
-        options: [
-          {
-            label: "Release (stable only)",
-            value: "release",
-          },
-          {
-            label: "Beta (beta + stable)",
-            value: "beta",
-          },
-          {
-            label: "Alpha (every release)",
-            value: "alpha",
-          },
-        ],
-        type: "select",
       },
     ]);
   });

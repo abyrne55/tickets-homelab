@@ -57,7 +57,6 @@ describe("operations guide schema", () => {
       { id: "attendees", titleKey: "attendees" },
       { id: "backups", titleKey: "backups" },
       { id: "read-only-mode", titleKey: "read_only_mode" },
-      { id: "software-updates", titleKey: "software_updates" },
       { id: undefined, titleKey: "customising_your_site" },
       { id: "column-order", titleKey: "column_order" },
     ]);

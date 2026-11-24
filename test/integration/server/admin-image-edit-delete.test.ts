@@ -27,15 +27,15 @@ import {
 } from "#test-utils/db-helpers/listings.ts";
 import {
   mockFormRequest,
-  withCdnRejecting,
+  withLocalStorageEnabled,
   withStorageDisabled,
-  withStorageMock,
+  withUnwritableStorage,
 } from "#test-utils/mocks.ts";
 import { testCookie, testCsrfToken } from "#test-utils/session.ts";
 
 describeWithEnv(
   "admin image edit and delete routes",
-  { db: true, storage: "cdn" },
+  { db: true, storage: "local" },
   () => {
     describe("GET /admin/images/:id/edit", () => {
       test("renders selected listing and group links", async () => {
@@ -289,7 +289,9 @@ describeWithEnv(
         )(mismatch);
         expect(await getImageById(image.id)).not.toBeNull();
 
-        await withStorageMock(async (fetchCalls) => {
+        await withLocalStorageEnabled(async (dir) => {
+          await Deno.writeTextFile(`${dir}/discard.webp`, "x");
+          await Deno.writeTextFile(`${dir}/discard-thumb.webp`, "x");
           const deleted = await handleRequest(
             mockFormRequest(
               `/admin/images/${image.id}/delete`,
@@ -302,12 +304,10 @@ describeWithEnv(
             "Image deleted",
             true,
           )(deleted);
-          expect(fetchCalls.some((url) => url.includes("discard.webp"))).toBe(
-            true,
-          );
-          expect(
-            fetchCalls.some((url) => url.includes("discard-thumb.webp")),
-          ).toBe(true);
+          await expect(Deno.stat(`${dir}/discard.webp`)).rejects.toThrow();
+          await expect(
+            Deno.stat(`${dir}/discard-thumb.webp`),
+          ).rejects.toThrow();
         });
         expect(await getImageById(image.id)).toBeNull();
         const messages = (await getAllActivityLog()).map(
@@ -321,7 +321,7 @@ describeWithEnv(
         const cookie = await testCookie();
         const csrfToken = await testCsrfToken();
 
-        await withCdnRejecting(new Error("delete down"), async () => {
+        await withUnwritableStorage(async () => {
           const response = await handleRequest(
             mockFormRequest(
               `/admin/images/${image.id}/delete`,

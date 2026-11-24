@@ -29,7 +29,6 @@ import {
   type ListingInput,
   listingCatalogFields,
 } from "#shared/catalog-fields/fields.ts";
-import { isBuilderEnabled } from "#shared/config.ts";
 import { toMinorUnits } from "#shared/currency.ts";
 import { normalizeDatetime } from "#shared/dates.ts";
 import type { FormParams } from "#shared/form-data.ts";
@@ -185,9 +184,6 @@ const validateDayPricesFromForm = (form: FormParams): string | null => {
 const normalizeOptionalDatetime = (raw: string, field: string): string =>
   raw ? normalizeDatetime(raw, field) : raw;
 
-const enabledChoice = (enabled: boolean, value: string): boolean =>
-  enabled && value === "1";
-
 const extractCommonFields = (
   values: ListingFormValues,
   form: FormParams,
@@ -207,10 +203,6 @@ const extractCommonFields = (
   const closesAt = normalizeOptionalDatetime(values.closes_at, "closes_at");
   return {
     ...projectCatalogFields(listingCatalogFields, "form", values),
-    assignBuiltSite: enabledChoice(
-      isBuilderEnabled(),
-      values.assign_built_site,
-    ),
     bookableDays,
     closesAt: closesAt === "" ? null : closesAt,
     date: normalizeOptionalDatetime(values.date, "date"),

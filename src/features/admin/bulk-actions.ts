@@ -58,7 +58,6 @@ import { xCount } from "#shared/count-text.ts";
 import { getFlash } from "#shared/flash-context.ts";
 import { matchKey } from "#shared/keys.ts";
 import { buildDuplicateListingInput } from "#shared/listings-actions.ts";
-import { sitePlanMemberError } from "#shared/package-membership.ts";
 import { requireValue } from "#shared/required-value.ts";
 import { sortListings } from "#shared/sort-listings.ts";
 import {
@@ -247,19 +246,6 @@ const handleDuplicateGroupPost = groupFormPost(
     // (with an existing entity or another clone) — upholding the name invariant.
     const nameError = await firstDuplicateNameError(newName, cloneInputs);
     if (nameError) return errorRedirect(formUrl, nameError);
-    // The clone batch bypasses the membership validators, so refuse the whole
-    // duplication here. A clone of a built-site plan lands inside the new
-    // group, a row no save path can create.
-    const sitePlanClone = cloneInputs.find(
-      ({ input }) => input.assignBuiltSite,
-    );
-    if (sitePlanClone) {
-      return errorRedirect(
-        formUrl,
-        sitePlanMemberError(sitePlanClone.input.name),
-      );
-    }
-
     const memberBySource = new Map(
       (await getGroupPackagePrices(group.id)).map((row) => [
         row.listing_id,

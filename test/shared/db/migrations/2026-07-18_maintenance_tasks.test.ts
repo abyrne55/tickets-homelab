@@ -1,4 +1,3 @@
-import { assertArrayIncludes } from "@std/assert";
 import { expect } from "@std/expect";
 import { it as test } from "@std/testing/bdd";
 import { FakeTime } from "@std/testing/time";
@@ -40,7 +39,6 @@ describeWithEnv(
         "Add durable scheduled maintenance task claims.",
       );
       expect(migration.requires).toEqual({
-        columns: { built_sites: ["site_data_revision"] },
         indexes: ["idx_maintenance_tasks_due"],
         newTables: ["maintenance_tasks"],
       });
@@ -103,17 +101,6 @@ describeWithEnv(
         { name: "activity_log_backfill", next_run_at: 1_800_000_000_000 },
         { name: "database_pruning", next_run_at: 1_800_000_000_000 },
       ]);
-    });
-
-    test("adds a revision fence to existing built sites", async () => {
-      await getDb().execute("DROP TABLE maintenance_tasks");
-      await runMigration();
-
-      const columns = await getDb().execute("PRAGMA table_info(built_sites)");
-      assertArrayIncludes(
-        columns.rows.map((row) => String(row.name)),
-        ["site_data_revision"],
-      );
     });
 
     test("does not reschedule a backfill that was already complete", async () => {

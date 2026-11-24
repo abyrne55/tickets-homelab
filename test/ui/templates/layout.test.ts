@@ -22,22 +22,12 @@ import {
 } from "#test-utils/admin-page-test.ts";
 import { expectIncludesAll } from "#test-utils/assertions.ts";
 import { describeWithEnv } from "#test-utils/db.ts";
-import { withEnv } from "#test-utils/env.ts";
 import { testListingWithCount } from "#test-utils/factories.ts";
 import { withStorageDisabled, withStorageEnabled } from "#test-utils/mocks.ts";
 import { withRequestContext } from "#test-utils/request-context.ts";
 import type { AdminSession } from "#types";
 
 const EDITOR_SESSION: AdminSession = { adminLevel: "editor" };
-
-/** Set `RENEWAL_URL`, render `AdminNav`, assert the renewal link is present,
- *  and clean up the env var. Both the read-only and warning-banner describe
- *  blocks repeat this exact sequence. */
-const expectRenewalLink = async (): Promise<void> => {
-  using _env = withEnv({ RENEWAL_URL: "https://example.com/renew" });
-  const html = String(AdminNav({ active: "/admin/", session: OWNER_SESSION }));
-  expectIncludesAll(html, ["Renew now", "https://example.com/renew"]);
-};
 
 const setupLayoutTest = async (): Promise<void> => {
   await setupAdminPageTest();
@@ -283,10 +273,6 @@ describeWithEnv(
       ]);
     });
 
-    test("AdminNav read-only banner includes renewal link when RENEWAL_URL is set", async () => {
-      await expectRenewalLink();
-    });
-
     test("ticketPage hides booking form in read-only mode", () => {
       const listing = testListingWithCount({ attendee_count: 0 });
       const html = ticketPage({
@@ -316,10 +302,6 @@ describeWithEnv(
         AdminNav({ active: "/admin/", session: OWNER_SESSION }),
       );
       expectIncludesAll(html, ["read-only-banner-warning", "expires on"]);
-    });
-
-    test("AdminNav warning banner includes renewal link when RENEWAL_URL is set", async () => {
-      await expectRenewalLink();
     });
 
     test("AdminNav warning banner falls back when the cutoff date cannot be displayed", () => {

@@ -6,7 +6,6 @@
  */
 
 import type { OrderSpan } from "#booking/order-span.ts";
-import { hmacHash } from "#crypto/hashing.ts";
 import { requirePublicDefaultStatus } from "#db/attendee-statuses.ts";
 import type { ChildAllocation } from "#db/attendee-types.ts";
 import { createFreeReservation } from "#routes/public/free-reservation.ts";
@@ -153,12 +152,7 @@ export const handleFreePath = async (
   // Notify only after stock is committed; a rolled-back order should not
   // trigger a registration notification. The registration activity lines
   // rode the batch itself, so this is a send-only queue: no second
-  // registration log write happens here. The hash before passing on so the
-  // renewal lookup uses the same blind index the paid path would carry
-  // through Stripe session metadata.
-  const siteTokenIndex = ctx.siteToken
-    ? await hmacHash(ctx.siteToken)
-    : undefined;
+  // registration log write happens here.
   // The typed free text travels with the notification, because the
   // strings table seals it to the owner key, which no notification can spend.
   const freeTexts = new Map(
@@ -166,7 +160,6 @@ export const handleFreePath = async (
   );
   await queueRegistrationSends(result.entries, {
     freeTexts,
-    siteTokenIndex,
     source: "public",
   });
 

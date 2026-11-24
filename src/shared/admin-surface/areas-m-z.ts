@@ -152,8 +152,6 @@ export const AREAS_M_Z = {
       settingsBusinessEmail: "/admin/settings/business-email",
       settingsCalendarFeeds: "/admin/settings/calendar-feeds",
       settingsCustomCss: "/admin/settings/custom-css",
-      settingsCustomDomain: "/admin/settings/custom-domain",
-      settingsCustomDomainValidate: "/admin/settings/custom-domain/validate",
       settingsEmail: "/admin/settings/email",
       settingsEmailTemplatesAdmin: "/admin/settings/email-templates/admin",
       settingsEmailTemplatesConfirmation:
@@ -164,7 +162,6 @@ export const AREAS_M_Z = {
       settingsGoogleWallet: "/admin/settings/google-wallet",
       settingsHeaderImage: "/admin/settings/header-image",
       settingsHeaderImageDelete: "/admin/settings/header-image/delete",
-      settingsHostSubdomain: "/admin/settings/host-subdomain",
       settingsListingColumnOrder: "/admin/settings/listing-column-order",
       settingsPaymentProvider: "/admin/settings/payment-provider",
       settingsPaymentProviderRecovery:
@@ -179,7 +176,6 @@ export const AREAS_M_Z = {
       settingsStripeTest: "/admin/settings/stripe/test",
       settingsSumup: "/admin/settings/sumup",
       settingsSumupTest: "/admin/settings/sumup/test",
-      settingsSuperuser: "/admin/settings/superuser",
       settingsTax: "/admin/settings/tax",
       settingsTerms: "/admin/settings/terms",
       settingsTheme: "/admin/settings/theme",
@@ -242,21 +238,6 @@ export const AREAS_M_Z = {
     audience: STAFF_ADMIN_LEVELS,
     view: {
       sms: "/admin/sms",
-    },
-  },
-  support: {
-    audience: OWNER_AUDIENCE,
-    view: {
-      support: { pattern: "/admin/support", readOnlyWrite: "read-only" },
-    },
-  },
-  update: {
-    audience: OWNER_AUDIENCE,
-    view: {
-      update: "/admin/update",
-    },
-    write: {
-      updateCheck: "/admin/update/check",
     },
   },
   users: {

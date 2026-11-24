@@ -6,25 +6,17 @@ import {
   type PricedOrder,
 } from "#shared/checkout-pricing.ts";
 import { formatCurrency } from "#shared/currency.ts";
-import { monthsPerUnitOf } from "#shared/purchase-unit.ts";
 
 /** Prefix a line label with its quantity when more than one was taken. */
 export const quantityLabel = (quantity: number, name: string): string =>
   quantity > 1 ? `${quantity}× ${name}` : name;
 
-/** A row label for one grouped set of lines. A line that counts months
- *  prices its count in months, so the quote states the months the ask buys
- *  instead of the raw unit count; plain lines keep the ×quantity form. */
-const summaryRowLabel = (lines: PricedLine[]): string => {
-  const count = sumOf((line: PricedLine) => line.quantity)(lines);
-  const name = lines[0]!.item.name;
-  const monthsEach = monthsPerUnitOf(lines[0]!.item.purchaseUnit);
-  return monthsEach === undefined
-    ? quantityLabel(count, name)
-    : `${name} (${t("public.ticket.month_option", {
-        count: count * monthsEach,
-      })})`;
-};
+/** A row label for one grouped set of lines: the name with the ×quantity. */
+const summaryRowLabel = (lines: PricedLine[]): string =>
+  quantityLabel(
+    sumOf((line: PricedLine) => line.quantity)(lines),
+    lines[0]!.item.name,
+  );
 
 /** One name/amount pair to render as a ticket row in the summary table. */
 type TicketRow = { label: string; amount: number };

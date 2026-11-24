@@ -13,12 +13,6 @@ import type { ListingAnswerRefs } from "#shared/booking-intent.ts";
 import { existingPaymentProviderState } from "#shared/existing-payment-provider.ts";
 import { logDebug } from "#shared/logger.ts";
 import type { CalcKind, ModifierTrigger } from "#shared/price-modifier.ts";
-import {
-  type PurchaseContext,
-  type PurchaseUnit,
-  type PurchaseUnitFacts,
-  resolvePurchaseUnit,
-} from "#shared/purchase-unit.ts";
 import type { TaxPolicy } from "#shared/tax/types.ts";
 import type { ContactInfo, PaymentProviderType } from "#types";
 
@@ -44,33 +38,19 @@ export type CheckoutItem = {
    * Signed per line as the item's `k`/`r` edge tag and stamped onto the line's
    * booking row. */
   packageGroupId?: number | undefined;
-  /** What one purchased unit buys. Absent = plain tickets. A months unit
-   *  names the term the provider checkout and the order summary state — ×3
-   *  beside a "(1 Month)" plan buys three months of one site, not three
-   *  sites. Display only: fulfilment reads its own facts. */
-  purchaseUnit?: PurchaseUnit | undefined;
 };
 
-/** Only a months unit adds a field; the plain unit is the absent default. */
-const unitFields = (unit: PurchaseUnit): Partial<CheckoutItem> =>
-  unit.kind === "months" ? { purchaseUnit: unit } : {};
-
 /** Build a {@link CheckoutItem} for one listing — the one constructor every
- *  real-listing checkout line is built from. `purchase` carries the purchase
- *  context that decides the unit (a renewal prices the same tier by its
- *  months per unit); absent means an ordinary purchase. Package provenance
- *  is not a listing fact, so a member line spreads its `packageGroupId` over
- *  the result. */
+ *  real-listing checkout line is built from. Package provenance is not a
+ *  listing fact, so a member line spreads its `packageGroupId` over the
+ *  result. */
 export const checkoutItem = (
-  listing: PurchaseUnitFacts &
-    Pick<CheckoutItem, "name" | "slug"> & {
-      id: number;
-    },
+  listing: Pick<CheckoutItem, "name" | "slug"> & {
+    id: number;
+  },
   quantity: number,
   unitPrice: number,
-  purchase: PurchaseContext = { renewal: false },
 ): CheckoutItem => ({
-  ...unitFields(resolvePurchaseUnit(listing, purchase)),
   listingId: listing.id,
   name: listing.name,
   quantity,
@@ -130,9 +110,6 @@ export type CheckoutIntent = CheckoutIntentBase & {
   /** Modifiers (surcharges, add-ons, …) resolved for this checkout. Absent or
    * empty when none apply. Applied to the price by the checkout-pricing layer. */
   modifiers?: ModifierSpec[];
-  /** Plain site renewal token from /renew. Hashed before storage in provider
-   * metadata; never stored at the provider in plaintext. */
-  siteToken?: string;
   /** Override the subtotal the booking fee is calculated on (defaults to the
    * item subtotal). Used so a deposit charges the fee on the full order, and a
    * balance payment charges no fee (the fee was collected up front). */
@@ -161,7 +138,6 @@ export type SessionMetadata = ContactInfo & {
   day_count: string;
   answer_ids: string;
   text_answer_ids: string;
-  site_token_index: string;
   /** Attendee id when this session settles an outstanding balance ("" if not). */
   balance_attendee_id: string;
   /** Reservation-amount snapshot when the items are deposit-priced ("" if not). */

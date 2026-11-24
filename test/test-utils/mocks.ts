@@ -3,22 +3,17 @@ import { afterEach, beforeEach } from "@std/testing/bdd";
 import type { Stub } from "@std/testing/mock";
 import { bracket } from "#fp";
 import { handleRequest } from "#routes";
-import { bunnyCdnApi } from "#shared/bunny-cdn.ts";
 import { getSessionCookieName } from "#shared/cookies.ts";
 import { signCsrfToken } from "#shared/csrf.ts";
-import type { ResponseHandler } from "#shared/response-steps.ts";
 import { runWithStorageConfig } from "#shared/storage.ts";
 import { type EnvScope, withEnv } from "#test-utils/env.ts";
 import { type FetchResponder, stubFetch } from "#test-utils/fetch-stub.ts";
-import { withTempDir } from "#test-utils/files.ts";
+import { tempDir, withTempDir } from "#test-utils/files.ts";
 import {
   appendTestFormValues,
   type TestFormValues,
 } from "#test-utils/form-values.ts";
-import {
-  TEST_STORAGE_ZONE,
-  type TestRequestOptions,
-} from "#test-utils/internal.ts";
+import type { TestRequestOptions } from "#test-utils/internal.ts";
 
 export const restoreStubsAfterEach = (stubs: { restore(): void }[]): void => {
   afterEach(() => {
@@ -197,22 +192,6 @@ export const withMocks = async <
   }
 };
 
-export const withMockBunnyCdnApi = async (
-  overrides: Partial<typeof bunnyCdnApi>,
-  fn: () => Promise<void>,
-): Promise<void> => {
-  const originals: Partial<typeof bunnyCdnApi> = {};
-  for (const key of Object.keys(overrides) as (keyof typeof bunnyCdnApi)[]) {
-    originals[key] = bunnyCdnApi[key] as any;
-    bunnyCdnApi[key] = overrides[key] as any;
-  }
-  try {
-    await fn();
-  } finally {
-    Object.assign(bunnyCdnApi, originals);
-  }
-};
-
 export const installUrlHandler = (
   fallback: typeof globalThis.fetch,
   handler: (url: string, init?: RequestInit) => Promise<Response> | null,
@@ -284,67 +263,6 @@ export const expectFetchSilent = async (
   )(fetchStub.calls);
 };
 
-/** Core of the storage-mock helpers: run `body` with a fetch mock whose URL
- *  `handler` intercepts requests (non-matching URLs fall through to the real
- *  fetch). When `withConfig` is true (default) the body also runs under the
- *  standard Bunny test zone, so `isStorageEnabled()` is true and uploads target
- *  the CDN; pass `false` to exercise the fetch mock with storage unconfigured. */
-const withStorageFetchMock = (
-  handler: (url: string, init?: RequestInit) => Promise<Response> | null,
-  body: () => Promise<void>,
-  withConfig = true,
-): Promise<void> => {
-  const run = (): Promise<void> =>
-    withFetchMock(async (originalFetch) => {
-      installUrlHandler(originalFetch, handler);
-      await body();
-    });
-  return withConfig ? runWithStorageConfig(TEST_STORAGE_ZONE, run) : run();
-};
-
-/** Run `body` under the standard test zone config with a fetch mock that
- * answers every Bunny storage URL via `respond` (other URLs fall through). */
-export const withBunnyStorageStub = (
-  respond: ResponseHandler<[url: string, init?: RequestInit]>,
-  body: () => Promise<void>,
-): Promise<void> =>
-  withStorageFetchMock(
-    (url, init) =>
-      url.includes("storage.bunnycdn.com")
-        ? Promise.resolve(respond(url, init))
-        : null,
-    body,
-  );
-
-/** Run `body` with a fetch mock that records and 200s every Bunny
- * storage-delete call, exposing the captured URLs. Wraps the standard test
- * zone config unless `withConfig: false`; `extraHandler` can intercept a URL
- * (e.g. to simulate a CDN failure) before the capture. */
-export const withBunnyDeleteCapture = (
-  body: (deletedUrls: string[]) => Promise<void>,
-  opts: {
-    withConfig?: boolean;
-    extraHandler?: (url: string) => Promise<Response> | null;
-  } = {},
-): Promise<void> => {
-  const deletedUrls: string[] = [];
-  return withStorageFetchMock(
-    (url) => {
-      const extra = opts.extraHandler?.(url);
-      if (extra) return extra;
-      if (url.includes("storage.bunnycdn.com")) {
-        deletedUrls.push(url);
-        return Promise.resolve(
-          new Response(JSON.stringify({ HttpCode: 200 }), { status: 200 }),
-        );
-      }
-      return null;
-    },
-    () => body(deletedUrls),
-    opts.withConfig !== false,
-  );
-};
-
 export const testRequest = (
   path: string,
   token?: string | null,
@@ -393,86 +311,50 @@ export const errorResponse =
   (error: string): Response =>
     new Response(error, { status });
 
-export const cdnOkResponse = (): Response =>
-  new Response(null, { status: 201 });
-
-export const withStorageMock = (
-  fn: (fetchCalls: string[]) => Promise<void>,
-): Promise<void> => {
-  const fetchCalls: string[] = [];
-  return withStorageFetchMock(
-    (url) => {
-      fetchCalls.push(url);
-      if (url.includes("storage.bunnycdn.com") || url.includes("b-cdn.net")) {
-        return Promise.resolve(cdnOkResponse());
-      }
-      return null;
-    },
-    () => fn(fetchCalls),
-  );
-};
-
-const withCdnFetch = (
-  handle: (url: string) => Promise<Response> | null,
-  fn: () => Promise<void>,
-): Promise<void> =>
-  withStorageFetchMock(
-    (url) => (url.includes("storage.bunnycdn.com") ? handle(url) : null),
-    fn,
-  );
-
-export const withCdnProxy = (
-  respond: () => Response,
-  fn: () => Promise<void>,
-): Promise<void> => withCdnFetch(() => Promise.resolve(respond()), fn);
-
-export const withCdnRejecting = (
-  error: Error,
-  fn: () => Promise<void>,
-): Promise<void> => withCdnFetch(() => Promise.reject(error), fn);
-
-export const withStorageDisabled = <T>(fn: () => T): T =>
-  runWithStorageConfig({ localPath: "", zoneKey: "", zoneName: "" }, fn);
-
-export const withStorageEnabled = <T>(fn: () => T): T =>
-  runWithStorageConfig(TEST_STORAGE_ZONE, fn);
-
+/** Run `fn` with image storage on a fresh temp directory, passing its path.
+ *  The directory is removed once `fn` settles. */
 export const withLocalStorageEnabled = async <T>(
   fn: (dir: string) => Promise<T>,
 ): Promise<T> =>
   await withTempDir((dir) =>
-    runWithStorageConfig({ localPath: dir, zoneKey: "", zoneName: "" }, () =>
-      fn(dir),
-    ),
+    runWithStorageConfig({ localPath: dir }, () => fn(dir)),
   );
+
+/** Run `fn` with image storage on a fresh temp directory. `fn` may be sync or
+ *  async, and the directory is removed once it settles. */
+export const withStorageEnabled = <T>(fn: () => T): T => {
+  const dir = tempDir();
+  const result = runWithStorageConfig({ localPath: dir.path }, fn);
+  if (result instanceof Promise) {
+    return result.finally(() => dir.dispose()) as T;
+  }
+  dir.dispose();
+  return result;
+};
+
+/** Run `fn` with storage on a fresh temp directory. */
+export const withStorageMock = (fn: () => Promise<void>): Promise<void> =>
+  withLocalStorageEnabled(() => fn());
+
+/** Run `fn` with a storage path no file can be written under (the path names a
+ *  regular file), so every upload fails. */
+export const withUnwritableStorage = async (
+  fn: () => Promise<void>,
+): Promise<void> => {
+  const file = await Deno.makeTempFile();
+  try {
+    await runWithStorageConfig({ localPath: file }, fn);
+  } finally {
+    await Deno.remove(file);
+  }
+};
+
+export const withStorageDisabled = <T>(fn: () => T): T =>
+  runWithStorageConfig({ localPath: "" }, fn);
 
 export const mockProviderType = (
   type: import("#shared/payments.ts").PaymentProviderType,
 ): import("#shared/payments.ts").PaymentProviderType | null => type;
-
-export const MOCK_RELEASE = {
-  assets: [
-    {
-      browser_download_url:
-        "https://github.com/chobbledotcom/tickets/releases/download/v2099-01-01-120000/bunny-script.ts",
-      name: "bunny-script.ts",
-    },
-  ],
-  name: "2099-01-01 - Big Update",
-  published_at: "2099-01-01T12:00:00Z",
-  tag_name: "v2099-01-01-120000",
-} as const;
-
-export const stubReleaseFetch = (
-  onDownload: () => Response = () =>
-    new Response("console.log('updated')", { status: 200 }),
-) =>
-  stubFetch((url) => {
-    if (url.includes("releases/latest")) {
-      return new Response(JSON.stringify(MOCK_RELEASE), { status: 200 });
-    }
-    return onDownload();
-  });
 
 export const useFetchStub = () => {
   type FetchStubRef = { current: any };

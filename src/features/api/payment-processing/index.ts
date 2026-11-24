@@ -293,7 +293,6 @@ const processNewBookingSession = async (
   const firstAttendee = createdEntries[0]!;
   return completePaidBooking(
     createdEntries,
-    intent,
     [firstAttendee.attendee.ticket_token],
     snapshot.notificationPackages,
     honoured.freeTexts,

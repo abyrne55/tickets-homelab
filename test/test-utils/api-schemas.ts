@@ -148,14 +148,12 @@ export const AdminListingSchema = v.strictObject({
       "duration_days",
       "id",
       "income",
-      "initial_site_months",
       "max_attendees",
       "max_price",
       "max_quantity",
       "maximum_days_after",
       "minimum_days_before",
       "min_quantity",
-      "months_per_unit",
       "profit",
       "tickets_count",
       "unit_price",
@@ -165,7 +163,6 @@ export const AdminListingSchema = v.strictObject({
   ...v.entriesFromList(
     [
       "active",
-      "assign_built_site",
       "bookable_alone",
       "can_pay_more",
       "customisable_days",

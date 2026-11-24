@@ -12,8 +12,10 @@ fork has been changed a lot and will keep changing. It focuses on:
   [Project Hummingbird](https://hummingbird-project.io/) (Red Hat Hardened
   Images) base images.
 
-Upstream targets Bunny Edge Scripting and several hosting platforms. This fork
-supports container deployment only. It focuses on rootless
+Upstream targets Bunny Edge Scripting and runs a multi-tenant hosting platform
+(site builder, renewals, self-update, a superuser account and a support form,
+custom domains through Bunny). This fork supports container deployment only and
+carries none of that. It focuses on rootless
 [Podman Quadlets](https://docs.podman.io/en/latest/markdown/podman-quadlet.1.html)
 (systemd units that run containers). Nix and devenv, the ratchet and quality
 scripts, TLA/Apalache models, Cucumber specs, mutation testing, real-browser
@@ -23,7 +25,7 @@ tests, the Bunny edge build and deploy tooling, deploy workflows, `cli/`, and
 ## What it does
 
 Chobble Tickets is a booking system for free and paid listings. It runs on Deno
-with libsql (a local SQLite file or remote Turso), and it encrypts all attendee
+with libsql (a local SQLite file or a remote libsql server), and it encrypts all attendee
 PII at rest. Highlights:
 
 - Fixed-capacity and daily (per-date) listings, multi-listing checkout, and
@@ -147,7 +149,7 @@ The server:
   (`chown 65532 <dir>`, or `podman unshare chown 65532 <dir>`). If `/data` is
   not writable, the first database write fails and the error is in the log.
 - Uses the SQLite file `file:/data/tickets.db` by default. Set `DB_URL` and
-  `DB_TOKEN` to use a remote Turso database instead.
+  `DB_TOKEN` to use a remote libsql server instead.
 - Exits at start if `DB_ENCRYPTION_KEY` is missing.
 
 The image works with a read-only root filesystem. The server unpacks its
@@ -208,7 +210,8 @@ Selected optional variables:
 | --------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `LOCAL_STORAGE_PATH`  | Directory for uploaded images and files. Must be under `/data`.                                                                                                   |
 | `DEBUG_KEY`           | `GET /health` returns a plain `Up :)`. A request with a matching `X-Debug-Key` header gets build and time details as JSON. When unset, the JSON response is off. |
-| `ADMIN_EMAIL_ADDRESS` | Turns on a superuser recovery account and the owner-only Support page. Email delivery must be set up first.                                                     |
+| `READ_ONLY_FROM`      | An ISO date. From then on the site is read-only: bookings and admin edits are refused and the read-only page shows. Use it to freeze a site by hand.             |
+| `READ_ONLY_WARN_DAYS` | How many days before `READ_ONLY_FROM` the admin pages show a warning banner (default 14).                                                                         |
 
 The upstream
 [CONFIG_KEYS reference](https://chobbledotcom.github.io/tickets/doc.ts/~/CONFIG_KEYS.html)

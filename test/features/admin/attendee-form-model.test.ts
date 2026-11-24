@@ -44,37 +44,6 @@ describe("ATTENDEE_FORM_ID", () => {
 });
 
 describe("attendeeBookingsFromLines", () => {
-  test("projects a booked line's stored booking onto a summary row", () => {
-    const bookings = attendeeBookingsFromLines([
-      line({
-        existingBooking: bookingRow({
-          checked_in: 1,
-          end_at: "2026-06-03T00:00:00Z",
-          listing_id: 7,
-          quantity: 3,
-          refunded: 1,
-          start_at: "2026-06-01T00:00:00Z",
-        }),
-        listing: testListingWithCount({ active: false, id: 7, name: "Kayak" }),
-        listingId: 7,
-      }),
-    ]);
-    // Every stored field is carried through, flags coerced, the count kept.
-    expect(bookings).toEqual([
-      {
-        assignBuiltSite: false,
-        checkedIn: 1,
-        endAt: "2026-06-03T00:00:00Z",
-        listingActive: false,
-        listingId: 7,
-        listingName: "Kayak",
-        parentListingId: 0,
-        quantity: 3,
-        refunded: true,
-        startAt: "2026-06-01T00:00:00Z",
-      },
-    ]);
-  });
   test("carries a folded child row's parent listing id onto the summary", () => {
     const bookings = attendeeBookingsFromLines([
       line({

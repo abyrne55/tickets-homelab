@@ -21,10 +21,7 @@ describeWithEnv(
   "server images > the image-url lookup",
   {
     db: true,
-    env: {
-      STORAGE_ZONE_KEY: "testkey",
-      STORAGE_ZONE_NAME: "testzone",
-    },
+    storage: "local",
   },
   () => {
     test("maps only the image ids the texts reference to their URL", async () => {
@@ -106,10 +103,7 @@ describeWithEnv(
   "server images > the image-url cache",
   {
     db: true,
-    env: {
-      STORAGE_ZONE_KEY: "testkey",
-      STORAGE_ZONE_NAME: "testzone",
-    },
+    storage: "local",
   },
   () => {
     /** The image lookups the log records since the last enableQueryLog. */

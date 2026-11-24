@@ -7,7 +7,6 @@ import { listingGroups } from "#db/groups/table.ts";
 import { getGroupPackagePrices } from "#db/groups.ts";
 import { listingParents } from "#db/listing-parents.ts";
 import { getListingWithCount } from "#db/listings/records.ts";
-import { t } from "#i18n";
 import { exportListing } from "#routes/admin/catalog-transfer/export.ts";
 import { importCatalog } from "#routes/admin/catalog-transfer/import.ts";
 import {
@@ -17,26 +16,6 @@ import {
 import { describeWithEnv } from "#test-utils/db.ts";
 import { createTestGroup } from "#test-utils/db-helpers/groups.ts";
 import { createTestListing } from "#test-utils/db-helpers/listings.ts";
-import { withEnv } from "#test-utils/env.ts";
-
-/** Import a listing that asks for a built site, answering the refusal
- * message the import raises. */
-const refusedPlanImportError = async (name: string): Promise<string> => {
-  const result = await importCatalog({
-    kind: "listing",
-    listing: {
-      assignBuiltSite: true,
-      initialSiteMonths: 12,
-      maxAttendees: 5,
-      name,
-    },
-    version: 1,
-  });
-  if (result.ok) {
-    throw new Error(`the built-site plan import was accepted: ${name}`);
-  }
-  return result.error;
-};
 
 describeWithEnv(
   "catalog-transfer review fixes",
@@ -124,18 +103,6 @@ describeWithEnv(
         requireEntityImport(result).id,
       ))!;
       expect(imported.webhook_url).toBe("https://example.com/hook");
-    });
-
-    test("refuses a built-site plan listing whatever the builder configuration", async () => {
-      expect(await refusedPlanImportError("No Builder")).toBe(
-        t("catalog_transfer.site_plan_listing_refused", { name: "No Builder" }),
-      );
-      using _builderOn = withEnv({ CAN_BUILD_SITES: "true" });
-      expect(await refusedPlanImportError("Builder On")).toBe(
-        t("catalog_transfer.site_plan_listing_refused", {
-          name: "Builder On",
-        }),
-      );
     });
 
     test("clears package overrides for a non-package group membership", async () => {

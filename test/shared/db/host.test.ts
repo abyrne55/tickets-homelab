@@ -4,11 +4,9 @@ import { databaseHostFor } from "#db/host.ts";
 
 describe("database host", () => {
   const cases: [string, string][] = [
-    ["libsql://01abc-tickets-spencer.lite.bunnydb.net/", "bunny"],
-    ["https://01abc-tickets.lite.bunnydb.net", "bunny"],
-    ["libsql://tickets-chobble.turso.io", "turso"],
-    ["libsql://db.example.com", "other"],
-    ["https://db.example.com", "other"],
+    ["libsql://db.example.com", "remote"],
+    ["https://db.example.com", "remote"],
+    ["libsql://tickets-chobble.turso.io", "remote"],
     ["file:local.db", "local"],
     ["local.db", "local"],
     ["", "local"],
@@ -19,9 +17,4 @@ describe("database host", () => {
       expect(databaseHostFor(url)).toBe(expected);
     });
   }
-
-  test("does not treat a lookalike hostname as a hosted database", () => {
-    expect(databaseHostFor("libsql://bunnydb.net.example.com")).toBe("other");
-    expect(databaseHostFor("libsql://turso.io.example.com")).toBe("other");
-  });
 });

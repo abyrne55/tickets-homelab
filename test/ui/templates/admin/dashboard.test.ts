@@ -440,27 +440,23 @@ describe("adminDashboardPage type filter", () => {
   });
 });
 
-describeWithEnv(
-  "listing images",
-  { env: { STORAGE_ZONE_KEY: "testkey", STORAGE_ZONE_NAME: "testzone" } },
-  () => {
-    describe("adminDashboardPage with images", () => {
-      beforeAll(setupAdminPageTest);
+describeWithEnv("listing images", { storage: "local" }, () => {
+  describe("adminDashboardPage with images", () => {
+    beforeAll(setupAdminPageTest);
 
-      test("shows thumbnail when listing has image_url", () => {
-        const listings = [testListingWithCount({ image_url: "thumb.jpg" })];
-        const html = adminDashboardPage(listings, OWNER_SESSION);
-        expectIncludesAll(html, [
-          "/image/thumb.jpg",
-          'class="listing-thumbnail"',
-        ]);
-      });
-
-      test("does not show thumbnail when listing has no image_url", () => {
-        const listings = [testListingWithCount({ image_url: "" })];
-        const html = adminDashboardPage(listings, OWNER_SESSION);
-        assert(!html.includes('src="/image/'));
-      });
+    test("shows thumbnail when listing has image_url", () => {
+      const listings = [testListingWithCount({ image_url: "thumb.jpg" })];
+      const html = adminDashboardPage(listings, OWNER_SESSION);
+      expectIncludesAll(html, [
+        "/image/thumb.jpg",
+        'class="listing-thumbnail"',
+      ]);
     });
-  },
-);
+
+    test("does not show thumbnail when listing has no image_url", () => {
+      const listings = [testListingWithCount({ image_url: "" })];
+      const html = adminDashboardPage(listings, OWNER_SESSION);
+      assert(!html.includes('src="/image/'));
+    });
+  });
+});

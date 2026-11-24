@@ -126,17 +126,6 @@ const price: ListingRenderer = {
   rawValue: (e) => e.unit_price,
 };
 
-const renewal: ListingRenderer = {
-  ...listingColumnText("renewal"),
-  cell: (e) =>
-    e.months_per_unit > 0
-      ? t("listings_table.column.renewal.value", {
-          months: e.months_per_unit,
-        })
-      : "",
-  rawValue: (e) => e.months_per_unit,
-};
-
 // ---------------------------------------------------------------------------
 // Table definitions
 // ---------------------------------------------------------------------------
@@ -155,7 +144,6 @@ export const listingTable = attachTableRenderers(
     name,
     price,
     profit,
-    renewal,
     revenue,
     status,
     tickets,

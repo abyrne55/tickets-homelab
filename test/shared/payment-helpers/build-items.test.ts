@@ -1,6 +1,5 @@
 import { expect } from "@std/expect";
 import { describe, it as test } from "@std/testing/bdd";
-import { hmacHash } from "#crypto/hashing.ts";
 import type { BookingItem } from "#shared/booking-intent.ts";
 import { priceCheckout } from "#shared/checkout-pricing.ts";
 import {
@@ -43,20 +42,6 @@ describeWithEnv(
       ...(siteToken ? { siteToken } : {}),
     });
 
-    test("emits site_token_index as the HMAC of the plain token", async () => {
-      const metadata = await buildItemsMetadata(
-        baseIntent("plain-token-xyz"),
-        0,
-        STRIPE_CAPS.maxValueLength,
-      );
-      const expected = await hmacHash("plain-token-xyz");
-      // site_token_index is packed into `b` on the wire; the webhook recovers it
-      // via extractSessionMetadata, so assert on that recovered value.
-      expect(
-        extractSessionMetadata(wireMetadata(metadata)).site_token_index,
-      ).toBe(expected);
-    });
-
     test("plain token never appears in metadata", async () => {
       const metadata = await buildItemsMetadata(
         baseIntent("plain-token-xyz"),
@@ -66,15 +51,6 @@ describeWithEnv(
       for (const value of Object.values(metadata)) {
         expect(value.includes("plain-token-xyz")).toBe(false);
       }
-    });
-
-    test("omits site_token_index when siteToken is absent", async () => {
-      const metadata = await buildItemsMetadata(
-        baseIntent(),
-        0,
-        STRIPE_CAPS.maxValueLength,
-      );
-      expect("site_token_index" in metadata).toBe(false);
     });
   },
 );

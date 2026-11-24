@@ -3,17 +3,12 @@ import { it as test } from "@std/testing/bdd";
 import { execute, queryOne } from "#db/client.ts";
 import { completePaidBooking } from "#routes/api/payment-processing/completion.ts";
 import type { CreatedEntry } from "#routes/api/payment-processing/create.ts";
-import type { BookingIntent } from "#shared/booking-intent.ts";
 import type { RegistrationPackageFacts } from "#shared/registration-package-facts.ts";
 import { describeWithEnv } from "#test-utils/db.ts";
 import { configureTestEmail } from "#test-utils/email.ts";
 import { useFetchStub } from "#test-utils/mocks.ts";
 import { withRequestContext } from "#test-utils/request-context.ts";
-import { bookedLine, bookingIntent } from "./index/helpers.ts";
-
-/** What the checkout signed, with no answers and nothing added on top. */
-const bareIntent = (): BookingIntent =>
-  bookingIntent([{ e: 1, p: 1000, q: 1 }]);
+import { bookedLine } from "./index/helpers.ts";
 
 const noPackageFacts = (): RegistrationPackageFacts => ({
   displays: new Map(),
@@ -80,7 +75,6 @@ describeWithEnv(
       await withRequestContext(() =>
         completePaidBooking(
           [mapEntry ? mapEntry(entry) : entry],
-          bareIntent(),
           [],
           noPackageFacts(),
           undefined,
@@ -96,7 +90,6 @@ describeWithEnv(
         await withRequestContext(() =>
           completePaidBooking(
             [entry],
-            bareIntent(),
             ["tok_a", "tok_b"],
             noPackageFacts(),
             undefined,
@@ -115,13 +108,7 @@ describeWithEnv(
       await configureTestEmail({ businessEmail: "owner@example.com" });
 
       await withRequestContext(() =>
-        completePaidBooking(
-          [entry],
-          bareIntent(),
-          [],
-          noPackageFacts(),
-          undefined,
-        ),
+        completePaidBooking([entry], [], noPackageFacts(), undefined),
       );
 
       // The buyer's copy and the owner's copy are one send; the entry here
@@ -140,13 +127,7 @@ describeWithEnv(
       };
 
       await withRequestContext(() =>
-        completePaidBooking(
-          [notifiedEntry],
-          bareIntent(),
-          [],
-          noPackageFacts(),
-          undefined,
-        ),
+        completePaidBooking([notifiedEntry], [], noPackageFacts(), undefined),
       );
 
       const webhookCall = Array.from(

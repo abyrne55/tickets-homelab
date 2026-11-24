@@ -15,7 +15,6 @@ import {
 } from "#db/migrations.ts";
 import { handleRequest } from "#routes";
 import { runWithSubrequestBudget } from "#shared/subrequest-budget.ts";
-import { setBuildCommitForTest } from "#shared/update.ts";
 import {
   markCurrentSchemaMigrationPending,
   markMigrationsForRerun,
@@ -139,22 +138,6 @@ describeWithEnv(
       assertArrayIncludes(debugLines(), [
         "[Migration] Initializing fresh database from current schema",
       ]);
-    });
-
-    test("outside a request, the build's own commit is stored before boot returns", async () => {
-      await resetDatabase();
-      invalidateTestDbCache();
-      setBuildCommitForTest("abc1234");
-      try {
-        await initDb({ allowMissingSettings: true });
-
-        // Nothing else waits for this write, so boot must not return early.
-        expect(await settingsValueOrNull("current_script_commit")).toBe(
-          "abc1234",
-        );
-      } finally {
-        setBuildCommitForTest(null);
-      }
     });
 
     test("a rebuild after a wipe says so", async () => {

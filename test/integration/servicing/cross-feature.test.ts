@@ -55,25 +55,5 @@ describeWithEnv(
       assert(!kinds.includes("modifier"));
       expect(id).toBeGreaterThan(0);
     });
-
-    test("a servicing hold on a listing with an attached built-site assignment does not trigger site provisioning", async () => {
-      // `assign_built_site = true` on a listing triggers site provisioning for
-      // customer bookings. A servicing hold must not provision a site.
-      const { id } = await createServicingHold({
-        listing: {
-          assignBuiltSite: true,
-          initialSiteMonths: 1,
-          name: "Site L",
-        },
-      });
-      expect(id).toBeGreaterThan(0);
-      // No built_sites row should have been created for the servicing event.
-      const { queryOne } = await import("#db/client.ts");
-      const sites = await queryOne<{ count: number }>(
-        "SELECT COUNT(*) AS count FROM built_sites WHERE assigned_attendee_id = ?",
-        [id],
-      );
-      expect(sites?.count ?? 0).toBe(0);
-    });
   },
 );

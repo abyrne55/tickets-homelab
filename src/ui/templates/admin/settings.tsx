@@ -6,7 +6,6 @@ import { t } from "#i18n";
 import type { EnabledFeatures } from "#shared/admin-features.ts";
 import type { PaymentProviderMode } from "#shared/payment-provider-status.ts";
 import { SETTINGS_FORMS } from "#shared/settings/forms.ts";
-import type { SuperuserState } from "#shared/superuser.ts";
 import { FeaturesTable } from "#templates/admin/features.tsx";
 import { ChangePasswordForm } from "#templates/admin/settings/change-password.tsx";
 import { HeaderImageForm } from "#templates/admin/settings/header-image.tsx";
@@ -18,7 +17,6 @@ import {
 } from "#templates/admin/settings/payment.tsx";
 import { ExistingPaymentProviderForm } from "#templates/admin/settings/payment-provider.tsx";
 import { settingsForm } from "#templates/admin/settings/schema-form.tsx";
-import { SuperuserForm } from "#templates/admin/settings/superuser.tsx";
 import type { AdminSession, PaymentProviderType, Theme } from "#types";
 
 /** The provider whose credentials form the page shows: the one taking new
@@ -52,7 +50,6 @@ export type SettingsPageState = {
   underlineLinks: boolean;
   headerImageUrl: string;
   storageEnabled: boolean;
-  superuser: SuperuserState;
   calendarFeedsEnabled: boolean;
   calendarFeedsGroupBy: "attendees" | "listings";
   siteFooter: string;
@@ -85,7 +82,6 @@ export const adminSettingsPage = (
       {settingsForm(SETTINGS_FORMS.terms, s)}
       {settingsForm(SETTINGS_FORMS.siteFooter, s)}
       {settingsForm(SETTINGS_FORMS.embedHosts, s)}
-      <SuperuserForm superuser={s.superuser} />
       <ChangePasswordForm />
       {settingsForm(SETTINGS_FORMS.calendarFeeds, s)}
       <FeaturesTable enabledFeatures={s.enabledFeatures} />

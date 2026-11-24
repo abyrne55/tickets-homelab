@@ -24,8 +24,6 @@ export type EmailListing = WebhookListing & {
   hidden: boolean;
   location: string;
   purchase_only: boolean;
-  assign_built_site: boolean;
-  initial_site_months: number;
   listing_type: "standard" | "daily";
 };
 

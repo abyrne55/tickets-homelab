@@ -3,7 +3,6 @@ import { expect } from "@std/expect";
 import { describe, it as test } from "@std/testing/bdd";
 import { groups } from "#db/groups.ts";
 import { handleRequest } from "#routes";
-import { sitePlanMemberError } from "#shared/package-membership.ts";
 import {
   expectErrorFlash,
   expectFlash,
@@ -13,7 +12,6 @@ import {
 import { describeWithEnv } from "#test-utils/db.ts";
 import { createTestGroup } from "#test-utils/db-helpers/groups.ts";
 import { createTestListing } from "#test-utils/db-helpers/listings.ts";
-import { withEnv } from "#test-utils/env.ts";
 import type { TestFormValues } from "#test-utils/form-values.ts";
 import {
   adminFormPost,
@@ -99,34 +97,6 @@ describeWithEnv("Admin bulk actions — duplicate", { db: true }, () => {
         { new_name: "Orphan" },
       );
       expect(response.status).toBe(404);
-    });
-
-    test("refuses to duplicate a group that contains a built-site plan", async () => {
-      using _env = withEnv({ CAN_BUILD_SITES: "true" });
-      const group = await createTestGroup({ name: "Plan Source" });
-      const plan = await createTestListing({
-        assignBuiltSite: true,
-        initialSiteMonths: 1,
-        name: "Duplicated Plan",
-      });
-      const { setListingGroups } = await import("#db/groups.ts");
-      await setListingGroups(plan.id, [group.id]);
-
-      const { response } = await adminFormPost(
-        `/admin/groups/${group.id}/bulk-actions/duplicate`,
-        {
-          name_find: "Duplicated",
-          name_replace: "Cloned",
-          new_name: "Plan Copy",
-        },
-      );
-
-      // The whole duplication is rejected: the clone would be a built-site
-      // plan inside a group, which no save path may write.
-      expectErrorFlash(response, sitePlanMemberError("Cloned Plan"));
-      expect((await groups.cache.getAll()).map((g) => g.name)).not.toContain(
-        "Plan Copy",
-      );
     });
 
     /** Post a duplicate whose new name equals the source group's own name, so

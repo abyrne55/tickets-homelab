@@ -18,7 +18,6 @@ import {
 } from "./prefix-handlers.ts";
 import {
   APPLE_WALLET_SETTINGS,
-  BOOKING_FLOW_SETTINGS,
   EMAIL_SETTINGS,
   EMBEDDABLE_BOOKING_SETTINGS,
   GOOGLE_WALLET_SETTINGS,
@@ -118,22 +117,6 @@ export const PREFIXES_M_Z = {
     getOnly: true,
     handler: readOnlyInfoHandler,
     settings: [],
-  },
-  renew: {
-    handler: getPostRoute(
-      () => import("#routes/public/renewal.ts"),
-      "handleRenewalGet",
-      "handleRenewalPost",
-      "renew",
-    ),
-    messageGroups: publicMessageGroups(
-      "payment",
-      "public-site",
-      "renewal",
-      "tickets",
-      "validation",
-    ),
-    settings: BOOKING_FLOW_SETTINGS,
   },
   // The setup router owns these paths before app routing. The entry declares
   // the bundle only, so the settings read stays infra-only.

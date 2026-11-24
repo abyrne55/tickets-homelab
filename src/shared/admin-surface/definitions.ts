@@ -14,20 +14,17 @@ import type { AdminLevel } from "#types";
 export interface AdminSurfaceContext {
   readonly active: string;
   readonly adminLevel: AdminLevel;
-  readonly builder: boolean;
   readonly enabledFeatures: EnabledFeatures;
   readonly isReadOnly: boolean;
   readonly storage: boolean;
-  readonly support: boolean;
 }
 
 export type AdminAudience = readonly AdminLevel[];
 export type AdminRouteIntent = "view" | "write-form";
 export type AdminNavKind = "landing" | "link" | "create" | "import";
 
-/** How long read-only mode keeps a write open. `"always"` covers sign-in and
- * sign-out, which stay open while an update runs. `"read-only"` covers the
- * operations a working site cannot pause: they close in update mode. */
+/** Read-only mode keeps a declared write open. `"always"` covers sign-in and
+ * sign-out. `"read-only"` covers the operations a working site cannot pause. */
 export type ReadOnlyWrite = "always" | "read-only";
 
 export const OWNER_AUDIENCE = ["owner"] as const;
@@ -48,7 +45,6 @@ export type AdminDestinationSpec =
       readonly afterSave?: string;
       readonly audience?: AdminAudience;
       readonly pattern: string;
-      readonly readOnlyGet?: true;
       readonly readOnlyWrite?: ReadOnlyWrite;
     };
 
@@ -74,9 +70,6 @@ export type AdminDestinationDef = {
   readonly area: string;
   readonly audience: AdminAudience;
   readonly id: string;
-  /** The GET this write route serves is not a form: read-only mode keeps
-   * serving it instead of redirecting it. */
-  readonly readOnlyGet?: true;
   /** The POST stays open in read-only mode. Its GET page stays open too. */
   readonly readOnlyWrite?: ReadOnlyWrite;
   readonly intent: AdminRouteIntent;
@@ -103,7 +96,6 @@ const groupDestinations = (
       ...(object.afterSave === undefined
         ? {}
         : { afterSave: object.afterSave }),
-      ...(object.readOnlyGet === true ? { readOnlyGet: true } : {}),
       ...(object.readOnlyWrite === undefined
         ? {}
         : { readOnlyWrite: object.readOnlyWrite }),

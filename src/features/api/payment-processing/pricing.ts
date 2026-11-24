@@ -57,16 +57,13 @@ export const checkoutIntentForSession = (
   ...contactFields(intent),
   date: intent.date,
   items: validatedItems.map((v) => ({
-    // The signed name conceals a hidden package's member. The listing facts
-    // beneath it resolve what one unit buys.
+    // The signed name conceals a hidden package's member.
     ...checkoutItem(
       { ...v.listing, name: v.name },
       v.item.q,
       // A zero-quantity line charges nothing, so its per-unit price stays 0
       // rather than dividing the line total by zero.
       v.item.q === 0 ? 0 : v.item.p / v.item.q,
-      // A session that renews a site prices its lines by months per unit.
-      { renewal: intent.siteTokenIndex !== undefined },
     ),
     ...(v.item.k === "p" && v.item.r !== undefined
       ? { packageGroupId: v.item.r }

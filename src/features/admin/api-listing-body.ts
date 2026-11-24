@@ -290,10 +290,9 @@ export const bodyToUpdateInput = async (
         "api",
         withoutEditorLockedFields(body, session),
       ),
-      // The JSON API cannot set these four fields, so fold the stored ones in
+      // The JSON API cannot set these fields, so fold the stored ones in
       // as the update's final facts. An update that adds groups or children
       // must read them the way the validators do, not as absent-and-false.
-      assignBuiltSite: existing.assign_built_site,
       // An omitted attribute_option_ids leaves the stored links untouched.
       // persistListingJoins skips the link write for an undefined selection.
       // So an unrelated update never restores a stale one. group_ids behaves
@@ -304,10 +303,8 @@ export const bodyToUpdateInput = async (
           ? parseDayPrices(body.day_prices)
           : existing.day_prices,
       groupIds: joinIds.groupIds,
-      initialSiteMonths: existing.initial_site_months,
       maxAttendees,
       maxPrice: bodyNumber(body, "max_price", existing.max_price),
-      monthsPerUnit: existing.months_per_unit,
       name: parsedName.value,
       purchaseOnly: existing.purchase_only,
       slug,

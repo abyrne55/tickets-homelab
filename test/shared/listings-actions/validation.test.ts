@@ -148,21 +148,6 @@ describeWithEnv("validateListingInput package edges", { db: true }, () => {
       ),
     ).resolves.toBeNull();
   });
-
-  test("rejects months per unit when No check-in is set without Hidden", async () => {
-    await expect(
-      validateListingInput(
-        inputFor({
-          hidden: false,
-          monthsPerUnit: 1,
-          name: "Renewal Mixed",
-          purchaseOnly: true,
-        }),
-      ),
-    ).resolves.toBe(
-      "Months per unit requires No check-in and Hidden listing to be enabled.",
-    );
-  });
 });
 
 describeWithEnv("validateListingInput minimum quantity", { db: true }, () => {

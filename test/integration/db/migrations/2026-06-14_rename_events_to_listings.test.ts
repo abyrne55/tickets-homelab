@@ -50,7 +50,6 @@ describeWithEnv(
             "CREATE TABLE listing_attendees (id INTEGER PRIMARY KEY, listing_id INTEGER, attendee_id INTEGER)",
             "CREATE TABLE listing_questions (id INTEGER PRIMARY KEY, listing_id INTEGER, question_id INTEGER)",
             "ALTER TABLE activity_log ADD COLUMN listing_id INTEGER",
-            "ALTER TABLE built_sites ADD COLUMN assigned_listing_id INTEGER DEFAULT NULL",
           ],
           "write",
         );
@@ -65,9 +64,6 @@ describeWithEnv(
         await rerunMigrationsAndExpectListingDomainRestored(listingId);
 
         assert(!(await columnNames("activity_log")).includes("event_id"));
-        assert(
-          !(await columnNames("built_sites")).includes("assigned_event_id"),
-        );
         expect(await schemaHashMarker()).toBe(SCHEMA_HASH);
       });
 

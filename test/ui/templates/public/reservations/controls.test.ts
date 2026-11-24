@@ -91,8 +91,6 @@ describe("renderDayCountSelector", () => {
 
 describe("renderPayMoreInput", () => {
   const listing = {
-    assign_built_site: false,
-    initial_site_months: 0,
     max_price: 10000,
     unit_price: 500,
   };
@@ -164,33 +162,9 @@ describe("renderPayMoreInput", () => {
     assertStringIncludes(renderPayMoreInput(listing), 'value="5.00"');
   });
 
-  test("states the months each priced unit buys on a site plan", () => {
-    const plan = {
-      assign_built_site: true,
-      initial_site_months: 3,
-      max_price: 10000,
-      unit_price: 500,
-    };
-    const html = renderPayMoreInput(plan);
-    assertStringIncludes(html, "Price per 3 months (£5 minimum)");
-    assert(!html.includes("Price per ticket"));
-  });
-
   test("prices an ordinary listing per ticket", () => {
     const html = renderPayMoreInput(listing);
     assertStringIncludes(html, "Price per ticket (£5 minimum)");
-  });
-
-  test("names the optional ceiling in months on a free site plan", () => {
-    const freePlan = {
-      assign_built_site: true,
-      initial_site_months: 3,
-      max_price: 10000,
-      unit_price: 0,
-    };
-    const html = renderPayMoreInput(freePlan);
-    assertStringIncludes(html, "Price per 3 months (optional, up to £100)");
-    assert(!html.includes("required"));
   });
 
   test("per ticket stays the wording on an optional ordinary listing", () => {

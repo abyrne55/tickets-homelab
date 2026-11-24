@@ -50,28 +50,11 @@ export type ListingDefaultField = {
   /** Matching listing column / listing-form field name (snake_case). */
   field: keyof Listing;
   kind: ListingDefaultKind;
-  /**
-   * When present, the default only overlays a listing for which this returns
-   * true — the schema-level home for a per-field invariant the overlay must not
-   * break, so {@link resolveListingDefaults} stays a plain fold with no
-   * special-cased branches. Absent ⇒ the default always applies.
-   */
-  appliesTo?: (listing: ResolvableListing) => boolean;
-  /** The other fields {@link appliesTo} reads. A row carrying this field must
-   * carry these too — {@link resolveListingDefaults} throws rather than judge
-   * the gate on values that are not there. */
-  gateReads?: readonly (keyof Listing)[];
 };
 
 /**
- * One field carries an `appliesTo` gate, so the overlay never produces a listing
- * the save path would reject. `duration_days` and `customisable_days` are
- * excluded outright, because both are tied to save-time invariants that
- * read-time inheritance cannot honour.
- *
- * - `hidden` never applies to a renewal tier, which must stay hidden and
- *   purchase-only or renewal extension breaks. {@link catalogVisibleSql}
- *   mirrors this gate in SQL.
+ * `duration_days` and `customisable_days` are excluded outright, because both
+ * are tied to save-time invariants that read-time inheritance cannot honour.
  */
 export const LISTING_DEFAULT_FIELDS: readonly ListingDefaultField[] = [
   { field: "bookable_days", key: "bookableDays", kind: "days" },
@@ -80,13 +63,7 @@ export const LISTING_DEFAULT_FIELDS: readonly ListingDefaultField[] = [
   { field: "webhook_url", key: "webhookUrl", kind: "url" },
   { field: "thank_you_url", key: "thankYouUrl", kind: "url" },
   { field: "show_remaining", key: "showRemaining", kind: "bool" },
-  {
-    appliesTo: (listing) => listing.months_per_unit === 0,
-    field: "hidden",
-    gateReads: ["months_per_unit"],
-    key: "hidden",
-    kind: "bool",
-  },
+  { field: "hidden", key: "hidden", kind: "bool" },
 ] as const;
 
 /** The HTML form input name for a field's default value. */
@@ -127,14 +104,10 @@ export const listingDefaultFormClasses = (defaults: ListingDefaults): string =>
 
 /**
  * Resolve a listing's effective values: when `use_defaults` is on, overlay each
- * set default whose {@link ListingDefaultField.appliesTo} gate (if any) accepts
- * the listing; otherwise return it unchanged. The per-field gates keep the
- * overlay from producing a listing the save path would reject — see
- * {@link LISTING_DEFAULT_FIELDS}.
+ * set default; otherwise return it unchanged.
  *
  * A field the row did not select cannot be inherited, so a narrow read gets the
- * effective values of exactly the fields it asked for. Selecting a gated field
- * without the fields its gate reads is a bug in the read, and throws.
+ * effective values of exactly the fields it asked for.
  */
 export const resolveListingDefaults = <T extends ResolvableListing>(
   listing: T,
@@ -142,17 +115,8 @@ export const resolveListingDefaults = <T extends ResolvableListing>(
 ): T => {
   if (!listing.use_defaults) return listing;
   const overlay: Partial<Record<keyof Listing, unknown>> = {};
-  for (const { key, field, appliesTo, gateReads } of setListingDefaultFields(
-    defaults,
-  )) {
-    if (!(field in listing)) continue;
-    const missing = (gateReads ?? []).filter((read) => !(read in listing));
-    if (missing.length > 0) {
-      throw new Error(
-        `Cannot resolve the ${field} default: the row selects it but not ${missing.join(", ")}, which its rule reads`,
-      );
-    }
-    if (!appliesTo || appliesTo(listing)) overlay[field] = defaults[key];
+  for (const { key, field } of setListingDefaultFields(defaults)) {
+    if (field in listing) overlay[field] = defaults[key];
   }
   return { ...listing, ...overlay };
 };

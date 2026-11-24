@@ -395,22 +395,6 @@ describeWithEnv("api-listing-joins", { db: true }, () => {
     );
   });
 
-  test("rejects a stale outgoing edge after the parent becomes a renewal", async () => {
-    const parent = await createTestListing({ name: "Changing parent" });
-    const child = await createTestListing({ name: "Standard child" });
-    await listingChildren.setIds(parent.id, [child.id]);
-
-    await expect(
-      persistAfterRowChange(parent.id, {
-        args: [parent.id],
-        sql: "UPDATE listings SET months_per_unit = 1 WHERE id = ?",
-      }),
-    ).rejects.toThrow(
-      t("listings_table.children_err_parent_renewal", { name: parent.name }),
-    );
-    expect((await getListingWithCount(parent.id))?.months_per_unit).toBe(0);
-  });
-
   test("persistListingJoins clears child edges when given an empty array", async () => {
     const parent = await createTestListing({ name: "Clear parent" });
     const child = await createTestListing({ name: "Clear child" });

@@ -9,10 +9,6 @@ import { it as test } from "@std/testing/bdd";
 import { invalidateInitDbCache } from "#db/migrations.ts";
 import { settings } from "#db/settings.ts";
 import { handleRequest } from "#routes";
-import {
-  setBuildCommitForTest,
-  setBuildTimestampForTest,
-} from "#shared/update.ts";
 import { describeWithEnv } from "#test-utils/db.ts";
 import { recordQueries } from "#test-utils/record-queries.ts";
 
@@ -21,13 +17,9 @@ const request = (path: string): Request =>
 
 describeWithEnv("cold-boot query chain", { db: true }, () => {
   test("a cold isolate's first request runs only the expected boot queries", async () => {
-    // Behave like a deployed build so recordScriptVersion takes its real
-    // steady-state path (one marker read, no writes).
-    setBuildTimestampForTest("2026-01-01T00:00:00.000Z");
-    setBuildCommitForTest("coldboot00");
-    try {
-      // First request: stamps the one-off housekeeping (script version
-      // markers, prune timestamps, backfill markers) exactly as an earlier
+    {
+      // First request: stamps the one-off housekeeping (prune timestamps,
+      // backfill markers) exactly as an earlier
       // isolate of the same deploy would have.
       await (await handleRequest(request("/"))).text();
 
@@ -72,8 +64,6 @@ describeWithEnv("cold-boot query chain", { db: true }, () => {
       ).toBe(0);
 
       // The settings loads: one version probe plus one targeted key load.
-      // The script-version markers share the loadKeys SQL shape ("WHERE key
-      // IN (?, ?)"), so they show up here too — but only as ONE extra read.
       expect(boot.versionProbe.length).toBe(1);
       expect(boot.loadKeys.length).toBeLessThanOrEqual(2);
 
@@ -87,9 +77,6 @@ describeWithEnv("cold-boot query chain", { db: true }, () => {
       // If this grows, a new query joined the cold-start path — make sure it
       // is deliberate (and overlapped, not sequential) before raising it.
       expect(seen.length).toBeLessThanOrEqual(6);
-    } finally {
-      setBuildTimestampForTest(null);
-      setBuildCommitForTest(null);
     }
   });
 });

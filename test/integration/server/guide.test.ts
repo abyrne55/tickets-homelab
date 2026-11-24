@@ -311,49 +311,12 @@ describeWithEnv("server (admin guide)", { db: true }, () => {
       );
     });
 
-    test("contains host subdomain section", async () => {
-      await guide(
-        "Host subdomain",
-        "you do not need to change anything at a domain seller",
-        "Can I use both a subdomain and a custom domain?",
-      );
-    });
-
-    test("explains the address priority order for generated links", async () => {
-      await guide(
-        "Which address is used for ticket links and emails?",
-        "once it has passed validation",
-        "host subdomain",
-      );
-    });
-
-    test("sends the CNAME record to the company that manages the domain's DNS", async () => {
-      await guide(
-        "How do I set up a custom domain?",
-        "DNS settings for your domain name",
-        "some domain names use a separate DNS company",
-      );
-    });
-
-    test("contains host subdomain in advanced settings list", async () => {
-      await guide("Host subdomain", "a free address for your site");
-    });
-
-    test("documents the release tag format shared with the update checker", async () => {
-      await guide(
-        "Software updates",
-        "v2026-03-01-142500",
-        "date and time it was built",
-      );
-    });
-
     test("contains read-only mode explanation aimed at end users", async () => {
       await guide(
         'id="read-only-mode"',
         "Read-only mode",
-        "switched on by the company that runs your site",
-        "behind on bills",
-        "being fixed",
+        "switched on by whoever runs your site",
+        "READ_ONLY_FROM",
       );
     });
 

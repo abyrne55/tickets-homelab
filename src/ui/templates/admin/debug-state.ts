@@ -43,7 +43,6 @@ export type DebugPageState = {
   availability: {
     state: "active" | "warning" | "readonly";
     cutoff: string;
-    renewalConfigured: boolean;
     serverTime: string;
   };
   email: {
@@ -56,14 +55,8 @@ export type DebugPageState = {
     ntfyConfigured: boolean;
     sentryConfigured: boolean;
   };
-  bunny: {
-    storageBackend: "bunny" | "local" | "none";
-    cdnEnabled: boolean;
-    cdnHostname: string;
-    customDomain: string;
-    dnsEnabled: boolean;
-    subdomainSuffix: string;
-    registeredSubdomain: string;
+  storage: {
+    storageBackend: "local" | "none";
   };
   database: {
     host: DatabaseHost | null;

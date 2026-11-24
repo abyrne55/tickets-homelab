@@ -2,12 +2,10 @@ import { assertStringIncludes } from "@std/assert";
 import { expect } from "@std/expect";
 import { describe, it as test } from "@std/testing/bdd";
 import { setAdminFeatureEnabled } from "#db/admin-features.ts";
-import { builtSites, insertBuiltSite } from "#db/built-sites.ts";
 import { settings } from "#db/settings.ts";
 import { routeMainApp, servesBodyRequests } from "#routes/app/routes.ts";
 import { signCsrfToken } from "#shared/csrf.ts";
 import { describeWithEnv } from "#test-utils/db.ts";
-import { provisionTestBuiltSite } from "#test-utils/db-helpers/built-sites.ts";
 import { withEnv } from "#test-utils/env.ts";
 import { mockFormRequest, mockRequest } from "#test-utils/mocks.ts";
 import { enablePublicApi, enablePublicSite } from "#test-utils/settings.ts";
@@ -27,20 +25,6 @@ const routeRequest = async (
 
 const route = (path: string, method = "GET"): Promise<Response> =>
   routeRequest(mockRequest(path, { method }), path, method);
-
-const routeRenewal = async (method: string): Promise<Response> => {
-  await insertBuiltSite("Route Renewal Site", "route-renewal.b-cdn.net");
-  const site = (await builtSites.getAll()).find(
-    ({ name }) => name === "Route Renewal Site",
-  );
-  if (!site) throw new Error("Route renewal site not found");
-  const { token } = await provisionTestBuiltSite(site.id);
-  return routeRequest(
-    mockRequest(`/renew?t=${encodeURIComponent(token)}`, { method }),
-    "/renew",
-    method,
-  );
-};
 
 describeWithEnv("main app router", { db: true }, () => {
   test("returns not found for an inherited object property", async () => {
@@ -128,14 +112,6 @@ describeWithEnv("main app router", { db: true }, () => {
     await settings.update.businessEmail("owner@example.com");
     await settings.update.contactFormEnabled(true);
     expect((await route("/contact", "POST")).status).toBe(302);
-  });
-
-  test("routes renewal GET requests", async () => {
-    expect((await routeRenewal("GET")).status).toBe(200);
-  });
-
-  test("routes renewal POST requests", async () => {
-    expect((await routeRenewal("POST")).status).toBe(200);
   });
 
   test("routes unsubscribe GET requests", async () => {

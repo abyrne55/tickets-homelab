@@ -29,7 +29,6 @@ const ANCHOR = /\/admin\/guide#([a-z0-9_-]+)/g;
  * matching the fixture `guide-schema.test.ts` uses. */
 const sections = (): GuideSection[] =>
   guideSections({
-    builderEnabled: true,
     hostAppleWalletPassTypeId: null,
     hostEmailFromAddress: null,
     hostEmailProvider: null,

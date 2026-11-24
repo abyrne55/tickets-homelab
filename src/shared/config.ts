@@ -13,7 +13,6 @@ import {
   getRequestEffectiveDomain,
   setRequestEffectiveDomain,
 } from "#shared/request-context.ts";
-import { slugify } from "#shared/slug.ts";
 import type { PaymentProviderType } from "#types";
 
 /** One getter for an env var: required, or empty when it is not set. */
@@ -79,31 +78,14 @@ const isLocalDevelopmentHost = (domain: string): boolean =>
   domain === "::1" ||
   isIpv4Loopback(domain);
 
-/** Load the effective domain from DB, falling back to the request URL hostname. */
+/** Set the effective domain to the host the request named. Every
+ * absolute-URL reader shares it, so the readers cannot disagree. */
 export const loadEffectiveDomain = (requestUrl: URL): string => {
-  const domain = effectiveDomainFromSettings(
-    settings.customDomain,
-    settings.bunnySubdomain,
-    settings.customDomainLastValidated,
-    requestUrl.hostname,
-  );
+  const domain = requestUrl.hostname;
   setRequestEffectiveDomain(domain);
   fallbackDomain.domain = domain;
   return domain;
 };
-
-/** The site's own domain from its settings, falling back to the host the
- * request named: a validated custom domain wins, then the Bunny subdomain.
- * Every absolute-URL reader shares it, so the readers cannot disagree. */
-export const effectiveDomainFromSettings = (
-  customDomain: string,
-  bunnySubdomain: string,
-  customDomainLastValidated: string,
-  requestHost: string,
-): string =>
-  customDomain && customDomainLastValidated
-    ? customDomain
-    : bunnySubdomain || requestHost;
 
 /**
  * Seed the effective domain from the request's own hostname.
@@ -112,8 +94,7 @@ export const effectiveDomainFromSettings = (
  * so anything that fails before it — most notably database migrations on the
  * first request after a cold boot — would otherwise read the bare "localhost"
  * fallback in error notifications. Seeding the request host early makes those
- * notifications (e.g. ntfy titles) identify the real site. The value is
- * refined later by loadEffectiveDomain() once the custom domain is known.
+ * notifications (e.g. ntfy titles) identify the real site.
  */
 export const seedEffectiveDomainHost = (requestUrl: URL): void => {
   setRequestEffectiveDomain(requestUrl.hostname);
@@ -170,47 +151,6 @@ const allEnvSet =
     names.every((name) => !!getEnv(name));
 
 /**
- * Check if Bunny CDN pull zone management is enabled
- * Requires both BUNNY_API_KEY and BUNNY_SCRIPT_ID to be set
- */
-export const isBunnyCdnEnabled = allEnvSet("BUNNY_API_KEY", "BUNNY_SCRIPT_ID");
-
-/**
- * Get the Bunny CDN API key from environment
- */
-export const getBunnyApiKey = envGetter("BUNNY_API_KEY", true);
-
-/**
- * Check if Bunny DNS subdomain feature is enabled.
- * Requires BUNNY_API_KEY and BUNNY_DNS_ZONE_ID to be set.
- */
-export const isBunnyDnsEnabled = allEnvSet(
-  "BUNNY_API_KEY",
-  "BUNNY_DNS_ZONE_ID",
-);
-
-/** Check if the Bunny hosted database provider is enabled (requires BUNNY_API_KEY). */
-export const isBunnyDbEnabled = allEnvSet("BUNNY_API_KEY");
-
-/** Check if this instance can build other sites. */
-export const isBuilderEnabled = (): boolean =>
-  getEnv("CAN_BUILD_SITES") === "true";
-
-/** Get the Bunny DNS zone ID from environment */
-export const getBunnyDnsZoneId = envGetter("BUNNY_DNS_ZONE_ID", true);
-
-/** Get the Bunny DNS subdomain suffix (e.g. ".tickets") from environment */
-export const getBunnyDnsSubdomainSuffix = envGetter(
-  "BUNNY_DNS_SUBDOMAIN_SUFFIX",
-  false,
-);
-
-/**
- * Get the Bunny Edge Script ID from environment
- */
-export const getBunnyScriptId = envGetter("BUNNY_SCRIPT_ID", true);
-
-/**
  * Diagnostic key gating the verbose `/health` response. Empty when unset, in
  * which case `/health` only ever returns the plain liveness reply. Holding the
  * key reveals non-private build/runtime diagnostics (commit, build time) that
@@ -239,95 +179,3 @@ export const isBotpoisonEnabled = allEnvSet(
   "BOTPOISON_PUBLIC_KEY",
   "BOTPOISON_SECRET_KEY",
 );
-
-/**
- * Whether the inter-instance site-credentials endpoint is enabled. Off unless
- * MAIN_INSTANCE_KEY is set, so a non-builder instance never exposes it. The key
- * is a high-entropy shared secret the operator passes to the upgrade workflow at
- * trigger time (it is never stored in GitHub).
- */
-export const isInstanceApiEnabled = allEnvSet("MAIN_INSTANCE_KEY");
-
-/** The shared secret authorizing the inter-instance site-credentials endpoint. */
-export const getMainInstanceKey = envGetter("MAIN_INSTANCE_KEY", true);
-
-/** Check if Deno Deploy hosting has its token, organization ID, and domain slug. */
-export const isDenoDeployEnabled = allEnvSet(
-  "DENO_DEPLOY_TOKEN",
-  "DENO_DEPLOY_ORG_ID",
-  "DENO_DEPLOY_ORG_SLUG",
-);
-
-/** Get the Deno Deploy API token from environment. */
-export const getDenoDeployToken = envGetter("DENO_DEPLOY_TOKEN", true);
-
-/** Get the Deno Deploy organization ID from environment. */
-export const getDenoDeployOrgId = envGetter("DENO_DEPLOY_ORG_ID", true);
-
-/** Get the Deno Deploy organization slug used in managed production domains. */
-export const getDenoDeployOrgSlug = envGetter("DENO_DEPLOY_ORG_SLUG", true);
-
-/** DEFAULT_DB_HOST's provider: "turso" when set to it, "bunny" otherwise. */
-export const getDefaultDbProvider = (): "bunny" | "turso" =>
-  getEnv("DEFAULT_DB_HOST") === "turso" ? "turso" : "bunny";
-
-/** Whether Turso hosting has its API token, organization, and group set. */
-export const isTursoEnabled = allEnvSet(
-  "TURSO_API_TOKEN",
-  "TURSO_ORGANIZATION",
-  "TURSO_GROUP",
-);
-
-/** Get the Turso API token from environment. */
-export const getTursoApiToken = envGetter("TURSO_API_TOKEN", true);
-
-/** Get the Turso organization name from environment. */
-export const getTursoOrganization = envGetter("TURSO_ORGANIZATION", true);
-
-/** Get the Turso database group from environment. */
-export const getTursoGroup = envGetter("TURSO_GROUP", true);
-
-/**
- * Sanitize a site name into a valid provider resource slug: the shared
- * {@link slugify}, capped at `maxLength` with any hyphen the cut left trimmed.
- */
-const slugifyForProvider = (name: string, maxLength: number): string =>
-  slugify(name).slice(0, maxLength).replace(/-+$/, "");
-
-/** Turns a site name into a provider-safe slug. */
-type SlugRule = (name: string) => string;
-
-/** A provider's resource-name rule: the provider slug capped at `maxLength`,
- * padded with `pad` when it lands under `minLength` (a provider that only
- * needs a non-empty name sets `minLength` to 1 and reads `pad` as the
- * empty-name fallback). */
-const providerSlugRule =
-  ({
-    maxLength,
-    minLength,
-    pad,
-  }: {
-    maxLength: number;
-    minLength: number;
-    pad: string;
-  }): SlugRule =>
-  (name) => {
-    const slug = slugifyForProvider(name, maxLength);
-    return slug.length >= minLength
-      ? slug
-      : `${slug}${pad}`.slice(0, maxLength);
-  };
-
-/** Deno Deploy app names: 3–32 chars, lowercase letters, numbers, hyphens. */
-export const denoDeployAppSlug: SlugRule = providerSlugRule({
-  maxLength: 32,
-  minLength: 3,
-  pad: "app",
-});
-
-/** Turso database names: non-empty, at most 63 chars. */
-export const tursoDatabaseSlug: SlugRule = providerSlugRule({
-  maxLength: 63,
-  minLength: 1,
-  pad: "db",
-});

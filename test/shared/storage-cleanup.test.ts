@@ -29,20 +29,8 @@ const withDeleteError = async (
 
 describeWithEnv("storage record cleanup", STORAGE_TEST_ENV, () => {
   describe("strict image deletion", () => {
-    test("accepts an already missing file by message", async () => {
-      await withDeleteError(
-        new Error("File not found: image.webp"),
-        async () => {
-          await expect(
-            deleteImageStorageFilesStrict(image),
-          ).resolves.toBeUndefined();
-        },
-      );
-    });
-
     test("accepts an already missing file by error name", async () => {
-      const missing = new Error("already gone");
-      missing.name = "NotFound";
+      const missing = new Deno.errors.NotFound("already gone");
       await withDeleteError(missing, async () => {
         await expect(
           deleteImageStorageFilesStrict(image),

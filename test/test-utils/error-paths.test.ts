@@ -1,6 +1,7 @@
 import { expect } from "@std/expect";
 import { afterEach, beforeEach, describe, it as test } from "@std/testing/bdd";
 import type { Field } from "#shared/forms/field.ts";
+import { isStorageEnabled, uploadRaw } from "#shared/storage.ts";
 import { expectStatus } from "#test-utils/assertions.ts";
 import {
   createTestDb,
@@ -25,11 +26,9 @@ import {
 import {
   errorResponse,
   installRecordingFetch,
-  withBunnyDeleteCapture,
-  withBunnyStorageStub,
-  withCdnProxy,
-  withCdnRejecting,
+  withStorageDisabled,
   withStorageMock,
+  withUnwritableStorage,
 } from "#test-utils/mocks.ts";
 import { withRandomBytes } from "#test-utils/random.ts";
 import { loginAsAdmin } from "#test-utils/session.ts";
@@ -282,94 +281,21 @@ describe("test-utils — error paths & contracts", () => {
       }
     });
 
-    test("Bunny storage stub intercepts storage URLs and leaves unrelated URLs alone", async () => {
-      const seen: string[] = [];
-
-      await withBunnyStorageStub(
-        (url) => {
-          seen.push(url);
-          return new Response("stored");
-        },
-        async () => {
-          const stored = await fetch(
-            "https://storage.bunnycdn.com/testzone/file.txt",
-          );
-          const fallback = await fetch("data:text/plain,plain");
-
-          expect(await stored.text()).toBe("stored");
-          expect(await fallback.text()).toBe("plain");
-        },
-      );
-
-      expect(seen).toEqual(["https://storage.bunnycdn.com/testzone/file.txt"]);
-    });
-
-    test("Bunny delete capture records storage deletes and permits custom intercepts", async () => {
-      await withBunnyDeleteCapture(
-        async (deletedUrls) => {
-          const storageResponse = await fetch(
-            "https://storage.bunnycdn.com/testzone/delete-me.txt",
-          );
-          const customResponse = await fetch("https://example.test/custom");
-          const fallbackResponse = await fetch("data:text/plain,untouched");
-
-          expect(storageResponse.status).toBe(200);
-          expect(await customResponse.text()).toBe("custom");
-          expect(await fallbackResponse.text()).toBe("untouched");
-          expect(deletedUrls).toEqual([
-            "https://storage.bunnycdn.com/testzone/delete-me.txt",
-          ]);
-        },
-        {
-          extraHandler: (url) =>
-            url === "https://example.test/custom"
-              ? Promise.resolve(new Response("custom"))
-              : null,
-        },
-      );
-    });
-
-    test("storage mock covers storage, CDN, and fallback fetches", async () => {
-      await withStorageMock(async (fetchCalls) => {
-        const storage = await fetch(
-          "https://storage.bunnycdn.com/testzone/upload.txt",
-        );
-        const cdn = await fetch("https://testzone.b-cdn.net/upload.txt");
-        const fallback = await fetch("data:text/plain,local");
-
-        expect(storage.status).toBe(201);
-        expect(cdn.status).toBe(201);
-        expect(await fallback.text()).toBe("local");
-        expect(fetchCalls).toEqual([
-          "https://storage.bunnycdn.com/testzone/upload.txt",
-          "https://testzone.b-cdn.net/upload.txt",
-          "data:text/plain,local",
-        ]);
+    test("storage helpers enable, break, and disable local storage", async () => {
+      await withStorageMock(async () => {
+        expect(isStorageEnabled()).toBe(true);
+        await uploadRaw(new Uint8Array([1]), "ok.bin");
       });
-    });
 
-    test("CDN proxy helpers intercept storage URLs and restore fetch", async () => {
-      await withCdnProxy(
-        () => new Response("proxied", { status: 202 }),
-        async () => {
-          const proxied = await fetch(
-            "https://storage.bunnycdn.com/testzone/proxied.txt",
-          );
-          const fallback = await fetch("data:text/plain,local");
-
-          expect(proxied.status).toBe(202);
-          expect(await proxied.text()).toBe("proxied");
-          expect(await fallback.text()).toBe("local");
-        },
-      );
-
-      await withCdnRejecting(new Error("cdn down"), async () => {
+      await withUnwritableStorage(async () => {
+        expect(isStorageEnabled()).toBe(true);
         await expect(
-          fetch("https://storage.bunnycdn.com/testzone/fail.txt"),
-        ).rejects.toThrow("cdn down");
+          uploadRaw(new Uint8Array([1]), "fail.bin"),
+        ).rejects.toThrow();
+      });
 
-        const fallback = await fetch("data:text/plain,still-local");
-        expect(await fallback.text()).toBe("still-local");
+      withStorageDisabled(() => {
+        expect(isStorageEnabled()).toBe(false);
       });
     });
 

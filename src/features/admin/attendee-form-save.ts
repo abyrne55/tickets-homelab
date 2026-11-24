@@ -2,7 +2,6 @@ import { logActivity } from "#db/activity-log.ts";
 import type { ListingAttendeeRow } from "#db/attendee-types.ts";
 import { attendeesApi } from "#db/attendees/api.ts";
 import { hasPaidLine } from "#db/attendees/queries.ts";
-import { hasAssignedBuiltSite } from "#db/built-sites/claims.ts";
 import { syncAttendeeContactTokens } from "#db/contact-tokens.ts";
 import type { QuestionWithAnswers } from "#db/question-types.ts";
 import {
@@ -135,19 +134,6 @@ export const applyEdit = async (
   existingByKey: Map<string, ListingAttendeeRow>,
   taxPlan: TaxSavePlan,
 ): Promise<SaveOutcome> => {
-  // Block marking an assigned built-site line no-quantity (no release path here).
-  if (
-    await anyNoQuantityLineMatches(
-      attendeeId,
-      parsed.lines,
-      hasAssignedBuiltSite,
-    )
-  ) {
-    return {
-      ok: false,
-      saveError: t("attendee_form.error_built_site_no_qty"),
-    };
-  }
   // Block marking a paid line no-quantity, even when a stale form key hid the
   // existing booking from the per-line model guard.
   if (await anyNoQuantityLineMatches(attendeeId, parsed.lines, hasPaidLine)) {
