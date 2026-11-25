@@ -27,11 +27,7 @@ export const isRecord = (value: unknown): value is Record<string, unknown> =>
   typeof value === "object" && value !== null && !Array.isArray(value);
 
 /** Ids for the settings nags that prompt required or recommended setup. */
-export type NagId =
-  | "payment-provider"
-  | "business-email"
-  | "domain"
-  | "superuser";
+export type NagId = "payment-provider" | "business-email";
 
 /** One settings nag item shown to the admin. */
 export type NagItem = {
@@ -42,16 +38,6 @@ export type NagItem = {
   /** Deep link to the settings form where the value can be set. */
   href: string;
 };
-
-export const SuperuserChoiceSchema = v.picklist([
-  "",
-  "self-managed",
-  "enabled",
-]);
-
-export type SuperuserChoice = v.InferOutput<typeof SuperuserChoiceSchema>;
-
-export const isSuperuserChoice = guardFor(SuperuserChoiceSchema);
 
 /** Schema for an individual contact field name */
 export const ContactFieldSchema = v.picklist([
@@ -274,7 +260,6 @@ export type ItemImageColumns = {
 
 export interface Listing extends ItemImageColumns {
   active: boolean;
-  assign_built_site: boolean;
   attachment_name: string;
   attachment_url: string;
   /** When true, a listing that is also a child (offered under one or more
@@ -294,7 +279,6 @@ export interface Listing extends ItemImageColumns {
   fields: ListingFields;
   hidden: boolean;
   id: number;
-  initial_site_months: number;
   listing_type: ListingType;
   location: string; // encrypted or empty string
   max_attendees: number;
@@ -305,7 +289,6 @@ export interface Listing extends ItemImageColumns {
    *  identity: the choice set is then exactly today's 0..max_quantity. */
   min_quantity: number;
   minimum_days_before: number;
-  months_per_unit: number;
   name: string;
   non_transferable: boolean;
   purchase_only: boolean;

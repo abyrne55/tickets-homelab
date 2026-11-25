@@ -21,7 +21,7 @@ export const withPageData =
 /**
  * Gate a request by its route's declaration, look a value up, and 404 when it
  * is absent. Otherwise hand the found value (and the session) to `whenFound`.
- * Both the built-sites (`:id` → site) and ledger (session → HTML) routes share
+ * Routes such as the ledger (session → HTML) share
  * this "authenticate → look up or 404 → respond" shape.
  */
 export const pageFoundOr404 = <T>(

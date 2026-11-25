@@ -51,21 +51,6 @@ export const STRING_SETTING_DEFINITIONS = [
     storage: "plaintext",
   }),
   definition({
-    accessor: { name: "customDomain" },
-    key: CONFIG_KEYS.CUSTOM_DOMAIN,
-    storage: "plaintext",
-  }),
-  definition({
-    accessor: { name: "customDomainLastValidated", readOnly: true },
-    key: CONFIG_KEYS.CUSTOM_DOMAIN_LAST_VALIDATED,
-    storage: "plaintext",
-  }),
-  definition({
-    accessor: { name: "bunnySubdomain" },
-    key: CONFIG_KEYS.BUNNY_SUBDOMAIN,
-    storage: "plaintext",
-  }),
-  definition({
     accessor: { name: "currentTask" },
     key: CONFIG_KEYS.CURRENT_TASK,
     storage: "plaintext",
@@ -86,28 +71,12 @@ export const STRING_SETTING_DEFINITIONS = [
     storage: "plaintext",
   }),
   definition({ key: CONFIG_KEYS.SUMUP_MERCHANT_CODE, storage: "plaintext" }),
-  definition({
-    accessor: { name: "latestScriptVersion" },
-    key: CONFIG_KEYS.LATEST_SCRIPT_VERSION,
-    storage: "plaintext",
-  }),
-  definition({
-    accessor: { name: "latestScriptVersionName" },
-    key: CONFIG_KEYS.LATEST_SCRIPT_VERSION_NAME,
-    storage: "plaintext",
-  }),
   // The provider that was active before the operator switched new sales off
   // ("none"). Its credentials stay stored. Refunds, replayed callbacks, and
   // in-flight completions of payments that already exist keep running against
   // the provider that captured them. The money does not get stranded.
   definition({
     key: CONFIG_KEYS.LAST_ACTIVE_PAYMENT_PROVIDER,
-    storage: "plaintext",
-  }),
-  definition({ key: CONFIG_KEYS.SUPERUSER_CHOICE, storage: "plaintext" }),
-  definition({
-    accessor: { name: "supportFormLastSubmitted", readOnly: true },
-    key: CONFIG_KEYS.SUPPORT_FORM_LAST_SUBMITTED,
     storage: "plaintext",
   }),
   definition({

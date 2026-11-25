@@ -1,26 +1,18 @@
 /**
  * Admin/operator form fields — login, setup, password change, payment-provider
- * keys, invite user, holidays, and built-site management. Each is a per-request
+ * keys, invite user, and holidays. Each is a per-request
  * builder because every label/hint flows through the i18n layer.
  */
 
 import { t } from "#i18n";
-import { escapeHtml } from "#jsx/escape-html.ts";
 import { defineFieldsForm, type FormValues } from "#shared/forms/definition.ts";
 import type { Field, InputField } from "#shared/forms/field.ts";
-import {
-  MAX_INPUT_LENGTH,
-  MAX_TEXTAREA_LENGTH,
-  PASSWORD_MIN_LENGTH,
-} from "#shared/limits.ts";
+import { MAX_INPUT_LENGTH, PASSWORD_MIN_LENGTH } from "#shared/limits.ts";
 import { PAYMENT_PROVIDERS } from "#shared/payment-providers.ts";
-import { checkboxField } from "#templates/fields/checkbox-field.ts";
 import { picklistOptions } from "#templates/fields/picklist-options.ts";
 import {
   getUsernameFieldBase,
   validateDate,
-  validateHttpsDomainUrl,
-  validateUpdateTier,
   validateUsername,
 } from "#templates/fields/validators.ts";
 import { AdminLevelSchema } from "#types";
@@ -72,130 +64,6 @@ const getHolidayFields = () =>
   ] as const satisfies readonly Field[];
 
 export const getHolidayForm = defineFieldsForm(getHolidayFields);
-
-/** One built-site box: its label and placeholder come from the field's
- * catalog keys, so every form naming this value says the same words. */
-export const builtSiteBox = <Name extends string, Type extends string>(
-  name: Name,
-  key: string,
-  type: Type,
-): {
-  label: string;
-  name: Name;
-  placeholder: string;
-  type: Type;
-} => ({
-  label: t(`fields.built_site.${key}`),
-  name,
-  placeholder: t(`fields.built_site.${key}_placeholder`),
-  type,
-});
-
-/** One built-site provider choice; each form states its own options. */
-const builtSiteChoice = <
-  Name extends string,
-  const Options extends readonly { label: string; value: string }[],
->(
-  name: Name,
-  key: string,
-  options: Options,
-): { label: string; name: Name; options: Options; type: "select" } => ({
-  label: t(`fields.built_site.${key}`),
-  name,
-  options,
-  type: "select",
-});
-
-/** The one hosting option both provider lists share, word for word. Built on
- * demand, after the page's message group is loaded. */
-export const denoDeployOption = (): { label: string; value: "deno" } => ({
-  label: t("fields.built_site.provider.deno_deploy"),
-  value: "deno",
-});
-
-/** The hosting and database provider choices, worded per form. */
-export const providerChoices = <
-  const Hosting extends readonly { label: string; value: string }[],
-  const Db extends readonly { label: string; value: string }[],
->(choices: {
-  db: Db;
-  hosting: Hosting;
-}): readonly [
-  {
-    label: string;
-    name: "hosting_provider";
-    options: Hosting;
-    type: "select";
-  },
-  { label: string; name: "db_provider"; options: Db; type: "select" },
-] => [
-  builtSiteChoice("hosting_provider", "hosting_provider", choices.hosting),
-  builtSiteChoice("db_provider", "db_provider", choices.db),
-];
-
-/**
- * Built site form field definitions (per-request builder)
- */
-/** The "(visit)" link that follows the Site URL label: it opens the address a
- *  visitor reaches, which the saved URL names. */
-const visitLinkHtml = (visitUrl: string): string =>
-  ` <a href="${escapeHtml(visitUrl)}" target="_blank" rel="noopener noreferrer">${t("fields.built_site.visit_site")}</a>`;
-
-const getBuiltSiteFields = (visitUrl?: string) =>
-  [
-    { ...builtSiteBox("name", "name", "text" as const), required: true },
-    {
-      ...builtSiteBox("site_url", "site_url", "url" as const),
-      required: true,
-      validate: validateHttpsDomainUrl,
-      ...(visitUrl && { labelSuffixHtml: visitLinkHtml(visitUrl) }),
-    },
-    builtSiteBox("db_url", "db_url", "url" as const),
-    {
-      ...builtSiteBox("db_token", "db_token", "password" as const),
-      // A libsql auth token is a pasted machine credential, like the wallet
-      // PEM keys: a real one runs past the single-line cap.
-      maxlength: MAX_TEXTAREA_LENGTH,
-    },
-    builtSiteBox("hosting_id", "hosting_id", "text" as const),
-    ...providerChoices({
-      db: [
-        { label: t("fields.built_site.provider.bunny_db"), value: "bunny" },
-        { label: t("fields.built_site.provider.turso"), value: "turso" },
-      ],
-      hosting: [
-        {
-          label: t("fields.built_site.provider.bunny_hosting"),
-          value: "bunny",
-        },
-        denoDeployOption(),
-      ],
-    }),
-    checkboxField("assignable", {
-      hint: t("fields.built_site.assignable_hint"),
-      label: t("fields.built_site.assignable"),
-      optionLabel: t("fields.built_site.assignable_label"),
-    }),
-    {
-      hint: t("fields.built_site.updates_hint"),
-      label: t("fields.built_site.updates"),
-      name: "updates",
-      // Ordered safest-first so release heads the dropdown (the create form
-      // pre-selects it and the table layer defaults to it). No `defaultValue`: it
-      // would make validation fill an OMITTED field with the default, which on an
-      // edit silently overwrites an existing channel — the route only carries a
-      // recognised value so an absent field preserves the stored channel instead.
-      options: [
-        { label: t("fields.built_site.updates_release"), value: "release" },
-        { label: t("fields.built_site.updates_beta"), value: "beta" },
-        { label: t("fields.built_site.updates_alpha"), value: "alpha" },
-      ],
-      type: "select",
-      validate: validateUpdateTier,
-    },
-  ] as const satisfies readonly Field[];
-
-export const getBuiltSiteForm = defineFieldsForm(getBuiltSiteFields);
 
 /** Password field telling the browser to offer a new password, not a saved one.
  *  The length cap applies to the credential being CHOSEN here, never to a

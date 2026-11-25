@@ -25,17 +25,16 @@ import {
 import { describeWithEnv } from "#test-utils/db.ts";
 import {
   mockMultipartRequest,
-  withBunnyStorageStub,
-  withCdnRejecting,
   withExpectedError,
   withStorageDisabled,
   withStorageMock,
+  withUnwritableStorage,
 } from "#test-utils/mocks.ts";
 import { testCookie, testCsrfToken } from "#test-utils/session.ts";
 
 describeWithEnv(
   "admin image library routes",
-  { db: true, storage: "cdn" },
+  { db: true, storage: "local" },
   () => {
     describe("GET /admin/images", () => {
       test("renders the empty state and image table", async () => {
@@ -193,7 +192,7 @@ describeWithEnv(
         const csrfToken = await testCsrfToken();
 
         await withExpectedError(async () => {
-          await withCdnRejecting(new Error("upload down"), async () => {
+          await withUnwritableStorage(async () => {
             const response = await postImageUpload(
               "/admin/images",
               cookie,
@@ -202,7 +201,7 @@ describeWithEnv(
             );
             await expectFlashRedirect(
               "/admin/images/new",
-              "Image upload failed: Error: upload down",
+              expect.stringContaining("Image upload failed"),
               false,
               cookie,
             )(response);
@@ -216,20 +215,17 @@ describeWithEnv(
         const csrfToken = await testCsrfToken();
 
         await getDb().execute("DROP TABLE images");
-        await withBunnyStorageStub(
-          () => new Response(null, { status: 201 }),
-          async () => {
-            await withExpectedError(async () => {
-              const response = await postImageUpload(
-                "/admin/images",
-                cookie,
-                csrfToken,
-                "Unstored upload",
-              );
-              expect(response.status).toBe(503);
-            });
-          },
-        );
+        await withStorageMock(async () => {
+          await withExpectedError(async () => {
+            const response = await postImageUpload(
+              "/admin/images",
+              cookie,
+              csrfToken,
+              "Unstored upload",
+            );
+            expect(response.status).toBe(503);
+          });
+        });
       });
 
       test("uploads a new image record and redirects to its edit page", async () => {

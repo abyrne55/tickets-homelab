@@ -6,8 +6,8 @@ import {
   PLAINTEXT_KEY_SET,
   rawUpdate,
   stringAccessors,
-  timestampUpdate,
 } from "#db/settings/accessors.ts";
+
 import { CONFIG_KEYS, settings } from "#db/settings.ts";
 import { describeWithEnv } from "#test-utils/db.ts";
 
@@ -44,14 +44,12 @@ describe("db > settings accessors getters", () => {
     expect(PLAINTEXT_KEY_SET.has(CONFIG_KEYS.SMS_GATEWAY_BASE_URL)).toBe(true);
     expect(ENCRYPTED_KEY_SET.has(CONFIG_KEYS.SMS_GATEWAY_BASE_URL)).toBe(false);
   });
+});
 
+describe("db > settings accessors readOnly", () => {
   test("gives a readOnly accessor no updater", () => {
-    expect(
-      Object.hasOwn(stringAccessors.getters, "supportFormLastSubmitted"),
-    ).toBe(true);
-    expect(
-      Object.hasOwn(stringAccessors.updaters, "supportFormLastSubmitted"),
-    ).toBe(false);
+    expect(Object.hasOwn(stringAccessors.getters, "publicKey")).toBe(true);
+    expect(Object.hasOwn(stringAccessors.updaters, "publicKey")).toBe(false);
   });
 });
 
@@ -102,19 +100,6 @@ describeWithEnv(
       await setShowPublicApi(false);
       expect(settings.getCachedRaw(CONFIG_KEYS.SHOW_PUBLIC_API)).toBe("false");
       expect(settings.showPublicApi).toBe(false);
-    });
-
-    test("a timestamp update writes the current time and mirrors it", async () => {
-      await timestampUpdate(
-        CONFIG_KEYS.SUPPORT_FORM_LAST_SUBMITTED,
-        "support_form_last_submitted",
-      )();
-
-      const stored = settings.getCachedRaw(
-        CONFIG_KEYS.SUPPORT_FORM_LAST_SUBMITTED,
-      );
-      expect(stored).toMatch(/^\d{4}-\d{2}-\d{2}T/);
-      expect(settings.supportFormLastSubmitted).toBe(stored);
     });
   },
 );

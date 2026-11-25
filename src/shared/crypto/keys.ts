@@ -141,7 +141,7 @@ export const unwrapKey = async (
 /**
  * Wrap a DATA_KEY under the password-bound (v2) KEK in one step. The single
  * place new wrapped_data_keys are produced — setup, login migration, invite
- * acceptance, password change, and superuser creation all go through here, so
+ * acceptance, and password change all go through here, so
  * the derive-then-wrap pair lives in exactly one spot.
  */
 export const wrapDataKeyForPassword = async (

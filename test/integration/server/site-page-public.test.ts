@@ -124,14 +124,6 @@ describeWithEnv("server (public site pages)", { db: true }, () => {
       const starvedChild = await createTestListing({ name: "Starved Child" });
       await listingChildren.setIds(soldOutParent.id, [starvedChild.id]);
       await deactivateTestListing(starvedChild.id);
-      // A renewal tier bought via a normal public link would take payment
-      // without extending the site, so it must never be linked.
-      const tier = await createTestListing({
-        hidden: true,
-        monthsPerUnit: 1,
-        name: "Tier Listing",
-        purchaseOnly: true,
-      });
       const fullGroup = await createTestGroup({
         name: "Full Group",
         slug: "fg",
@@ -147,7 +139,6 @@ describeWithEnv("server (public site pages)", { db: true }, () => {
         ["listing", child.id],
         ["listing", parent.id],
         ["listing", soldOutParent.id],
-        ["listing", tier.id],
         ["group", fullGroup.id],
         ["group", emptyGroup.id],
       ] as const) {
@@ -158,20 +149,18 @@ describeWithEnv("server (public site pages)", { db: true }, () => {
         'class="page-items"',
         // Reachable targets link — including a parent with a bookable child;
         // unreachable ones are plain text (never a dead link): inactive listing,
-        // child listing, sold-out parent, renewal tier, member-less group.
+        // child listing, sold-out parent, member-less group.
         `href="/ticket/${live.slug}"`,
         `href="/ticket/${parent.slug}"`,
         `href="/ticket/fg"`,
         "<span>Dead Listing</span>",
         "<span>Child Listing</span>",
         "<span>Starved Parent</span>",
-        "<span>Tier Listing</span>",
         "<span>Empty Group</span>",
       ]);
       assert(!html.includes(`href="/ticket/${dead.slug}"`));
       assert(!html.includes(`href="/ticket/${child.slug}"`));
       assert(!html.includes(`href="/ticket/${soldOutParent.slug}"`));
-      assert(!html.includes(`href="/ticket/${tier.slug}"`));
       assert(!html.includes(`href="/ticket/eg"`));
     });
   });

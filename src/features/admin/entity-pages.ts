@@ -185,8 +185,8 @@ export interface EntityPageDef<E, Id extends EntityId = number> {
    * Required only when a tab carries actions. */
   recordId?: RecordIdOf<E>;
   tabs: readonly TabDef<E>[];
-  /** Flanking controls around the `<h1>`, for example a built-site pager whose
-   * arrows keep the viewer on the same tab. */
+  /** Flanking controls around the `<h1>`, for example a pager whose arrows keep
+   * the viewer on the same tab. */
   titleNav?: (entity: E, ctx: PageCtx) => Promise<FlankingNav | null>;
   titleOf: (entity: E) => string;
 }

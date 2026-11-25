@@ -18,16 +18,13 @@ describeWithEnv("db > listing catalog", { db: true }, () => {
   test("reads offer flags and picker names", async () => {
     const listing = await createTestListing({
       hidden: true,
-      monthsPerUnit: 3,
       name: "Picker listing",
       purchaseOnly: true,
     });
 
     expect(await getListingOfferFlags(listing.id)).toEqual({
       active: true,
-      assign_built_site: false,
       hidden: true,
-      months_per_unit: 3,
       purchase_only: true,
     });
     expect(await getListingOfferFlags(listing.id + 1)).toBeUndefined();
@@ -37,9 +34,7 @@ describeWithEnv("db > listing catalog", { db: true }, () => {
           listing.id,
           {
             active: true,
-            assign_built_site: false,
             hidden: true,
-            months_per_unit: 3,
             name: "Picker listing",
             purchase_only: true,
           },
@@ -85,26 +80,6 @@ describeWithEnv("db > listing catalog", { db: true }, () => {
     expect(await getCatalogListings()).toEqual([]);
   });
 
-  test("applies a visible listing default without exposing renewal tiers", async () => {
-    await settings.update.listingDefaults({ hidden: false });
-    const visible = await createTestListing({
-      hidden: true,
-      name: "Inherits visible",
-      useDefaults: true,
-    });
-    await createTestListing({
-      hidden: true,
-      monthsPerUnit: 12,
-      name: "Renewal tier",
-      purchaseOnly: true,
-      useDefaults: true,
-    });
-
-    expect((await getCatalogListings()).map((listing) => listing.id)).toEqual([
-      visible.id,
-    ]);
-  });
-
   test("omits a required child unless it can be booked alone", async () => {
     const parent = await createTestListing({ name: "Parent" });
     const child = await createTestListing({ name: "Required child" });
@@ -119,17 +94,5 @@ describeWithEnv("db > listing catalog", { db: true }, () => {
 describeWithEnv(
   "db > listing catalog > built-site plan",
   { db: true, env: { CAN_BUILD_SITES: "true" } },
-  () => {
-    test("never offers a built-site plan to the external order widget", async () => {
-      await createTestListing({
-        assignBuiltSite: true,
-        initialSiteMonths: 3,
-        name: "Site plan",
-      });
-
-      expect(
-        (await getCatalogListings()).map((listing) => listing.name),
-      ).toEqual([]);
-    });
-  },
+  () => {},
 );

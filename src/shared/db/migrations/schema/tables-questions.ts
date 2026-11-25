@@ -1,6 +1,5 @@
-/** Form tables: questions, answers, attributes, built sites, notes. */
+/** Form tables: questions, answers, attributes, notes. */
 
-import { UPDATE_TIERS } from "#db/built-sites/types.ts";
 import { NOTE_ENTITIES } from "#db/notes/target.ts";
 import { SYSTEM_NOTE_TYPES } from "#db/notes/types.ts";
 import { QUESTION_DISPLAY_TYPES } from "#db/question-types.ts";
@@ -12,11 +11,9 @@ import {
   rowId,
   text,
   textOrNull,
-  textStartingAtNull,
   textStartingBlank,
   wholeNumber,
   wholeNumberOrNull,
-  wholeNumberStartingAtNull,
   wholeNumberStartingAtOne,
   wholeNumberStartingAtZero,
 } from "./scalar-columns.ts";
@@ -157,37 +154,6 @@ export const questionTables: [name: string, table: Table][] = [
         {
           columns: ["option_id"],
           name: "idx_listing_attribute_options_option",
-        },
-      ],
-    },
-  ],
-
-  [
-    "built_sites",
-    {
-      columns: [
-        ["id", rowId],
-        ["site_data", text],
-        ["assignable", wholeNumberStartingAtZero],
-        ["assigned_attendee_id", wholeNumberStartingAtNull],
-        ["assigned_listing_id", wholeNumberStartingAtNull],
-        ["created", text],
-        ["renewal_token_index", textStartingAtNull],
-        ["read_only_from", textStartingBlank],
-        ["site_data_revision", wholeNumberStartingAtZero],
-        // Release channel this site opts into: 'alpha' takes every deploy,
-        // 'beta' takes beta + release, 'release' only stable releases. The
-        // upgrade workflow passes the tier it is publishing and the master
-        // returns only the sites at that tier or more eager (see UPDATE_TIERS
-        // in built-sites.ts). Operational metadata, not PII, so it lives outside
-        // the encrypted site_data blob and stays SQL-filterable.
-        ["updates", oneOf("updates", UPDATE_TIERS)(defaulted(text, "release"))],
-      ],
-      indexes: [
-        {
-          columns: ["renewal_token_index"],
-          name: "idx_built_sites_renewal_token_index",
-          unique: true,
         },
       ],
     },

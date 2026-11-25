@@ -53,7 +53,7 @@ const drawnAsYes = (field: Field, html: string): boolean =>
 const editForms: readonly (readonly [string, readonly Field[]])[] = [
   ["group create", getGroupCreateForm().fields],
   ["group edit", getGroupForm().fields],
-  ["listing edit", getListingEditForm({ builder: true, storage: true }).fields],
+  ["listing edit", getListingEditForm({ storage: true }).fields],
   ["modifier edit", getModifierForm().fields],
 ];
 

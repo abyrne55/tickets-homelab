@@ -4,12 +4,10 @@ import {
   bundlePackageMemberError,
   describeFailure,
   edgeListingOfPlan,
-  edgeListingOfRow,
   packageMemberRefusals,
   sameMembership,
 } from "#routes/admin/catalog-transfer/bundle-plan.ts";
 import type { ListingInput } from "#shared/catalog-fields/fields.ts";
-import { testListingWithCount } from "#test-utils/factories.ts";
 
 /** The minimal ListingInput a plan needs for the pure helpers. */
 const planInput = (over: Partial<ListingInput> = {}): ListingInput =>
@@ -52,31 +50,6 @@ describe("bundle plan helpers", () => {
     expect(sameMembership(one, { ...one, dayPrices: { "1": 500 } })).toBe(
       false,
     );
-  });
-
-  test("edgeListingOfRow projects the stored row's edge fields", () => {
-    const row = testListingWithCount({
-      assign_built_site: true,
-      customisable_days: true,
-      day_prices: { "1": 600 },
-      duration_days: 2,
-      id: 7,
-      listing_type: "standard",
-      min_quantity: 1,
-      months_per_unit: 1,
-      name: "Stored",
-    });
-    expect(edgeListingOfRow(row)).toEqual({
-      assign_built_site: true,
-      customisable_days: true,
-      day_prices: { "1": 600 },
-      duration_days: 2,
-      id: 7,
-      listing_type: "standard",
-      min_quantity: 1,
-      months_per_unit: 1,
-      name: "Stored",
-    });
   });
 
   test("edgeListingOfPlan carries id 0, because the row does not exist yet", () => {

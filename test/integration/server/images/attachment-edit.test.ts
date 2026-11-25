@@ -3,19 +3,17 @@ import { describe, it as test } from "@std/testing/bdd";
 import { getListingWithCount, listingsTable } from "#db/listings/records.ts";
 import { handleRequest } from "#routes";
 import { toMajorUnits } from "#shared/currency.ts";
-import { runWithStorageConfig } from "#shared/storage.ts";
 import { expectImageErrorRedirect } from "#test/integration/server/images/helpers.ts";
 import { expectFlashRedirect } from "#test-utils/assertions.ts";
 import { describeWithEnv } from "#test-utils/db.ts";
 import { PDF_BYTES } from "#test-utils/factories.ts";
 import type { TestFormValues } from "#test-utils/form-values.ts";
-import { TEST_STORAGE_ZONE } from "#test-utils/internal.ts";
 import {
-  installUrlHandler,
   mockMultipartRequest,
-  withFetchMock,
+  withLocalStorageEnabled,
   withStorageDisabled,
   withStorageMock,
+  withUnwritableStorage,
 } from "#test-utils/mocks.ts";
 import { setupListingAndLogin } from "#test-utils/session.ts";
 
@@ -85,10 +83,7 @@ describeWithEnv(
   "server images > attachment edit",
   {
     db: true,
-    env: {
-      STORAGE_ZONE_KEY: "testkey",
-      STORAGE_ZONE_NAME: "testzone",
-    },
+    storage: "local",
   },
   () => {
     describe("POST /admin/listing/:id/edit (attachment upload via edit form)", () => {
@@ -116,27 +111,22 @@ describeWithEnv(
         });
       });
 
-      describeWithEnv(
-        "when storage is not configured",
-        { env: { STORAGE_ZONE_KEY: undefined, STORAGE_ZONE_NAME: undefined } },
-        () => {
-          test("ignores attachment", async () => {
-            await withStorageDisabled(async () => {
-              const { listing, cookie, csrfToken } =
-                await setupListingAndLogin();
+      describeWithEnv("when storage is not configured", { env: {} }, () => {
+        test("ignores attachment", async () => {
+          await withStorageDisabled(async () => {
+            const { listing, cookie, csrfToken } = await setupListingAndLogin();
 
-              const response = await submitEditGuidePdf(
-                listing.id,
-                cookie,
-                csrfToken,
-              );
-              expect(response.status).toBe(302);
-              const updated = await getListingWithCount(listing.id);
-              expect(updated?.attachment_url).toBe("");
-            });
+            const response = await submitEditGuidePdf(
+              listing.id,
+              cookie,
+              csrfToken,
+            );
+            expect(response.status).toBe(302);
+            const updated = await getListingWithCount(listing.id);
+            expect(updated?.attachment_url).toBe("");
           });
-        },
-      );
+        });
+      });
 
       test("uploads attachment and updates listing", async () => {
         const { listing, cookie, csrfToken } = await setupListingAndLogin();
@@ -186,7 +176,8 @@ describeWithEnv(
           attachmentUrl: "old-file.pdf",
         });
 
-        await withStorageMock(async (fetchCalls) => {
+        await withLocalStorageEnabled(async (dir) => {
+          await Deno.writeTextFile(`${dir}/old-file.pdf`, "x");
           const response = await submitEditAttachment(
             listing.id,
             cookie,
@@ -199,30 +190,21 @@ describeWithEnv(
           );
           expect(response.status).toBe(302);
 
-          const deleteCall = fetchCalls.find((url) =>
-            url.includes("old-file.pdf"),
-          );
-          expect(deleteCall).not.toBeUndefined();
+          await expect(Deno.stat(`${dir}/old-file.pdf`)).rejects.toThrow();
         });
       });
 
       test("reports error when attachment upload fails", async () => {
         const { listing, cookie, csrfToken } = await setupListingAndLogin();
 
-        await runWithStorageConfig(TEST_STORAGE_ZONE, () =>
-          withFetchMock(async (originalFetch) => {
-            installUrlHandler(originalFetch, () =>
-              Promise.reject(new Error("CDN unreachable")),
-            );
-
-            const response = await submitEditGuidePdf(
-              listing.id,
-              cookie,
-              csrfToken,
-            );
-            expectImageErrorRedirect(response, "upload failed");
-          }),
-        );
+        await withUnwritableStorage(async () => {
+          const response = await submitEditGuidePdf(
+            listing.id,
+            cookie,
+            csrfToken,
+          );
+          expectImageErrorRedirect(response, "upload failed");
+        });
       });
     });
   },

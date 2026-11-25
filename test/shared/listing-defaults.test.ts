@@ -56,17 +56,6 @@ describe("shared > listing-defaults > resolveListingDefaults", () => {
     ]);
   });
 
-  test("refuses to judge a rule on values the row did not select", () => {
-    // hidden's rule reads months_per_unit, so a row carrying one without the
-    // other cannot be resolved — that is a bug in the read, not a default-off.
-    expect(() =>
-      resolveListingDefaults(
-        { hidden: false, id: 1, use_defaults: true },
-        fullDefaults,
-      ),
-    ).toThrow("months_per_unit");
-  });
-
   test("overlays every set default when use_defaults is on", () => {
     const listing = testListing({
       bookable_days: ["Sunday"],
@@ -97,43 +86,6 @@ describe("shared > listing-defaults > resolveListingDefaults", () => {
     });
     expect(resolved.webhook_url).toBe("https://example.com/only");
     expect(resolved.hidden).toBe(false);
-  });
-
-  test("never makes a renewal tier visible via a hidden default", () => {
-    const tier = testListing({
-      hidden: true,
-      months_per_unit: 12,
-      purchase_only: true,
-      use_defaults: true,
-    });
-    // A "Hidden = No" default must not flip a renewal tier visible.
-    expect(resolveListingDefaults(tier, { hidden: false }).hidden).toBe(true);
-    // A non-renewal listing still inherits the hidden default.
-    const normal = testListing({ hidden: true, use_defaults: true });
-    expect(resolveListingDefaults(normal, { hidden: false }).hidden).toBe(
-      false,
-    );
-  });
-
-  test("a renewal tier still inherits every non-hidden default", () => {
-    // The hidden gate withholds only `hidden` — the rest of the overlay still
-    // applies, so the gate must not suppress the whole fold for a tier.
-    const tier = testListing({
-      bookable_days: ["Sunday"],
-      hidden: true,
-      months_per_unit: 12,
-      purchase_only: true,
-      use_defaults: true,
-      webhook_url: "",
-    });
-    const resolved = resolveListingDefaults(tier, {
-      bookableDays: ["Monday"],
-      hidden: false,
-      webhookUrl: "https://example.com/hook",
-    });
-    expect(resolved.hidden).toBe(true); // withheld
-    expect(resolved.webhook_url).toBe("https://example.com/hook"); // applied
-    expect(resolved.bookable_days).toEqual(["Monday"]); // applied
   });
 
   test("does not mutate the original listing", () => {

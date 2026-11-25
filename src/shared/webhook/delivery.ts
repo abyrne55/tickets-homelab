@@ -26,7 +26,6 @@ import {
   type RegistrationPackageFacts,
   waitForRegistrationDeliveries,
 } from "#shared/registration-package-facts.ts";
-import { assignAndNotifyBuiltSites } from "#shared/site-assignment.ts";
 import { isSafeServerFetchUrl } from "#shared/url-safety.ts";
 import {
   type ChosenSides,
@@ -38,7 +37,6 @@ import {
   reportRegistrationDeliveryError,
 } from "#shared/webhook/report.ts";
 import {
-  applyRenewalsForEntries,
   buildWebhookPayload,
   type RegistrationEntry,
   type WebhookPayload,
@@ -378,21 +376,11 @@ const queueRegistrationNotifications = async (
 export const registeredActivityMessage = (listingName: string): string =>
   `Attendee registered for '${listingName}'`;
 
-/** Report background work that died after a booking was already paid for.
- * The pending-work queue settles rejections silently. Without this, the
- * buyer keeps the ticket. The operator never learns the site or its credit
- * was lost. */
-const reportAfterBookingFailure =
-  (detail: string) =>
-  (error: unknown): void => {
-    logError({ code: ErrorCode.SITE_ASSIGNMENT, detail, error });
-  };
-
 /** What a booking passes to its notification queue. `source` is required, so
  * every booking path states how the booking was made. Everything else is
  * optional: the plaintext free-text answers only the caller can hold, preloaded
- * package facts, the entries the site assignment sees, the renewal token's
- * hash, and the attendees whose pending-notification flags each send clears. */
+ * package facts, and the attendees whose pending-notification flags each send
+ * clears. */
 export interface NotifyRegistrationOptions {
   /** The attendees whose pending-notification flags this queue's sends own:
    * the email send clears `email_pending` when its far side accepts, the
@@ -419,12 +407,6 @@ export interface NotifyRegistrationOptions {
    * which of the chosen sides this send owns for flag settlement. Leave
    * unset outside the re-send, where every side queues. */
   sides?: ChosenSides | undefined;
-  /** Entries only the site assignment sees, in place of `entries`. The resend
-   * passes its refunded plan rows here, so a claim recorded on a line refunded
-   * later still serves the buyer. Defaults to `entries`. */
-  siteAssignmentEntries?: EmailEntry[] | undefined;
-  /** The hashed renewal token, when this booking came from /renew. */
-  siteTokenIndex?: string | undefined;
   /** How the booking was made. "public" is a booking the person made online,
    * "admin" is a booking an admin added by hand. "unknown" means no stored
    * contact history holds the answer, which a re-send reports. */
@@ -439,7 +421,7 @@ type NotifyRegistration = (
 ) => Promise<void>;
 
 /** Queue a registration's external sends: the confirmation email and the
- * registration webhooks, then built-site assignment and renewal processing.
+ * registration webhooks.
  * The caller owns the registration's activity line, so a caller whose batch
  * already wrote it queues without a second copy. */
 export const queueRegistrationSends: NotifyRegistration = async (
@@ -457,20 +439,6 @@ export const queueRegistrationSends: NotifyRegistration = async (
       options.clearPendingFlagsFor,
       options.recoverSides,
       options.sides,
-    ),
-  );
-  addPendingWork(
-    assignAndNotifyBuiltSites(options.siteAssignmentEntries ?? entries).catch(
-      reportAfterBookingFailure(
-        "Site assignment failed after a completed booking",
-      ),
-    ),
-  );
-  addPendingWork(
-    applyRenewalsForEntries(entries, options.siteTokenIndex).catch(
-      reportAfterBookingFailure(
-        "Renewal was not applied after a completed booking",
-      ),
     ),
   );
 };

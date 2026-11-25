@@ -9,8 +9,6 @@
 import { assertExists } from "@std/assert";
 import { expect } from "@std/expect";
 import { describe, it as test } from "@std/testing/bdd";
-import { takePooledSiteForBuyer } from "#db/built-sites/claims.ts";
-import { getAssignableBuiltSites, insertBuiltSite } from "#db/built-sites.ts";
 import { execute, getDb, insert, queryOne, requireOne } from "#db/client.ts";
 import { createSystemNote, getNoteRows } from "#db/notes/queries.ts";
 import { attendeeNotes } from "#db/notes/target.ts";
@@ -206,32 +204,6 @@ describeWithEnv("db > orphan-attendees", { db: true }, () => {
       await purgeOrphanedAttendees(nowIso());
 
       expect(await childCount("checkout_stages", id)).toBe(0);
-    });
-
-    test("detaches a built site from an orphan before purging it", async () => {
-      const id = await insertOrphan(daysAgoIso(365));
-      const site = await insertBuiltSite(
-        "Orphan site",
-        "orphan-site.example.test",
-        "",
-        "",
-        true,
-      );
-      await takePooledSiteForBuyer(
-        await getAssignableBuiltSites(),
-        id,
-        [99],
-        99,
-      );
-
-      await purgeOrphanedAttendees(nowIso());
-
-      expect(
-        await queryOne<{ assigned_attendee_id: number | null }>(
-          "SELECT assigned_attendee_id FROM built_sites WHERE id = ?",
-          [site.id],
-        ),
-      ).toEqual({ assigned_attendee_id: null });
     });
   });
 

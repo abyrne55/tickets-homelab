@@ -52,11 +52,7 @@ export const buildCreateListingForm = (
 ): TestFormValues => {
   const closesAtParts = splitClosesAt(input.closesAt, null);
   const dateParts = splitClosesAt(input.date, null);
-  const initialSiteMonths = input.assignBuiltSite
-    ? (input.initialSiteMonths ?? 1)
-    : (input.initialSiteMonths ?? 0);
   return {
-    ...checked("assign_built_site", input.assignBuiltSite),
     ...checked("bookable_alone", input.bookableAlone),
     ...checked("show_remaining", input.showRemaining),
     bookable_days: input.bookableDays ?? [],
@@ -71,7 +67,6 @@ export const buildCreateListingForm = (
     ...dayPriceFormFields(input.dayPrices),
     fields: repeated(input.fields ?? "email"),
     ...checked("hidden", input.hidden),
-    initial_site_months: String(initialSiteMonths),
     listing_type: input.listingType ?? "",
     location: input.location ?? "",
     max_attendees: String(input.maxAttendees),
@@ -80,7 +75,6 @@ export const buildCreateListingForm = (
     maximum_days_after: optionalNumber(input.maximumDaysAfter),
     min_quantity: String(input.minQuantity ?? 1),
     minimum_days_before: optionalNumber(input.minimumDaysBefore),
-    months_per_unit: String(input.monthsPerUnit ?? 0),
     name: input.name,
     non_transferable: flagChoice(input.nonTransferable),
     ...checked("purchase_only", input.purchaseOnly),
@@ -95,10 +89,6 @@ const buildUpdateBoolFields = (
   updates: Partial<ListingInput>,
   existing: ListingWithCount,
 ): TestFormValues => ({
-  ...checked(
-    "assign_built_site",
-    pickField(updates.assignBuiltSite, existing.assign_built_site),
-  ),
   ...checked(
     "bookable_alone",
     pickField(updates.bookableAlone, existing.bookable_alone),
@@ -128,37 +118,24 @@ const buildUpdateBoolFields = (
 const buildUpdateNumericFields = (
   updates: Partial<ListingInput>,
   existing: ListingWithCount,
-): TestFormValues => {
-  const assignsBuiltSite = pickField(
-    updates.assignBuiltSite,
-    existing.assign_built_site,
-  );
-  const initialSiteMonths = assignsBuiltSite
-    ? pickField(updates.initialSiteMonths, existing.initial_site_months || 1)
-    : pickField(updates.initialSiteMonths, existing.initial_site_months);
-  return {
-    duration_days: String(
-      pickField(updates.durationDays, existing.duration_days),
-    ),
-    initial_site_months: String(initialSiteMonths),
-    max_attendees: String(
-      pickField(updates.maxAttendees, existing.max_attendees),
-    ),
-    max_price: toMajorUnits(pickField(updates.maxPrice, existing.max_price)),
-    max_quantity: String(pickField(updates.maxQuantity, existing.max_quantity)),
-    maximum_days_after: String(
-      pickField(updates.maximumDaysAfter, existing.maximum_days_after),
-    ),
-    min_quantity: String(pickField(updates.minQuantity, existing.min_quantity)),
-    minimum_days_before: String(
-      pickField(updates.minimumDaysBefore, existing.minimum_days_before),
-    ),
-    months_per_unit: String(
-      pickField(updates.monthsPerUnit, existing.months_per_unit),
-    ),
-    unit_price: formatPrice(updates.unitPrice, existing.unit_price),
-  };
-};
+): TestFormValues => ({
+  duration_days: String(
+    pickField(updates.durationDays, existing.duration_days),
+  ),
+  max_attendees: String(
+    pickField(updates.maxAttendees, existing.max_attendees),
+  ),
+  max_price: toMajorUnits(pickField(updates.maxPrice, existing.max_price)),
+  max_quantity: String(pickField(updates.maxQuantity, existing.max_quantity)),
+  maximum_days_after: String(
+    pickField(updates.maximumDaysAfter, existing.maximum_days_after),
+  ),
+  min_quantity: String(pickField(updates.minQuantity, existing.min_quantity)),
+  minimum_days_before: String(
+    pickField(updates.minimumDaysBefore, existing.minimum_days_before),
+  ),
+  unit_price: formatPrice(updates.unitPrice, existing.unit_price),
+});
 
 const buildUpdateStringFields = (
   updates: Partial<ListingInput>,

@@ -278,11 +278,6 @@ describeWithEnv("listings form", { db: true }, () => {
       });
       expect(links.rows.map((r) => r.group_id)).toEqual([group.id]);
     });
-
-    test("the builder choice stays off while its feature is off", async () => {
-      const row = await createListing({ assign_built_site: "1" });
-      expect(row.assign_built_site).toBe(false);
-    });
   });
 
   describe("update", () => {

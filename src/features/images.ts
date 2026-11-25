@@ -1,5 +1,5 @@
 /**
- * Image proxy route — serves encrypted images from Bunny CDN.
+ * Image proxy route — serves encrypted images from local storage.
  * GET /image/:filename — downloads, decrypts, and serves the image.
  * A broken image serves a 1×1 red pixel instead of failing. The broken-image
  * marker, a file missing from storage, or a stored file that will not decrypt

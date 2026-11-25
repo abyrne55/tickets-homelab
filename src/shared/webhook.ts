@@ -8,22 +8,12 @@ import {
   NO_CUSTOM_PRICES,
   packageMemberPriceRule,
 } from "#booking/price-tree.ts";
-import { logActivity } from "#db/activity-log.ts";
-import { getBuiltSiteByRenewalTokenIndex } from "#db/built-sites.ts";
 import type { WebhookBookingSource } from "#db/contact-tokens.ts";
 import { settings } from "#db/settings.ts";
 import { sumOf } from "#fp";
 import { bookedSpanDays } from "#shared/dates.ts";
-import type { EmailEntry } from "#shared/email.ts";
-import { ErrorCode, logError } from "#shared/logger.ts";
 import { nowIso } from "#shared/now.ts";
-import { sendNtfyError } from "#shared/ntfy.ts";
 import type { RegistrationPackagePricing } from "#shared/registration-package-facts.ts";
-import { isQualifyingTierListing } from "#shared/renewal-tier.ts";
-import {
-  addMonthsToRenewalDeadline,
-  syncReadOnlyFrom,
-} from "#shared/site-renewal.ts";
 import { buildTicketUrl } from "#shared/ticket-url.ts";
 import { type ContactInfo, type DayPrices, isPaidListing } from "#types";
 
@@ -72,7 +62,6 @@ export type WebhookListing = {
   /** Maximum day count for a customisable listing — the bound the shared price
    * evaluation validates a booked span against. */
   duration_days: number;
-  months_per_unit: number;
 };
 
 /** Attendee data needed for webhook notifications */
@@ -93,8 +82,7 @@ export type WebhookAttendee = ContactInfo & {
    * confirmation email group the order's lines under the package by this
    * persisted id rather than membership equality. */
   package_group_id: number;
-  /** Whether this booking row's payment was refunded; a refunded plan row
-   * buys no site and no months. */
+  /** Whether this booking row's payment was refunded. */
   refunded: boolean;
 };
 
@@ -189,70 +177,4 @@ export const buildWebhookPayload = (
     })),
     timestamp: nowIso(),
   };
-};
-
-/**
- * Apply renewal deadline bumps for a completed payment.
- * If siteTokenIndex is present, look up the built site and bump its READ_ONLY_FROM.
- *
- * The index is the HMAC of the plain renewal token. Free reservations compute
- * it from `ctx.siteToken`; paid checkouts read it back from session metadata
- * (where the provider only ever sees the hashed form).
- */
-export const applyRenewalsForEntries = async (
-  entries: EmailEntry[],
-  siteTokenIndex: string | undefined,
-): Promise<void> => {
-  if (!siteTokenIndex) return;
-
-  const invalidEntry = entries.find(
-    ({ listing }) => !isQualifyingTierListing(listing),
-  );
-  if (invalidEntry) {
-    logError({
-      code: ErrorCode.DATA_INVALID,
-      detail: `Renewal rejected: listing ${invalidEntry.listing.id} is not an active hidden purchase-only renewal tier`,
-      listingId: invalidEntry.listing.id,
-    });
-    return;
-  }
-
-  const site = await getBuiltSiteByRenewalTokenIndex(siteTokenIndex);
-  if (!site) {
-    logError({
-      code: ErrorCode.DATA_INVALID,
-      detail: `Renewal site not found for token index ${siteTokenIndex.slice(
-        0,
-        8,
-      )}...`,
-    });
-    return;
-  }
-
-  const renewalEntries = entries
-    .map((entry) => ({
-      entry,
-      months: entry.attendee.quantity * entry.listing.months_per_unit,
-    }))
-    .filter(({ months }) => months > 0);
-  const totalMonths = sumOf((r: { months: number }) => r.months)(
-    renewalEntries,
-  );
-
-  const result = await syncReadOnlyFrom(
-    site,
-    addMonthsToRenewalDeadline(site, totalMonths),
-  );
-  if (result.ok) {
-    await logActivity(
-      `Renewal of '${site.name}' for ${totalMonths} month(s)`,
-      renewalEntries[0]!.entry.listing.id,
-    );
-  } else {
-    logError({
-      code: ErrorCode.CDN_REQUEST,
-      detail: `Failed to push READ_ONLY_FROM for renewal of '${site.name}': ${result.error}`,
-    });
-    sendNtfyError("CDN_REQUEST");
-  }
 };

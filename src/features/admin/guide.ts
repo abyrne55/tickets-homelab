@@ -7,7 +7,6 @@ import { defineAdminRoutes } from "#routes/admin/route-tables.ts";
 import { settings } from "#db/settings.ts";
 import { authPage, contentPage, pageGuardFor } from "#routes/auth.ts";
 import { adminDestinationAt } from "#shared/admin-surface.ts";
-import { isBuilderEnabled } from "#shared/config.ts";
 import { EMAIL_PROVIDER_LABELS, hostEmail } from "#shared/email.ts";
 import {
   adminFormattingHelpPage,
@@ -22,7 +21,6 @@ const handleAdminGuideGet = authPage(
 )((session) => {
   const hostEmailConfig = hostEmail.getHostConfig();
   return adminGuidePage(session, {
-    builderEnabled: isBuilderEnabled(),
     hostAppleWalletPassTypeId:
       settings.appleWallet.hostConfig?.passTypeId ?? null,
     hostEmailFromAddress: hostEmailConfig?.fromAddress ?? null,

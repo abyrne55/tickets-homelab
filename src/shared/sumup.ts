@@ -33,7 +33,6 @@ import {
 import { providerCurrencyBlock } from "#shared/payment-providers.ts";
 import { getPaymentWebhookUrl } from "#shared/payment-webhook-url.ts";
 import type { CheckoutIntent, CheckoutItem } from "#shared/payments.ts";
-import { monthsPerUnitOf } from "#shared/purchase-unit.ts";
 import {
   type SumupRefundSubmission,
   sumupReadFailure,
@@ -66,45 +65,19 @@ export type SumupConnectionTestResult = {
 
 type SumupClient = SumupTransport;
 
-/** The SumUp checkout description, built from the intent's own items: ×N
- *  beside a site plan or renewal tier buys N terms of one site, so such a
- *  line names the listing and states the months its units buy; plain ticket
- *  lines keep the listing's name with its count, and a mixed order joins the
- *  two so every unit keeps its own meaning. Describing the intent items —
- *  not the charged lines — keeps each item's term stated exactly once: a
- *  discount or deposit split breaks one item into several priced lines that
- *  each repeat the item's whole quantity. */
-const sumupDescription = (intent: CheckoutIntent): string => {
-  const plans = intent.items.flatMap((item): string[] => {
-    const monthsEach = monthsPerUnitOf(item.purchaseUnit);
-    return monthsEach === undefined
-      ? []
-      : [
-          t("payment.provider.plan_segment", {
-            months: item.quantity * monthsEach,
-            name: item.name,
-          }),
-        ];
-  });
-  const tickets = intent.items.filter(
-    (item: CheckoutItem) => monthsPerUnitOf(item.purchaseUnit) === undefined,
+/** The SumUp checkout description, built from the intent's own items: the
+ *  listing names with the total count. Describing the intent items — not the
+ *  charged lines — keeps each item's count stated exactly once: a discount or
+ *  deposit split breaks one item into several priced lines that each repeat
+ *  the item's whole quantity. */
+const sumupDescription = (intent: CheckoutIntent): string =>
+  countedText(
+    orderLabel(
+      intent.items.map((item) => item.name),
+      t("payment.provider.tickets"),
+    ),
+    sumOf((item: CheckoutItem) => item.quantity)(intent.items),
   );
-  const descriptions = [
-    ...plans,
-    ...(tickets.length > 0
-      ? [
-          countedText(
-            orderLabel(
-              tickets.map((item) => item.name),
-              t("payment.provider.tickets"),
-            ),
-            sumOf((item: CheckoutItem) => item.quantity)(tickets),
-          ),
-        ]
-      : []),
-  ];
-  return descriptions.join(t("payment.provider.description_join"));
-};
 
 /** Internal getSumupClient implementation — reads the current API key. */
 const getClientImpl = (): SumupClient | null => {

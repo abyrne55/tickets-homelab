@@ -4,7 +4,6 @@ import { it as test } from "@std/testing/bdd";
 import { t } from "#i18n";
 import { ADMIN_SURFACE, adminDestination } from "#shared/admin-surface.ts";
 import { AdminNav } from "#templates/admin/nav.tsx";
-import { expectIncludesAll } from "#test-utils/assertions.ts";
 import { describeWithEnv } from "#test-utils/db.ts";
 import { withEnv } from "#test-utils/env.ts";
 import { featureSetting, useSetting } from "#test-utils/settings.ts";
@@ -42,24 +41,6 @@ describeWithEnv("AdminNav", {}, () => {
    *  `text` (rendered from the "/admin/" landing nav). */
   const expectOwnerAndManagerLink = (href: string, text: string): void =>
     expectLinkForRoles(href, text, ["owner", "manager"]);
-
-  test("AdminNav passes session.settingsNagItems to SettingsNagBanner for owner sessions", () => {
-    const superuserNag = {
-      href: "/admin/settings#settings-superuser",
-      id: "superuser" as const,
-      label: "Choose whether to enable a superuser recovery account.",
-    };
-    const html = String(
-      AdminNav({
-        active: "/admin/",
-        session: { adminLevel: "owner", settingsNagItems: [superuserNag] },
-      }),
-    );
-    expectIncludesAll(html, [
-      "Choose whether to enable a superuser recovery account.",
-      'href="/admin/settings#settings-superuser"',
-    ]);
-  });
 
   test("AdminNav links to the attendees browser for owners and managers", () => {
     expectOwnerAndManagerLink("/admin/attendees", "Attendees");
@@ -180,23 +161,6 @@ describeWithEnv("AdminNav", {}, () => {
     assert(!html.includes('href="/admin/catalog/import"'));
     // The section landing link stays.
     assertStringIncludes(html, 'href="/admin/listings"');
-  });
-
-  test("AdminNav shows the update banner while an update runs, with no renew link", () => {
-    using _env = withEnv({
-      RENEWAL_URL: "https://example.com/renew/?t=abc",
-      UPDATE_IN_PROGRESS: "1",
-    });
-    const html = String(
-      AdminNav({
-        active: "/admin/listings",
-        session: { adminLevel: "owner" },
-      }),
-    );
-    assertStringIncludes(html, "The site is being updated.");
-    // A renewal is a blocked write during the update window, so the banner
-    // carries no dead renew link.
-    assert(!html.includes("renew/?t=abc"));
   });
 
   test("Invite User stays owner-only", () => {

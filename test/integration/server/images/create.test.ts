@@ -65,10 +65,7 @@ describeWithEnv(
   "server images > create",
   {
     db: true,
-    env: {
-      STORAGE_ZONE_KEY: "testkey",
-      STORAGE_ZONE_NAME: "testzone",
-    },
+    storage: "local",
   },
   () => {
     describe("POST /admin/listing (stray image upload field)", () => {

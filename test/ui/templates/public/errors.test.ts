@@ -7,14 +7,12 @@ import {
   qrBookCheckoutErrorPage,
   qrBookErrorPage,
   rateLimitedPage,
-  readOnlyPage,
   siteNotActivatedPage,
   temporaryErrorPage,
 } from "#templates/public/errors.tsx";
 import { registerPublicTemplateHooks } from "#test/ui/templates/helpers.ts";
 import { setupAdminPageTest } from "#test-utils/admin-page-test.ts";
 import { expectIncludesAll } from "#test-utils/assertions.ts";
-import { withEnv } from "#test-utils/env.ts";
 
 describe("notFoundPage", () => {
   beforeAll(setupAdminPageTest);
@@ -39,8 +37,6 @@ describe("temporaryErrorPage", () => {
       'content="2"',
       "<style>",
       "font-family:system-ui",
-      // Points at Bunny's status page, with the space before the link kept.
-      'Check <strong><a href="https://status.bunny.net/">status.bunny.net</a>',
     ]);
   });
   test("preserves uncertainty about the submission", () => {
@@ -52,7 +48,6 @@ describe("temporaryErrorPage", () => {
       "Your changes may already be saved.",
       "Check the existing records or your booking before you submit again.",
       "font-family:system-ui",
-      'href="https://status.bunny.net/"',
     ]);
   });
 });
@@ -133,28 +128,6 @@ describe("readOnlyPage", () => {
 
   // Set RENEWAL_URL through the worker-local overlay (not the shared process
   // env, which parallel test files read) and restore it afterwards.
-  const withRenewalUrl = (value: string | undefined, run: () => void): void => {
-    using _env = withEnv({ RENEWAL_URL: value });
-    run();
-  };
-
-  test("includes the renewal link when RENEWAL_URL is set", () => {
-    withRenewalUrl("https://example.com/renew", () => {
-      const html = readOnlyPage();
-      expectIncludesAll(html, [
-        "This site is in read-only mode.",
-        '<a href="https://example.com/renew">Renew now</a>',
-      ]);
-    });
-  });
-
-  test("omits the renewal link when RENEWAL_URL is unset", () => {
-    withRenewalUrl(undefined, () => {
-      const html = readOnlyPage();
-      assertStringIncludes(html, "This site is in read-only mode.");
-      assert(!html.includes("Renew now"));
-    });
-  });
 });
 
 describe("migrationInProgressPage", () => {

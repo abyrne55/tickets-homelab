@@ -1,9 +1,7 @@
 import { expect } from "@std/expect";
-import { afterEach, it as test } from "@std/testing/bdd";
-import { settings } from "#db/settings.ts";
+import { it as test } from "@std/testing/bdd";
 import { getAuthenticatedSession } from "#routes/auth.ts";
 import { describeWithEnv } from "#test-utils/db.ts";
-import { withEnv } from "#test-utils/env.ts";
 import { createTestManagerSession, testCookie } from "#test-utils/session.ts";
 
 // ---------------------------------------------------------------------------
@@ -21,12 +19,7 @@ const getOwnerSession = async () => {
 };
 
 describeWithEnv("AuthSession.settingsNagItems", { db: true }, () => {
-  afterEach(() => {
-    settings.clearTestOverride("superuser_choice");
-  });
-
-  test("owner session includes settingsNagItems computed via getSettingsNagItemsForOwner", async () => {
-    using _env = withEnv({ ADMIN_EMAIL_ADDRESS: "admin@example.com" });
+  test("owner session includes settingsNagItems computed via getSettingsNagItems", async () => {
     const session = await getOwnerSession();
     expect(session.adminLevel).toBe("owner");
     expect(session.settingsNagItems).toBeDefined();
@@ -50,26 +43,5 @@ describeWithEnv("AuthSession.settingsNagItems", { db: true }, () => {
     expect(session).not.toBeNull();
     expect(session!.adminLevel).toBe("manager");
     expect(session!.settingsNagItems).toBeUndefined();
-  });
-
-  test("settingsNagItems includes superuser nag when conditions are met", async () => {
-    using _env = withEnv({ ADMIN_EMAIL_ADDRESS: "admin@example.com" });
-    settings.setForTest({ superuser_choice: "" });
-    const session = await getOwnerSession();
-    expect(session.settingsNagItems).toBeDefined();
-    const hasSuperuser = session.settingsNagItems!.some(
-      (i) => i.id === "superuser",
-    );
-    expect(hasSuperuser).toBe(true);
-  });
-
-  test("settingsNagItems does NOT include superuser nag when choice is already 'self-managed'", async () => {
-    using _env = withEnv({ ADMIN_EMAIL_ADDRESS: "admin@example.com" });
-    settings.setForTest({ superuser_choice: "self-managed" });
-    const session = await getOwnerSession();
-    expect(session.settingsNagItems).toBeDefined();
-    expect(session.settingsNagItems!.some((i) => i.id === "superuser")).toBe(
-      false,
-    );
   });
 });

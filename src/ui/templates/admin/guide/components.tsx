@@ -18,7 +18,6 @@ export type GuideHostConfig = {
   hostEmailFromAddress: string | null;
   hostAppleWalletPassTypeId: string | null;
   hostGoogleWalletIssuerId: string | null;
-  builderEnabled: boolean;
 };
 
 export const Section = ({

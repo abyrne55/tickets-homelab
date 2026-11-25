@@ -89,7 +89,6 @@ describe("webhook example", () => {
       duration_days: 1,
       id: 1,
       max_attendees: 100,
-      months_per_unit: 0,
       name: EXAMPLE_LISTING.name,
       slug: EXAMPLE_LISTING.slug,
       unit_price: EXAMPLE_LISTING.unit_price,

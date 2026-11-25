@@ -14,7 +14,7 @@ import { createTestListing } from "#test-utils/db-helpers/listings.ts";
 import { awaitTestRequest, withStorageMock } from "#test-utils/mocks.ts";
 import { createTestEditorSession } from "#test-utils/session.ts";
 
-describeWithEnv("editor listing images", { db: true, storage: "cdn" }, () => {
+describeWithEnv("editor listing images", { db: true, storage: "local" }, () => {
   test("opens the Images tab", async () => {
     const { cookie } = await createTestEditorSession();
     const listing = await createTestListing();

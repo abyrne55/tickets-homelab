@@ -228,7 +228,7 @@ const writeBundle = async (
       ...membershipStatements(memberships),
     ]);
     // The memberships must hold against the transaction's own state. A member
-    // deleted, turned into a built-site plan, or flipped to another type after
+    // deleted or flipped to another type after
     // the document was read rolls the whole import back. This is the same
     // recheck the single-item write runs, over exactly the pairs this import
     // creates.

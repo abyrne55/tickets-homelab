@@ -8,9 +8,6 @@ import {
   packageGroups,
   packageMemberError,
   packageMemberQuantityBroken,
-  planInGroupError,
-  planRuleError,
-  sitePlanMemberError,
 } from "#shared/package-membership.ts";
 
 /** Build the edge set the member rules read (empty by default). */
@@ -31,34 +28,6 @@ const listing = (
 });
 
 describe("packageMemberError", () => {
-  test("the built-site plan refusal names the listing with the groups copy", () => {
-    expect(sitePlanMemberError("Website Plan")).toBe(
-      t("error.group_member_site_plan", { name: "Website Plan" }),
-    );
-  });
-
-  test("planInGroupError refuses a plan and allows a non-plan", () => {
-    expect(planInGroupError(true, "Website Plan")).toBe(
-      t("error.group_member_site_plan", { name: "Website Plan" }),
-    );
-    expect(planInGroupError(false, "Day Pass")).toBeNull();
-    expect(planInGroupError(undefined, "Day Pass")).toBeNull();
-  });
-
-  test("planRuleError spares non-plans and names the first broken facet", () => {
-    // The renewal tier rules call it with these facets in this order.
-    const facets: [boolean, string][] = [
-      [true, "error.initial_site_months_required"],
-      [false, "error.assign_built_site_not_tier"],
-    ];
-    expect(planRuleError(false, facets)).toBeNull();
-    expect(planRuleError(undefined, facets)).toBeNull();
-    expect(planRuleError(true, facets)).toBe(
-      t("error.initial_site_months_required"),
-    );
-    expect(planRuleError(true, [])).toBeNull();
-  });
-
   // Each blocking case asserts the complete localized message: which rule won
   // AND that the listing name interpolates into it.
   test("blocks a pay-what-you-want listing regardless of edges or hide flag", () => {

@@ -21,10 +21,8 @@ const en = await allEnglishMessages(["settings", "sms"]);
 /** The custom form ids the settings routes pass to withSettingsFields. */
 const ROUTE_FORM_IDS = [
   "settings-apple-wallet",
-  "settings-custom-domain",
   "settings-email",
   "settings-google-wallet",
-  "settings-host-subdomain",
   "settings-sms-gateway",
   "settings-square",
   "settings-square-webhook",
@@ -55,12 +53,6 @@ describe("CUSTOM_SETTINGS_FIELDS", () => {
   });
 
   test("labels each field from the catalog key that names it", () => {
-    expect(
-      byName(fieldsOf("settings-custom-domain"), "custom_domain").label,
-    ).toBe(en["settings.advanced.domain_label"]);
-    expect(byName(fieldsOf("settings-host-subdomain"), "subdomain").label).toBe(
-      en["settings.subdomain.subdomain_label"],
-    );
     expect(
       byName(fieldsOf("settings-sms-gateway"), "sms_gateway_username").label,
     ).toBe(en["sms.settings.username"]);

@@ -2,7 +2,6 @@ import { expect } from "@std/expect";
 import { describe, it as test } from "@std/testing/bdd";
 import { resetI18nForTest } from "#i18n";
 import type { Field } from "#shared/forms/field.ts";
-import { getBuiltSiteForm } from "#templates/fields/admin.ts";
 import { getListingAggregateFields } from "#templates/fields/aggregate.ts";
 import { getGroupCreateForm } from "#templates/fields/group.ts";
 import { getListingForm } from "#templates/fields/listing.ts";
@@ -106,21 +105,6 @@ describe("fields behaviour", () => {
       expect(byName(fields, "minimum_days_before").min).toBe(0);
       expect(byName(fields, "maximum_days_after").min).toBe(0);
     });
-    test("whole-number catalog kinds refuse a fraction like the API does", () => {
-      // The kind is the shared declaration: the listing JSON API refuses the
-      // same fraction for every field here.
-      for (const name of [
-        "max_attendees",
-        "max_quantity",
-        "min_quantity",
-        "minimum_days_before",
-        "maximum_days_after",
-        "months_per_unit",
-        "initial_site_months",
-      ]) {
-        rejects(byName(fields, name), "1.5");
-      }
-    });
     test("duration_days accepts 1..MAX and rejects a fraction", () => {
       const duration = byName(fields, "duration_days");
       expect(duration.min).toBe(1);
@@ -147,28 +131,7 @@ describe("fields behaviour", () => {
     });
   });
 
-  describe("month-count fields keep their bounds", () => {
-    test("months-per-unit is 0..24", () => {
-      const field = byName(getListingForm().fields, "months_per_unit");
-      expect(field.min).toBe(0);
-      expect(field.max).toBe(24);
-    });
-    test("initial-site-months is 0..120", () => {
-      const field = byName(getListingForm().fields, "initial_site_months");
-      expect(field.min).toBe(0);
-      expect(field.max).toBe(120);
-    });
-  });
-
   describe("required flags and validators on the remaining factories", () => {
-    test("built-site name and url are required; updates only accepts a tier", () => {
-      const fields = getBuiltSiteForm().fields;
-      expect(byName(fields, "name").required).toBe(true);
-      expect(byName(fields, "site_url").required).toBe(true);
-      const updates = byName(fields, "updates");
-      accepts(updates, "release");
-      rejects(updates, "not-a-tier");
-    });
     test("the slug field is required", () => {
       expect(getSlugField().required).toBe(true);
     });

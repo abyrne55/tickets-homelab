@@ -12,11 +12,9 @@ import { expectFlashRedirect } from "#test-utils/assertions.ts";
 import { describeWithEnv } from "#test-utils/db.ts";
 import { PDF_BYTES } from "#test-utils/factories.ts";
 import {
-  cdnOkResponse,
-  installUrlHandler,
   mockMultipartRequest,
   mockRequest,
-  withFetchMock,
+  withLocalStorageEnabled,
   withStorageDisabled,
   withStorageMock,
 } from "#test-utils/mocks.ts";
@@ -83,47 +81,39 @@ describeWithEnv(
   "server images > upload",
   {
     db: true,
-    env: {
-      STORAGE_ZONE_KEY: "testkey",
-      STORAGE_ZONE_NAME: "testzone",
-    },
+    storage: "local",
   },
   () => {
     describe("POST /admin/listing/:id/images/upload", () => {
-      describeWithEnv(
-        "when storage is not configured",
-        { env: { STORAGE_ZONE_KEY: undefined, STORAGE_ZONE_NAME: undefined } },
-        () => {
-          test("rejects image upload", async () => {
-            await withStorageDisabled(async () => {
-              const { listing, cookie, csrfToken } =
-                await setupListingAndLogin();
+      describeWithEnv("when storage is not configured", { env: {} }, () => {
+        test("rejects image upload", async () => {
+          await withStorageDisabled(async () => {
+            const { listing, cookie, csrfToken } = await setupListingAndLogin();
 
-              const getResponse = await handleRequest(
-                mockRequest(`/admin/listing/${listing.id}/images`, {
-                  headers: { cookie },
-                }),
-              );
-              expect(getResponse.status).toBe(404);
+            const getResponse = await handleRequest(
+              mockRequest(`/admin/listing/${listing.id}/images`, {
+                headers: { cookie },
+              }),
+            );
+            expect(getResponse.status).toBe(404);
 
-              const response = await submitListingImagePng(
-                listing.id,
-                cookie,
-                csrfToken,
-                "test.jpg",
-              );
-              await expectFlashRedirect(
-                `/admin/listing/${listing.id}/edit`,
-                "File storage is not configured.",
-                false,
-                cookie,
-              )(response);
-              const updated = await getListingWithCount(listing.id);
-              expect(updated?.image_url).toBe("");
-            });
+            const response = await submitListingImagePng(
+              listing.id,
+              cookie,
+              csrfToken,
+              "test.jpg",
+            );
+            await expectFlashRedirect(
+              `/admin/listing/${listing.id}/edit`,
+              "File storage is not configured.",
+              false,
+              cookie,
+            )(response);
+            const updated = await getListingWithCount(listing.id);
+            expect(updated?.image_url).toBe("");
           });
-        },
-      );
+        });
+      });
 
       test("redirects with image error for invalid image type", async () => {
         const { listing, cookie, csrfToken } = await setupListingAndLogin();
@@ -201,7 +191,9 @@ describeWithEnv(
         const { listing, cookie, csrfToken } = await setupListingAndLogin();
         await linkStoredImage(listing.id, "old-image.jpg", "old-thumb.webp");
 
-        await withStorageMock(async (fetchCalls) => {
+        await withLocalStorageEnabled(async (dir) => {
+          await Deno.writeTextFile(`${dir}/old-image.jpg`, "x");
+          await Deno.writeTextFile(`${dir}/old-thumb.webp`, "x");
           const response = await submitListingImagePng(
             listing.id,
             cookie,
@@ -210,12 +202,8 @@ describeWithEnv(
           );
           expect(response.status).toBe(302);
 
-          expect(fetchCalls.find((url) => url.includes("old-image.jpg"))).toBe(
-            undefined,
-          );
-          expect(fetchCalls.find((url) => url.includes("old-thumb.webp"))).toBe(
-            undefined,
-          );
+          expect((await Deno.stat(`${dir}/old-image.jpg`)).isFile).toBe(true);
+          expect((await Deno.stat(`${dir}/old-thumb.webp`)).isFile).toBe(true);
           expect(await getImagesForItem("listing", listing.id)).toHaveLength(2);
         });
       });
@@ -224,17 +212,7 @@ describeWithEnv(
         const { listing, cookie, csrfToken } = await setupListingAndLogin();
         await linkStoredImage(listing.id, "old-failing.jpg");
 
-        await withFetchMock(async (originalFetch) => {
-          installUrlHandler(originalFetch, (url) => {
-            if (url.includes("old-failing.jpg")) {
-              return Promise.reject(new Error("CDN delete failed"));
-            }
-            if (url.includes("storage.bunnycdn.com")) {
-              return Promise.resolve(cdnOkResponse());
-            }
-            return null;
-          });
-
+        await withStorageMock(async () => {
           const response = await submitListingImagePng(
             listing.id,
             cookie,

@@ -7,7 +7,6 @@ import { legReference } from "#accounting/refs.ts";
 import { encrypt } from "#crypto/encryption.ts";
 import { decryptAttendees } from "#db/attendees/pii.ts";
 import { getAttendeesRaw } from "#db/attendees/queries.ts";
-import { builtSites } from "#db/built-sites.ts";
 import {
   readCheckoutAnswers,
   stageCheckoutAnswers,
@@ -26,7 +25,7 @@ import { answersTable, questionsTable } from "#db/questions/tables.ts";
 import { handleRequest } from "#routes";
 import {
   runWebhook,
-  setupRenewalSite,
+  setupWithListing,
   stubLostCreate,
   webhookRequest,
 } from "#test/integration/webhook-price-signature/helpers.ts";
@@ -107,13 +106,7 @@ describeWithEnv("paid booking lost-result recovery", { db: true }, () => {
     const fetchCallsBefore = fetchSpy.calls.length;
     const registrationCalls = (): number =>
       callsSince(fetchCallsBefore, "https://registration.example.com/hook");
-    // The booked listing is a renewal tier, so the recovered sends also
-    // extend the renewal site's deadline exactly once.
-    const { edgeSecretCalls, listing, site, tokenIndex } =
-      await setupRenewalSite(
-        "Recovery Renewal Site",
-        "recovery-renewal.b-cdn.net",
-      );
+    const listing = await setupWithListing();
     // The listings.fields column stores env-key encrypted values, so the
     // fixture writes the collected field the way every write path does.
     await execute(
@@ -170,7 +163,6 @@ describeWithEnv("paid booking lost-result recovery", { db: true }, () => {
         modifiers: JSON.stringify([{ i: modifier.id, q: 1 }]),
         name: "Recovered Buyer",
         phone,
-        site_token_index: tokenIndex,
         text_answer_ids: JSON.stringify({
           [listing.id]: [{ q: textQuestion.id, s: textStringId }],
         }),
@@ -301,12 +293,6 @@ describeWithEnv("paid booking lost-result recovery", { db: true }, () => {
           ]);
           // The committed batch took the staged copy back with the booking.
           expect((await readCheckoutAnswers(sessionId)).size).toBe(0);
-          // The recovered sends extended the renewal site's deadline once.
-          const sitesAfterRecovery = await builtSites.getAll();
-          expect(
-            sitesAfterRecovery.find((one) => one.id === site.id)!.readOnlyFrom,
-          ).toBe("2099-02-01T00:00:00.000Z");
-          expect(edgeSecretCalls.calls.length).toBe(1);
           const retrieve = stubRetrieveCheckoutSession({
             amountTotal: 900,
             metadata,
@@ -355,13 +341,6 @@ describeWithEnv("paid booking lost-result recovery", { db: true }, () => {
               (body) => body.to[0] === "owner@example.com",
             ).length,
           ).toBe(1);
-          // The redeliveries never re-extend the deadline: the finalized
-          // session's replay queues no sends at all.
-          expect(
-            (await builtSites.getAll()).find((one) => one.id === site.id)!
-              .readOnlyFrom,
-          ).toBe("2099-02-01T00:00:00.000Z");
-          expect(edgeSecretCalls.calls.length).toBe(1);
           expect(await allTransfers()).toEqual(transfersAfterCommit);
           expect(await modifierUsedQuantities([modifier.id])).toEqual(
             new Map([[modifier.id, 1]]),
@@ -390,7 +369,6 @@ describeWithEnv("paid booking lost-result recovery", { db: true }, () => {
         },
       );
     } finally {
-      edgeSecretCalls.restore();
       loseResult.restore();
     }
   });

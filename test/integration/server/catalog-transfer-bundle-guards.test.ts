@@ -1,11 +1,9 @@
 import { assertStringIncludes } from "@std/assert";
 import { expect } from "@std/expect";
 import { it as test } from "@std/testing/bdd";
-import { hmacHash } from "#crypto/hashing.ts";
-import { execute } from "#db/client.ts";
 import { assignListingsToGroup } from "#db/groups/membership/package-writes.ts";
 import { listingParents } from "#db/listing-parents.ts";
-import { getListingWithCount, listingsTable } from "#db/listings/records.ts";
+import { getListingWithCount } from "#db/listings/records.ts";
 import { loadCatalogNameIndex, matchName } from "#db/name-registry.ts";
 import { importCatalog } from "#routes/admin/catalog-transfer/import.ts";
 import type { CatalogBundle } from "#routes/admin/catalog-transfer/schema.ts";
@@ -34,45 +32,7 @@ const bundleOf = (
   version: 1,
 });
 
-/** Write the state no current write path creates: a built-site plan inside a
- * group. The plan-member rules defend it, so the tests can hold it directly. */
-const storePlanInGroup = async (
-  planName: string,
-  groupId: number,
-): Promise<void> => {
-  const plan = await listingsTable.insert({
-    assignBuiltSite: true,
-    dayPrices: {},
-    maxAttendees: 1,
-    maxPrice: 0,
-    name: planName,
-    slug: "legacy-plan",
-    slugIndex: await hmacHash("legacy-plan"),
-  });
-  await execute(
-    "INSERT INTO group_listings (group_id, listing_id, quantity) VALUES (?, ?, 1)",
-    [groupId, plan.id],
-  );
-};
-
 describeWithEnv("catalog bundle import guard parity", { db: true }, () => {
-  test("refuses a join into a group that holds a built-site plan", async () => {
-    const group = await createTestGroup({ name: "Plan Day" });
-    await storePlanInGroup("Legacy Plan", group.id);
-
-    const result = await importCatalog(
-      bundleOf({
-        groups: [{ group: "Plan Day" }],
-        listing: { maxAttendees: 1, maxPrice: 0, name: "Plan Joiner" },
-        parents: [],
-      }),
-    );
-    expect(result.ok).toBe(false);
-    if (result.ok) throw new Error("unreachable");
-    expectIncludesAll(result.error, ["Legacy Plan", "assigns its own site"]);
-    await expectNoListing("Plan Joiner");
-  });
-
   test("refuses a stored parent that is already a child", async () => {
     const top = await createTestListing({ name: "Stored Top" });
     const mid = await createTestListing({ name: "Stored Mid" });

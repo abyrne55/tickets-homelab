@@ -33,7 +33,6 @@ export const holidayFields = {
 
 export const listingCatalogFields = {
   active: ["active", col.boolean(true), "boolean", CATALOG_API],
-  assignBuiltSite: ["assign_built_site", falseColumn, "boolean"],
   attachmentName: ["attachment_name", encryptedTextColumn],
   attachmentUrl: ["attachment_url", encryptedTextColumn],
   bookableAlone: ["bookable_alone", falseColumn, "boolean", CATALOG_API_FORM],
@@ -82,13 +81,6 @@ export const listingCatalogFields = {
     CATALOG_API_FORM,
   ],
   hidden: ["hidden", falseColumn, "boolean", CATALOG_API_FORM],
-  initialSiteMonths: [
-    "initial_site_months",
-    zeroColumn,
-    "nonNegativeInt",
-    CATALOG_FORM,
-    0,
-  ],
   listingType: [
     "listing_type",
     col.withDefault<ListingType>(() => "standard"),
@@ -119,13 +111,6 @@ export const listingCatalogFields = {
     1,
   ],
   minQuantity: ["min_quantity", oneColumn, "positiveInt", CATALOG_API_FORM, 1],
-  monthsPerUnit: [
-    "months_per_unit",
-    zeroColumn,
-    "nonNegativeInt",
-    CATALOG_FORM,
-    0,
-  ],
   name: ["name", undefined, "name", CATALOG_FORM],
   nonTransferable: [
     "non_transferable",

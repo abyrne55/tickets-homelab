@@ -8,10 +8,7 @@
 
 import { isMissingSettingsTableError } from "#db/migrations/errors.ts";
 import { settings } from "#db/settings.ts";
-import {
-  loadPublicDomain,
-  publicCacheResponse,
-} from "#routes/public-origin.ts";
+import { publicCacheResponse } from "#routes/public-origin.ts";
 import { TEXT } from "#shared/content-types.ts";
 import { CONFIG_KEYS } from "#shared/settings/keys.ts";
 
@@ -31,7 +28,7 @@ export const handleRobotsTxt = async (request: Request): Promise<Response> => {
   try {
     await settings.loadKeys([CONFIG_KEYS.ENABLED_FEATURES]);
     if (settings.features.site) {
-      const domain = await loadPublicDomain(new URL(request.url).hostname);
+      const domain = new URL(request.url).hostname;
       body = `${PUBLIC_ROBOTS_TXT}Sitemap: https://${domain}/sitemap.xml\n`;
     }
   } catch (error) {

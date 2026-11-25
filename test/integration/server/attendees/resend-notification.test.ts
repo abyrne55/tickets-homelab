@@ -2,12 +2,8 @@ import { assertStringIncludes } from "@std/assert";
 import { expect } from "@std/expect";
 import { describe, it as test } from "@std/testing/bdd";
 import type { AttendeeInput } from "#db/attendee-types.ts";
-import { builtSites, insertBuiltSite } from "#db/built-sites.ts";
 import { handleRequest } from "#routes";
-import { addMonthsIso } from "#shared/dates.ts";
-import { nowIso } from "#shared/now.ts";
 import { requireValue } from "#shared/required-value.ts";
-import { stubEdgeSecretSuccess } from "#test/integration/server/site-assignment-shared.ts";
 import {
   adminAttendeeAction,
   setupAdminTest,
@@ -23,7 +19,6 @@ import { setupListingAndAttendee } from "#test-utils/attendees/helpers.ts";
 import { describeWithEnv } from "#test-utils/db.ts";
 import { markNotificationSendsOwed } from "#test-utils/db-helpers/attendees.ts";
 import { createTestListing } from "#test-utils/db-helpers/listings.ts";
-import { withEnv } from "#test-utils/env.ts";
 import { stubFetch } from "#test-utils/fetch-stub.ts";
 import type { AdminTestContext } from "#test-utils/internal.ts";
 import { mockFormRequest } from "#test-utils/mocks.ts";
@@ -361,55 +356,6 @@ describeWithEnv(
           "Duo B",
           "Solo S",
         ]);
-      });
-
-      test("a resend assigns the site a later plan line bought", async () => {
-        // The out-of-stock repair tells the operator to resend from the
-        // attendee page. The attendee page loads the FIRST booking, which
-        // here is a non-plan line — the resend must still reach the plan
-        // line that bought the site. The plan listing is created under the
-        // builder flag: its form field only parses when that view is on.
-        using _builder = withEnv({ CAN_BUILD_SITES: "true" });
-        await createTestListing({
-          hidden: true,
-          monthsPerUnit: 1,
-          purchaseOnly: true,
-          unitPrice: 500,
-        });
-        const plan = await createTestListing({
-          assignBuiltSite: true,
-          hidden: true,
-          initialSiteMonths: 3,
-          name: "Site Plan",
-          purchaseOnly: true,
-          unitPrice: 500,
-        });
-        const plain = await createTestListing({ name: "Plain Entry" });
-        await insertBuiltSite("Site A", "a.test.net", "", "", true, "2001");
-        using _secret = stubEdgeSecretSuccess();
-        using _fetch = stubFetch(() => new Response());
-
-        const attendee = await firstBookedAttendee(
-          [
-            { listingId: plain.id, quantity: 1 },
-            { listingId: plan.id, quantity: 2 },
-          ],
-          "Later Buyer",
-          "later@example.com",
-        );
-        const { response } = await adminFormPost(
-          `/admin/attendees/${attendee.id}/resend-notification`,
-          { confirm_identifier: "Later Buyer" },
-        );
-        expect(response.status).toBe(302);
-
-        const sites = await builtSites.getAll();
-        const assigned = sites.find((s) => s.assignedAttendeeId !== null)!;
-        expect(assigned.assignedListingId).toBe(plan.id);
-        // Two units of the 3-month plan buy 6 months.
-        expect(assigned.readOnlyFrom.slice(0, 10)).toBe(
-          addMonthsIso(nowIso(), 6).slice(0, 10),
-        );
       });
     });
   },

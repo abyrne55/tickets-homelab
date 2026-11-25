@@ -102,10 +102,7 @@ export const coreTables: [name: string, table: Table][] = [
         ["can_pay_more", wholeNumberStartingAtZero],
         ["hidden", wholeNumberStartingAtZero],
         ["purchase_only", wholeNumberStartingAtZero],
-        ["assign_built_site", wholeNumberStartingAtZero],
         ["max_price", wholeNumberStartingAtZero],
-        ["months_per_unit", wholeNumberStartingAtZero],
-        ["initial_site_months", wholeNumberStartingAtZero],
         ["duration_days", wholeNumberStartingAtOne],
         ["customisable_days", wholeNumberStartingAtZero],
         // day_prices is no longer a column: per-day-count prices live in the

@@ -1,7 +1,6 @@
 import { assertStringIncludes } from "@std/assert";
 import { expect } from "@std/expect";
 import { it as test } from "@std/testing/bdd";
-import { execute } from "#db/client.ts";
 import { importCatalog } from "#routes/admin/catalog-transfer/import.ts";
 import type { CatalogBundle } from "#routes/admin/catalog-transfer/schema.ts";
 import { expectIncludesAll } from "#test-utils/assertions.ts";
@@ -90,22 +89,6 @@ describeWithEnv("bundle package member checks", { db: true }, () => {
       result.error,
       'All listings in a group must agree on customisable days, but "Stored Member" and "Planned Member" differ.',
     );
-  });
-
-  test("refuses a stored member that assigns a built site", async () => {
-    const member = await createTestListing({
-      maxQuantity: 5,
-      name: "Stored Member",
-    });
-    // The create form carries no built-site switch; the column is the fact.
-    await execute("UPDATE listings SET assign_built_site = 1 WHERE id = ?", [
-      member.id,
-    ]);
-    const result = await importCatalog(mixedPackage());
-    expect(result.ok).toBe(false);
-    if (result.ok) throw new Error("unreachable");
-    expect(result.error).toContain("Stored Member");
-    expect(result.error).toContain("Mixed Pack");
   });
 
   test("reports a member the site and document do not hold", async () => {

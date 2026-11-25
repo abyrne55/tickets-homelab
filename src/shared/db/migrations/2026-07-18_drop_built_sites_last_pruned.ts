@@ -1,7 +1,7 @@
-import { columnDropMigration } from "./define.ts";
+import { schemaMigration } from "./define.ts";
 
-export default columnDropMigration(
+export default schemaMigration(
   "2026-07-18_drop_built_sites_last_pruned",
-  "built_sites",
-  "Remove the unused built-site prune marker.",
+  "Historical removal of the built-site prune marker.",
+  {},
 );

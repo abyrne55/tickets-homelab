@@ -1,11 +1,10 @@
-import { assert, assertStringIncludes } from "@std/assert";
+import { assert } from "@std/assert";
 import { describe, it as test } from "@std/testing/bdd";
 import { settings } from "#db/settings.ts";
 import { hostEmail } from "#shared/email.ts";
 import { assertAdminHtml } from "#test-utils/assertions.ts";
 import { describeWithEnv } from "#test-utils/db.ts";
 import { validEmail } from "#test-utils/email.ts";
-import { withEnv } from "#test-utils/env.ts";
 import { guide } from "#test-utils/guide.ts";
 
 describeWithEnv("server (admin guide host config)", { db: true }, () => {
@@ -86,29 +85,6 @@ describeWithEnv("server (admin guide host config)", { db: true }, () => {
       } finally {
         settings.appleWallet.resetHostConfig();
       }
-    });
-
-    test("hides built sites section when builder is disabled", async () => {
-      using _env = withEnv({ CAN_BUILD_SITES: undefined });
-      const html = await assertAdminHtml("/admin/guide");
-      assert(!html.includes('id="built-sites"'));
-    });
-
-    test("cached guide is pinned to builder-off even under ambient CAN_BUILD_SITES=true", async () => {
-      using _ambient = withEnv({ CAN_BUILD_SITES: "true" });
-      const live = await assertAdminHtml("/admin/guide", 'id="built-sites"');
-      assertStringIncludes(live, 'id="built-sites"');
-      const cached = await guide();
-      assert(!cached.includes('id="built-sites"'));
-    });
-
-    test("shows built sites section when builder is enabled", async () => {
-      using _env = withEnv({ CAN_BUILD_SITES: "true" });
-      await assertAdminHtml(
-        "/admin/guide",
-        'id="built-sites"',
-        "Add Built Site",
-      );
     });
   });
 });

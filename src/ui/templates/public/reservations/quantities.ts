@@ -9,41 +9,9 @@ import {
   packageQuantityFieldName,
   quantityFieldName,
 } from "#booking/tree.ts";
-import { t } from "#i18n";
 import { savedFormValue } from "#shared/forms/saved-data.ts";
-import { monthsPerUnitOf, resolvePurchaseUnit } from "#shared/purchase-unit.ts";
 import { parseNonNegativeInt } from "#shared/validation/number.ts";
-import type { ListingWithCount } from "#types";
 import type { TicketPrefill } from "./types.ts";
-
-/** The listing facts a month labeler reads: which kind of plan it is and the
- *  term each of its units buys. */
-type MonthsListing = Pick<
-  ListingWithCount,
-  "assign_built_site" | "initial_site_months" | "months_per_unit"
->;
-
-/** The months one priced unit buys, or undefined when a count is plain. The
- *  shared resolver decides. One unit of a plan prices its whole initial term.
- *  A renewal page prices the same listings by their months per unit. */
-export const pricedMonthsForListing = (
-  listing: MonthsListing,
-  renewal?: boolean | undefined,
-): number | undefined =>
-  monthsPerUnitOf(resolvePurchaseUnit(listing, { renewal: renewal === true }));
-
-/** Labels each count with the months it buys; undefined keeps the plain count.
- *  One unit of a plan prices its whole initial term (`initial_site_months`); a
- *  renewal page prices the same listings by their months per unit. */
-export const monthLabelsForListing = (
-  listing: MonthsListing,
-  renewal?: boolean | undefined,
-): ((count: number) => string) | undefined => {
-  const monthsEach = pricedMonthsForListing(listing, renewal);
-  return monthsEach === undefined
-    ? undefined
-    : (count) => t("public.ticket.month_option", { count: count * monthsEach });
-};
 
 /** An `<option>` list for a quantity selector: none (0), then `minimum..max`,
  *  with `selected` chosen. `minimum` defaults to 1, which keeps the plain

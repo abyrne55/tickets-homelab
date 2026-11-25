@@ -11,16 +11,9 @@ import type { AuthSession } from "#routes/auth.ts";
 import { authPageAt } from "#routes/route-gates.ts";
 import type { TypedRouteHandler } from "#routes/router.ts";
 import { enabledFeaturesWithUsage } from "#shared/admin-features.ts";
-import { getCdnHostname } from "#shared/bunny-cdn.ts";
-import {
-  getBunnyDnsSubdomainSuffix,
-  isBunnyCdnEnabled,
-  isBunnyDnsEnabled,
-} from "#shared/config.ts";
 import { EMAIL_PROVIDER_LABELS, hostEmail } from "#shared/email.ts";
 import { getEnv } from "#shared/env.ts";
 import { existingPaymentProviderState } from "#shared/existing-payment-provider.ts";
-import { getFlash } from "#shared/flash-context.ts";
 import {
   paymentProviderHasCredentials,
   paymentProviderMode,
@@ -28,7 +21,6 @@ import {
 import { getPaymentWebhookUrl } from "#shared/payment-webhook-url.ts";
 import { SCHEDULED_TASK_KEY_ENV } from "#shared/scheduled-keys.ts";
 import { isStorageEnabled } from "#shared/storage.ts";
-import { getSuperuserState } from "#shared/superuser.ts";
 import {
   adminSettingsPage,
   type ShownPaymentProvider,
@@ -59,14 +51,9 @@ const shownPaymentProvider = (
 
 /**
  * Gather all state needed to render the settings page.
- * All calls are independent, so we fetch them concurrently with Promise.all
- * to reduce sequential await overhead (especially for calls that decrypt).
  */
 const getSettingsPageState = async () => {
-  const [superuser, featureUsage] = await Promise.all([
-    getSuperuserState(),
-    getAdminFeatureUsage(),
-  ]);
+  const featureUsage = await getAdminFeatureUsage();
   const existingPaymentProvider = existingPaymentProviderState();
   const tax = settings.tax;
   return {
@@ -87,7 +74,6 @@ const getSettingsPageState = async () => {
     siteFooter: settings.siteFooter,
     squareWebhookConfigured: settings.square.webhookSignatureKey !== "",
     storageEnabled: isStorageEnabled(),
-    superuser,
     taxMode: tax.mode,
     taxRate: tax.mode === "none" ? "" : (tax.rateBasisPoints / 100).toFixed(2),
     termsAndConditions: settings.terms,
@@ -104,15 +90,9 @@ const renderSettingsPage = async (session: AuthSession) => {
 };
 
 /** Gather state for the advanced settings page */
-const getAdvancedSettingsPageState = async (
-  subdomainPreview: string,
-  subdomainPreviewFullDomain: string,
-) => {
-  const bunnyCdnConfigured = isBunnyCdnEnabled();
-  const bunnyDnsEnabled = isBunnyDnsEnabled();
+const getAdvancedSettingsPageState = () => {
   const confirmationTemplates = settings.email.templateSet("confirmation");
   const adminTemplates = settings.email.templateSet("admin");
-  const cdnResult = bunnyCdnConfigured ? await getCdnHostname() : null;
   const existingPaymentProvider = existingPaymentProviderState();
   return {
     adminTemplates,
@@ -120,16 +100,9 @@ const getAdvancedSettingsPageState = async (
     appleWalletPassTypeId: settings.appleWallet.passTypeId,
     appleWalletTeamId: settings.appleWallet.teamId,
     attendeeColumnOrder: settings.attendeeColumnOrder,
-    bunnyCdnEnabled: bunnyCdnConfigured,
-    bunnyDnsEnabled,
-    bunnyDnsSubdomainSuffix: getBunnyDnsSubdomainSuffix(),
-    bunnySubdomain: settings.bunnySubdomain,
     businessEmail: settings.businessEmail,
-    cdnHostname: cdnResult?.ok ? cdnResult.hostname : "",
     confirmationTemplates,
     customCss: settings.customCss,
-    customDomain: settings.customDomain,
-    customDomainLastValidated: settings.customDomainLastValidated,
     emailApiKeyConfigured: settings.email.hasApiKey,
     emailFromAddress: settings.email.fromAddress,
     emailProvider: settings.email.provider,
@@ -160,24 +133,13 @@ const getAdvancedSettingsPageState = async (
     smsGatewayPasswordConfigured: settings.smsGateway.hasPassword,
     smsGatewayUsername: settings.smsGatewayUsername,
     smsGatewayWebhookConfigured: settings.smsGateway.hasWebhookSecret,
-    subdomainPreview,
-    subdomainPreviewFullDomain,
     theme: settings.theme,
   };
 };
 
 /** Render the advanced settings page with current state */
-const renderAdvancedSettingsPage = async (
-  session: AuthSession,
-  subdomainPreview: string,
-  subdomainPreviewFullDomain: string,
-) => {
-  const state = await getAdvancedSettingsPageState(
-    subdomainPreview,
-    subdomainPreviewFullDomain,
-  );
-  return adminAdvancedSettingsPage(session, state);
-};
+const renderAdvancedSettingsPage = (session: AuthSession) =>
+  adminAdvancedSettingsPage(session, getAdvancedSettingsPageState());
 
 /**
  * Handle GET /admin/settings - owner only
@@ -189,13 +151,6 @@ export const handleAdminSettingsGet: TypedRouteHandler<"GET /admin/settings"> =
  * Handle GET /admin/settings-advanced - owner only
  */
 export const handleAdminSettingsAdvancedGet: TypedRouteHandler<"GET /admin/settings-advanced"> =
-  authPageAt("/admin/settings-advanced")(async (session) => {
-    const flash = getFlash();
-    const [subdomainPreview = "", subdomainPreviewFullDomain = ""] =
-      flash.result ? flash.result.split("\n") : [];
-    return await renderAdvancedSettingsPage(
-      session,
-      subdomainPreview,
-      subdomainPreviewFullDomain,
-    );
-  });
+  authPageAt("/admin/settings-advanced")((session) =>
+    renderAdvancedSettingsPage(session),
+  );

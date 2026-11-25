@@ -9,9 +9,6 @@ import {
   providerWebhook,
   WEBHOOK_SIGNATURE_HEADERS,
 } from "#shared/payment-providers.ts";
-import { allEnglishMessages } from "#test-utils/i18n.ts";
-
-const messages = await allEnglishMessages();
 
 describe("payment provider registry", () => {
   describe("providerCurrencyBlock", () => {
@@ -188,14 +185,6 @@ describe("payment provider registry", () => {
         (id) => providerWebhook(id)?.signatureHeader,
       ).filter((header) => header !== undefined);
       expect(WEBHOOK_SIGNATURE_HEADERS).toEqual(headers);
-    });
-
-    test("gives every webhook provider real copy for a domain change", () => {
-      for (const id of PAYMENT_PROVIDER_IDS) {
-        const webhook = providerWebhook(id);
-        if (webhook === null) continue;
-        expect(messages[webhook.domainChangeFixKey]).toBeTruthy();
-      }
     });
   });
 });

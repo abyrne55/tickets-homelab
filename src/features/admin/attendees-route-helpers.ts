@@ -46,10 +46,9 @@ import type { AdminSession, Attendee, ListingWithCount } from "#types";
 /**
  * True when any no-quantity line satisfies a check, judged from the live DB (not
  * the form's submitted key). Used by applyEdit to block marking a line
- * no-quantity while it still holds an assigned built site or a recorded payment.
- * With a built site, the assignment plus public /renew/ path survives behind a
- * hidden line. With a payment, a stale form key otherwise hides the booking from
- * the per-line model guard and lets the atomic edit drop the paid row.
+ * no-quantity while it still holds a recorded payment. A stale form key
+ * otherwise hides the booking from the per-line model guard and lets the atomic
+ * edit drop the paid row.
  * One query over all the IDs.
  */
 export const anyNoQuantityLineMatches = (

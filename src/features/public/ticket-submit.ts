@@ -169,7 +169,7 @@ export const renderTicketFlow =
     } = {},
   ) =>
   async (listings: ListingWithCount[]): Promise<Response> => {
-    // Indirect entry points (group/order pages, renewals) load their listings
+    // Indirect entry points (group/order pages) load their listings
     // from membership / a saved cart rather than explicit URL slugs, so a child
     // member would otherwise render as a standalone, selectable quantity row a
     // buyer could book alone — bypassing the slug guard, which only rejects
@@ -180,7 +180,7 @@ export const renderTicketFlow =
     // can never start from a child, so the page has nothing
     // standalone-bookable. Render 404 rather than a 200 empty booking page. Every
     // production
-    // caller (group/order/renewal) already hands a non-empty set, so this fires
+    // caller (group/order) already hands a non-empty set, so this fires
     // exactly for the all-children case.
     if (withoutChildren.length === 0) return notFoundResponse();
     const activeListings =

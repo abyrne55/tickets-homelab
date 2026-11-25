@@ -43,11 +43,7 @@ import {
   dayPriceFieldsFromInput,
   listingInputToEdge,
 } from "#shared/listing-edge.ts";
-import {
-  packageMemberError,
-  planInGroupError,
-  planRuleError,
-} from "#shared/package-membership.ts";
+import { packageMemberError } from "#shared/package-membership.ts";
 import { parseUpdateSlug } from "#shared/rest/crud-parsers.ts";
 import { generateUniqueSlug, normalizeSlug } from "#shared/slug.ts";
 import { deleteListingAttachmentFile } from "#shared/storage-cleanup.ts";
@@ -161,8 +157,6 @@ const validateListingGroup: ListingUpdateCheck = async (
 ) => {
   const groupIds = input.wouldBeGroupIds ?? input.groupIds ?? [];
   if (groupIds.length === 0) return null;
-  const planRule = planInGroupError(input.assignBuiltSite, input.name);
-  if (planRule) return planRule;
   // Only pay-what-you-want pricing is package-incompatible: a package needs an
   // operator-set price per member. Daily/customisable members are packageable
   // (the group keeps members homogeneous, sharing one date/day-count selector).
@@ -232,21 +226,9 @@ const validateCustomisableDays = (input: ListingInput): string | null => {
     : null;
 };
 
-/** Validate renewal-tier configuration (months-per-unit and assigned site). */
-const validateRenewalConfig = (input: ListingInput): string | null => {
-  if ((input.monthsPerUnit ?? 0) > 0 && !(input.purchaseOnly && input.hidden)) {
-    return t("error.months_per_unit_needs_flags");
-  }
-  // A plan is never also a renewal tier — renewal completion would double-grant.
-  return planRuleError(input.assignBuiltSite, [
-    [(input.initialSiteMonths ?? 0) <= 0, "error.initial_site_months_required"],
-    [(input.monthsPerUnit ?? 0) > 0, "error.assign_built_site_not_tier"],
-  ]);
-};
-
 /**
  * Re-validate every parent/child edge touching this listing against its would-be
- * field values, so a type/duration/renewal change can't leave a persisted edge
+ * field values, so a type/duration change can't leave a persisted edge
  * the booking gate can't honour. No-op for creates (no edges yet). The add-on
  * reachability half of the save runs later, inside the row write's transaction
  * (see {@link listingSaveOrphanedAddOnTx}).
@@ -316,7 +298,7 @@ export const validateListingInput = async (
   if (customisableError) return customisableError;
   const groupError = await validateListingGroup(input, existingId, preloaded);
   if (groupError) return groupError;
-  // A type/duration/renewal edit can break an existing parent/child edge the
+  // A type/duration edit can break an existing parent/child edge the
   // booking gate then can't date or price — re-check every touching edge against
   // the would-be fields and block the save (web form and admin JSON API alike).
   const edgeError = await validateListingEdges(input, existingId, undefined);
@@ -330,8 +312,7 @@ export const validateListingInput = async (
     validateSafeServerFetchUrl(
       input.webhookUrl,
       "Webhook URL must be a public https:// domain",
-    ) ??
-    validateRenewalConfig(input)
+    )
   );
 };
 

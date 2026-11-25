@@ -211,14 +211,6 @@ export const ListingDetailsTable = ({
         </tr>
         <ListingPriceRow listing={listing} />
         {listing.customisable_days && <CustomisableDaysRow listing={listing} />}
-        {listing.months_per_unit > 0 && (
-          <tr>
-            <th>{t("listings_table.renewal")}</th>
-            <td>
-              {listing.months_per_unit} {t("listings_table.months_per_ticket")}
-            </td>
-          </tr>
-        )}
         {listing.non_transferable && (
           <tr>
             <th>{t("listings_table.non_transferable")}</th>

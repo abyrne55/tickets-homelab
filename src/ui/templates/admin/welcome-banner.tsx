@@ -29,10 +29,6 @@ export const WELCOME_STEPS: readonly WelcomeStep[] = [
     labelKey: "admin.dashboard.welcome.step_test_booking",
     needsSite: true,
   },
-  {
-    href: "/admin/settings-advanced",
-    labelKey: "admin.dashboard.welcome.step_address",
-  },
 ];
 
 /** One step line: the label, as a link when its page is open. */

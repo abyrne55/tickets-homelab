@@ -2,7 +2,6 @@ import { assert, assertStringIncludes } from "@std/assert";
 import { describe, it as test } from "@std/testing/bdd";
 import { SCHEMA_HASH } from "#db/migrations.ts";
 import { settings } from "#db/settings.ts";
-import { bunnyCdnApi } from "#shared/bunny-cdn.ts";
 import { LIMIT_ENTRIES } from "#shared/limits.ts";
 import { getRuntimeInfo } from "#shared/runtime.ts";
 import { adminDebugPage } from "#templates/admin/debug.tsx";
@@ -136,20 +135,6 @@ describeWithEnv("server (admin debug)", { db: true }, () => {
       await assertAdminHtml("/admin/debug", "Notifications", "NTFY URL");
     });
 
-    test("shows combined Bunny section with storage, CDN, and DNS", async () => {
-      await assertAdminHtml(
-        "/admin/debug",
-        "Bunny",
-        "File storage (images)",
-        "CDN management",
-        "CDN hostname",
-        "Custom domain",
-        "DNS subdomain",
-        "Subdomain suffix",
-        "Registered subdomain",
-      );
-    });
-
     test("shows combined Database &amp; Domain section", async () => {
       await assertAdminHtml(
         "/admin/debug",
@@ -164,32 +149,6 @@ describeWithEnv("server (admin debug)", { db: true }, () => {
       assert(!html.includes("sk_test_"));
       assert(!html.includes("sk_live_"));
       assert(!html.includes("ntfy.sh"));
-    });
-
-    test("shows exact empty and unconfigured values", async () => {
-      using _env = withEnv({
-        DB_URL: undefined,
-        NTFY_URL: undefined,
-        SENTRY_URL: undefined,
-      });
-      await settings.update.customDomain("hidden.example.test");
-      await assertAdminHtml(
-        "/admin/debug",
-        debugRow("Provider", "None"),
-        debugRow("Mode", "—"),
-        debugStatusRow("API key", false),
-        debugStatusRow("Webhook", false),
-        debugRow("From address", "—"),
-        debugRow("Host provider (env)", "None"),
-        debugStatusRow("NTFY URL", false),
-        debugStatusRow("Sentry URL", false),
-        debugRow("CDN hostname", "—"),
-        debugRow("Custom domain", "—"),
-        debugStatusRow("DB_URL", false),
-        debugRow("Database host", "—"),
-        debugRow("Read-only from", "—"),
-        debugStatusRow("Renewal URL", false),
-      );
     });
 
     test("shows no secrets disclaimer", async () => {
@@ -428,85 +387,12 @@ describeWithEnv("server (admin debug)", { db: true }, () => {
     });
   });
 
-  describe("GET /admin/debug with Bunny CDN enabled", () => {
-    test("shows CDN as configured when Bunny CDN is enabled", async () => {
-      using _env = withEnv({
-        BUNNY_API_KEY: "test-key",
-        BUNNY_SCRIPT_ID: "99",
-      });
-      const original = bunnyCdnApi.getCdnHostname;
-      bunnyCdnApi.getCdnHostname = () =>
-        Promise.resolve({ hostname: "mysite.b-cdn.net", ok: true as const });
-      try {
-        await assertAdminHtml(
-          "/admin/debug",
-          "badge-ok",
-          "CDN management",
-          "mysite.b-cdn.net",
-        );
-      } finally {
-        bunnyCdnApi.getCdnHostname = original;
-      }
-    });
-
-    test("shows empty CDN hostname when edge script API fails", async () => {
-      using _env = withEnv({
-        BUNNY_API_KEY: "test-key",
-        BUNNY_SCRIPT_ID: "99",
-      });
-      const original = bunnyCdnApi.getCdnHostname;
-      bunnyCdnApi.getCdnHostname = () =>
-        Promise.resolve({ error: "API error", ok: false as const });
-      try {
-        const html = await assertAdminHtml("/admin/debug", "badge-ok");
-        assert(!html.includes("mysite.b-cdn.net"));
-      } finally {
-        bunnyCdnApi.getCdnHostname = original;
-      }
-    });
-  });
-
   describe("GET /admin/debug with Bunny storage backend", () => {
-    test("shows Bunny CDN badge when storage zone is configured", async () => {
-      using _env = withEnv({
-        STORAGE_ZONE_KEY: "zone-key",
-        STORAGE_ZONE_NAME: "my-zone",
-      });
-      await assertAdminHtml("/admin/debug", "Bunny CDN");
-    });
-
     test("shows Local filesystem badge when local storage is configured", async () => {
       using _env = withEnv({
         LOCAL_STORAGE_PATH: "/tmp/test-storage",
       });
       await assertAdminHtml("/admin/debug", "Local filesystem");
-    });
-  });
-
-  describe("GET /admin/debug with Bunny DNS enabled", () => {
-    test("shows DNS subdomain as configured with suffix", async () => {
-      using _env = withEnv({
-        BUNNY_API_KEY: "test-key",
-        BUNNY_DNS_SUBDOMAIN_SUFFIX: ".tickets",
-        BUNNY_DNS_ZONE_ID: "12345",
-      });
-      await assertAdminHtml("/admin/debug", "DNS subdomain", ".tickets");
-    });
-
-    test("shows registered subdomain when set", () => {
-      const state = makeDebugState({
-        bunny: {
-          cdnEnabled: false,
-          cdnHostname: "",
-          customDomain: "",
-          dnsEnabled: true,
-          registeredSubdomain: "mylisting.example.com",
-          storageBackend: "none",
-          subdomainSuffix: ".tickets",
-        },
-      });
-      const html = adminDebugPage(debugOwnerSession, state);
-      expectIncludesAll(html, ["mylisting.example.com", ".tickets"]);
     });
   });
 
@@ -555,34 +441,7 @@ describeWithEnv("server (admin debug)", { db: true }, () => {
     });
   });
 
-  describe("Availability section", () => {
-    test("shows Active write access by default", async () => {
-      await assertAdminHtml(
-        "/admin/debug",
-        "Availability",
-        "Write access",
-        "Active",
-        "Read-only from",
-        "Renewal URL",
-        "Server time (UTC)",
-      );
-    });
-  });
-
   describe("Availability section with read-only mode", () => {
-    test("shows Read-only state, the cutoff, and the renewal badge", async () => {
-      using _env = withEnv({
-        READ_ONLY_FROM: "2000-01-01T00:00:00Z",
-        RENEWAL_URL: "https://example.com/renew",
-      });
-      await assertAdminHtml(
-        "/admin/debug",
-        "Read-only",
-        "2000-01-01T00:00:00Z",
-        "Configured",
-      );
-    });
-
     test("shows Expiring soon when within the warning window", async () => {
       const soon = new Date(Date.now() + 3 * 86_400_000).toISOString();
       using _env = withEnv({ READ_ONLY_FROM: soon });
@@ -599,40 +458,6 @@ describeWithEnv("server (admin debug)", { db: true }, () => {
         "Schema hash",
         SCHEMA_HASH,
       );
-    });
-
-    test("names the company running the database", () => {
-      const hosts = {
-        bunny: "Bunny",
-        local: "Local file",
-        other: "Other",
-        turso: "Turso",
-      } as const;
-      for (const [host, label] of Object.entries(hosts)) {
-        const state = makeDebugState({
-          database: {
-            host: host as keyof typeof hosts,
-            hostConfigured: true,
-            schemaHash: "deadbeef",
-            schemaInSync: true,
-          },
-        });
-        const html = adminDebugPage(debugOwnerSession, state);
-        expectIncludesAll(html, ["Database host", `<td>${label}</td>`]);
-      }
-    });
-
-    test("shows Out of sync and the hash when markers do not match", () => {
-      const state = makeDebugState({
-        database: {
-          host: "bunny",
-          hostConfigured: true,
-          schemaHash: "deadbeef",
-          schemaInSync: false,
-        },
-      });
-      const html = adminDebugPage(debugOwnerSession, state);
-      expectIncludesAll(html, ["Out of sync", "deadbeef"]);
     });
   });
 

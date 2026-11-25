@@ -8,7 +8,6 @@
  */
 
 import * as v from "valibot";
-import { isUpdateTier } from "#db/built-sites/types.ts";
 import { t } from "#i18n";
 import { VALID_DAY_NAMES } from "#shared/day-names.ts";
 import type {
@@ -177,12 +176,6 @@ export const validateListingFields = (value: string): string | null => {
   }
   return null;
 };
-
-/** Validate a built site's update channel (alpha/beta/release) */
-export const validateUpdateTier = matchedBy(
-  isUpdateTier,
-  "fields.validation.update_tier",
-);
 
 /** Check if a string is a valid day name */
 const isValidDayName = (s: string): boolean =>

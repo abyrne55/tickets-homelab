@@ -1,11 +1,6 @@
 import { expect } from "@std/expect";
 import { it as test } from "@std/testing/bdd";
-import {
-  getStorageBackend,
-  runWithStorageConfig,
-  storageZoneName,
-  uploadRaw,
-} from "#shared/storage.ts";
+import { getStorageBackend, uploadRaw } from "#shared/storage.ts";
 import { describeWithEnv } from "#test-utils/db.ts";
 import { withEnv } from "#test-utils/env.ts";
 import {
@@ -23,50 +18,6 @@ describeWithEnv("storage environment config", STORAGE_TEST_ENV, () => {
     ).rejects.toThrow("Storage is not configured");
   });
 
-  test("reads Bunny credentials from their environment keys", () => {
-    using _env = withEnv({
-      STORAGE_ZONE_KEY: "env-key",
-      STORAGE_ZONE_NAME: "env-zone",
-    });
-    expect(getStorageBackend()).toBe("bunny");
-  });
-
-  test("a missing Bunny key does not invent a credential", () => {
-    using _env = withEnv({
-      STORAGE_ZONE_KEY: undefined,
-      STORAGE_ZONE_NAME: "env-zone",
-    });
-    expect(getStorageBackend()).toBe("none");
-  });
-
-  test("a missing Bunny zone does not invent a credential", () => {
-    using _env = withEnv({
-      STORAGE_ZONE_KEY: "env-key",
-      STORAGE_ZONE_NAME: undefined,
-    });
-    expect(getStorageBackend()).toBe("none");
-  });
-
-  test("a scoped config with only the zone name stays disabled", () => {
-    runWithStorageConfig(
-      { localPath: "", zoneKey: "", zoneName: "myzone" },
-      () => expect(getStorageBackend()).toBe("none"),
-    );
-  });
-
-  test("a scoped config with only the zone key stays disabled", () => {
-    runWithStorageConfig(
-      { localPath: "", zoneKey: "mykey", zoneName: "" },
-      () => expect(getStorageBackend()).toBe("none"),
-    );
-  });
-
-  test("a scoped Bunny config enables storage", () => {
-    runWithStorageConfig({ zoneKey: "mykey", zoneName: "myzone" }, () => {
-      expect(getStorageBackend()).toBe("bunny");
-    });
-  });
-
   test("a scoped local path enables storage", async () => {
     await withLocalStorageEnabled(async () => {
       await Promise.resolve();
@@ -75,25 +26,11 @@ describeWithEnv("storage environment config", STORAGE_TEST_ENV, () => {
   });
 
   test("an explicit disabled scope overrides environment config", async () => {
-    using _env = withEnv({
-      STORAGE_ZONE_KEY: "env-key",
-      STORAGE_ZONE_NAME: "env-zone",
-    });
-    await withStorageDisabled(() => {
-      expect(getStorageBackend()).toBe("none");
-    });
-  });
-
-  test("names the zone when Bunny storage is active", () => {
-    runWithStorageConfig({ zoneKey: "mykey", zoneName: "myzone" }, () => {
-      expect(storageZoneName()).toBe("myzone");
-    });
-  });
-
-  test("has no zone name under local storage", async () => {
-    await withLocalStorageEnabled(async () => {
+    using _env = withEnv({ LOCAL_STORAGE_PATH: "/tmp/env-local-path" });
+    expect(getStorageBackend()).toBe("local");
+    await withStorageDisabled(async () => {
       await Promise.resolve();
-      expect(storageZoneName()).toBe(null);
+      expect(getStorageBackend()).toBe("none");
     });
   });
 });

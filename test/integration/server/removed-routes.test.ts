@@ -1,6 +1,8 @@
 /**
  * Routes that were removed on purpose: the unauthenticated demo reset, the
- * owner-only "Example data" page and the in-app full database wipe. Each must
+ * owner-only "Example data" page, the in-app full database wipe, and the
+ * hosting platform's pages (renewals, built sites, the site builder,
+ * self-update, support, the superuser and custom-domain settings). Each must
  * stay a plain 404 even for a signed-in owner, so a merge from upstream cannot
  * quietly bring a wipe route back.
  */
@@ -95,5 +97,46 @@ describeWithEnv("removed routes", { db: true }, () => {
       );
       expect(response.status).toBe(404);
     });
+  });
+
+  describe("hosting platform", () => {
+    test("GET /renew is a 404", async () => {
+      const response = await handleRequest(mockRequest("/renew"));
+      expect(response.status).toBe(404);
+    });
+
+    test("GET /instance/site-credentials is a 404", async () => {
+      const response = await handleRequest(
+        mockRequest("/instance/site-credentials"),
+      );
+      expect(response.status).toBe(404);
+    });
+
+    for (const path of [
+      "/admin/built-sites",
+      "/admin/built-sites/1",
+      "/admin/builder",
+      "/admin/update",
+      "/admin/support",
+      "/admin/settings/superuser",
+    ]) {
+      test(`GET ${path} is a 404 for an owner`, async () => {
+        const response = await adminGet(path);
+        expect(response.status).toBe(404);
+      });
+    }
+
+    for (const path of [
+      "/admin/update/check",
+      "/admin/settings/superuser",
+      "/admin/settings/custom-domain",
+      "/admin/settings/custom-domain/validate",
+      "/admin/settings/host-subdomain",
+    ]) {
+      test(`POST ${path} is a 404 for an owner`, async () => {
+        const { response } = await adminFormPost(path, { x: "y" });
+        expect(response.status).toBe(404);
+      });
+    }
   });
 });

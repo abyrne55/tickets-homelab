@@ -32,7 +32,7 @@ const makePage = (name: string, slug: string) =>
 
 describeWithEnv(
   "admin site-page image routes",
-  { db: true, storage: "cdn" },
+  { db: true, storage: "local" },
   () => {
     describe("POST /admin/site/pages/:id/images", () => {
       test("sets an ordered image collection on a page and bounces to the images tab", async () => {

@@ -3,7 +3,6 @@ import {
   sessionSuccess,
 } from "#routes/api/payment-processing/create.ts";
 import type { PaymentResult } from "#routes/api/webhook-types.ts";
-import type { BookingIntent } from "#shared/booking-intent.ts";
 import type { FreeTextAnswers } from "#shared/email/answers.ts";
 import type { RegistrationPackageFacts } from "#shared/registration-package-facts.ts";
 import { queueRegistrationSends } from "#shared/webhook/delivery.ts";
@@ -21,7 +20,6 @@ import { queueRegistrationSends } from "#shared/webhook/delivery.ts";
  */
 export const completePaidBooking = async (
   createdEntries: CreatedEntry[],
-  intent: BookingIntent,
   ticketTokens: string[],
   notificationPackages: RegistrationPackageFacts,
   freeTexts: FreeTextAnswers | undefined,
@@ -31,7 +29,6 @@ export const completePaidBooking = async (
     clearPendingFlagsFor: [firstEntry.attendee.id],
     freeTexts,
     packageFacts: notificationPackages,
-    siteTokenIndex: intent.siteTokenIndex,
     source: "public",
   });
   return sessionSuccess(

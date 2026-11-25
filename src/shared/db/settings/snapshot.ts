@@ -22,7 +22,6 @@ import { DEFAULT_TIMEZONE } from "#shared/timezone-default.ts";
 import type {
   PaymentProviderSetting,
   PaymentProviderType,
-  SuperuserChoice,
   Theme,
 } from "#types";
 
@@ -60,13 +59,11 @@ type SpecificFields = {
   calendar_feeds_enabled: boolean;
   calendar_feeds_group_by: string;
   contact_form_enabled: boolean;
-  custom_css_bunny_fonts: boolean;
   order_enabled: boolean;
   payment_provider: PaymentProviderType | null;
   payment_provider_setting: PaymentProviderSetting | null;
   booking_fee: string;
   square_sandbox: boolean;
-  superuser_choice: SuperuserChoice;
   currency: string;
   timezone: string;
   phone_prefix: string;
@@ -87,7 +84,6 @@ export const data: SettingsData = {
   contact_form_enabled: false,
   country: DEFAULT_COUNTRY,
   currency: "GBP",
-  custom_css_bunny_fonts: false,
   external_order_enabled: false,
   order_enabled: false,
   orphan_purge_retention: DEFAULT_ORPHAN_RETENTION,
@@ -101,7 +97,6 @@ export const data: SettingsData = {
   underline_links: false,
   welcome_enabled: false,
   ...stringSettingDefaults,
-  superuser_choice: "",
 };
 
 /** Frozen defaults — `invalidateCache` resets the live snapshot back to these. */

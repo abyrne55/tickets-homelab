@@ -80,7 +80,6 @@ export type TicketSharedContext = {
   packageGroupRemainingByGroupId: ReadonlyMap<number, number>;
   packageMemberGroupIds: ReadonlyMap<number, number[]>;
   actionUrl?: string;
-  siteToken?: string;
   promoCodesEnabled?: boolean;
   /** Opt-in add-ons offered for the page's listings (empty when none apply). */
   addOns: AddOnOption[];

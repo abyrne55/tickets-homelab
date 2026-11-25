@@ -5,11 +5,6 @@ import { defineAdminRoutes } from "#routes/admin/route-tables.ts";
  */
 
 import {
-  handleCustomDomainPost,
-  handleCustomDomainValidatePost,
-  handleHostSubdomainPost,
-} from "#routes/admin/settings-domains.ts";
-import {
   handleEmailPost,
   handleEmailTestPost,
 } from "#routes/admin/settings-email.ts";
@@ -54,7 +49,6 @@ import {
 } from "#routes/admin/settings-square.ts";
 import { stripeRoutes } from "#routes/admin/settings-stripe.ts";
 import { sumupRoutes } from "#routes/admin/settings-sumup.ts";
-import { handleSuperuserPost } from "#routes/admin/settings-superuser.ts";
 import { handleTaxPost } from "#routes/admin/settings-tax.ts";
 import {
   handleAppleWalletPost,
@@ -76,8 +70,6 @@ export const adminHandlers = defineAdminRoutes({
   "POST /admin/settings/business-email": handleBusinessEmailPost,
   "POST /admin/settings/calendar-feeds": handleCalendarFeedsPost,
   "POST /admin/settings/custom-css": handleCustomCssPost,
-  "POST /admin/settings/custom-domain": handleCustomDomainPost,
-  "POST /admin/settings/custom-domain/validate": handleCustomDomainValidatePost,
   "POST /admin/settings/email": handleEmailPost,
   "POST /admin/settings/email-templates/admin":
     handleEmailTemplatePost("admin"),
@@ -89,7 +81,6 @@ export const adminHandlers = defineAdminRoutes({
   "POST /admin/settings/google-wallet": handleGoogleWalletPost,
   "POST /admin/settings/header-image": handleHeaderImagePost,
   "POST /admin/settings/header-image/delete": handleHeaderImageDeletePost,
-  "POST /admin/settings/host-subdomain": handleHostSubdomainPost,
   "POST /admin/settings/listing-column-order": handleListingColumnOrderPost,
   "POST /admin/settings/payment-provider": handlePaymentProviderPost,
   "POST /admin/settings/payment-provider-recovery":
@@ -104,7 +95,6 @@ export const adminHandlers = defineAdminRoutes({
   "POST /admin/settings/stripe/test": stripeRoutes.test,
   "POST /admin/settings/sumup": sumupRoutes.save,
   "POST /admin/settings/sumup/test": sumupRoutes.test,
-  "POST /admin/settings/superuser": handleSuperuserPost,
   "POST /admin/settings/tax": handleTaxPost,
   "POST /admin/settings/terms": handleTermsPost,
   "POST /admin/settings/theme": handleThemePost,

@@ -14,8 +14,6 @@ import { lazyRef } from "#fp";
 import { resetAllCaches } from "#shared/cache-registry.ts";
 import { logDebug } from "#shared/logger.ts";
 import { nowIso } from "#shared/now.ts";
-import { addPendingWork, hasPendingWorkScope } from "#shared/pending-work.ts";
-import { recordScriptVersion } from "#shared/update.ts";
 import {
   ensureDefaultAttendeeStatus,
   loadMigrations,
@@ -243,16 +241,6 @@ export const initDb = async (opts: InitDbOptions = {}): Promise<void> => {
   const client = getDb();
   if (client === getReadyClient()) return;
   await initDbUncached(opts.allowMissingSettings ?? false);
-  // Self-record the running build's version so a parent host can read it back.
-  // Best-effort and once per isolate (initDb caches the ready client below).
-  // Pending work inside a request (overlaps instead of gating the first
-  // response); callers outside a request scope still wait for it.
-  const recorded = recordScriptVersion();
-  if (hasPendingWorkScope()) {
-    addPendingWork(recorded);
-  } else {
-    await recorded;
-  }
   setReadyClient(client);
 };
 

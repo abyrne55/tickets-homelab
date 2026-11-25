@@ -7,7 +7,6 @@ describe("admin area message groups", () => {
   test("loads table copy for the complete guide", () => {
     expect(ADMIN_AREA_LOADERS.guide.messageGroupsFor("guide")).toEqual([
       "attendees",
-      "builder",
       "listings-table",
       "settings",
       ...GUIDE_MESSAGE_GROUPS,

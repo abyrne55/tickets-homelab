@@ -20,9 +20,9 @@ import {
   useErrorLogSpy,
 } from "#test-utils/debug-log.ts";
 import {
-  withBunnyDeleteCapture,
-  withCdnRejecting,
+  withLocalStorageEnabled,
   withStorageMock,
+  withUnwritableStorage,
 } from "#test-utils/mocks.ts";
 import { adminFormPost } from "#test-utils/session.ts";
 
@@ -96,12 +96,11 @@ describeWithEnv("uploading a listing's attachment", { db: true }, () => {
   });
 
   test("deletes the file it replaces", async () => {
-    await withBunnyDeleteCapture(async (storageCalls) => {
+    await withLocalStorageEnabled(async (dir) => {
+      await Deno.writeTextFile(`${dir}/old-leaflet.pdf`, "x");
       await upload(leaflet(), "old-leaflet.pdf");
 
-      expect(storageCalls.some((url) => url.endsWith("/old-leaflet.pdf"))).toBe(
-        true,
-      );
+      await expect(Deno.stat(`${dir}/old-leaflet.pdf`)).rejects.toThrow();
     });
   });
 
@@ -155,7 +154,7 @@ describeWithEnv("uploading a listing's attachment", { db: true }, () => {
     const errorSpy = useErrorLogSpy();
 
     test("writes the failed upload to the error log", async () => {
-      await withCdnRejecting(new Error("storage is down"), async () => {
+      await withUnwritableStorage(async () => {
         await upload(leaflet());
 
         expect(logLogged(errorSpy, "Attachment upload failed")).toBe(true);
@@ -164,7 +163,7 @@ describeWithEnv("uploading a listing's attachment", { db: true }, () => {
   });
 
   test("says the upload failed rather than claiming a plain success", async () => {
-    await withCdnRejecting(new Error("storage is down"), async () => {
+    await withUnwritableStorage(async () => {
       const { response, stored } = await upload(leaflet());
 
       const flash = expectRedirectWithFlash(
@@ -181,7 +180,7 @@ describeWithEnv("uploading a listing's attachment", { db: true }, () => {
   });
 
   test("keeps the caveats apart when a save carries two of them", async () => {
-    await withCdnRejecting(new Error("storage is down"), async () => {
+    await withUnwritableStorage(async () => {
       const listing = await createTestListing({ name: "Two Caveats" });
       const response = await processUploadsAndRedirect(
         attachmentForm(leaflet()),
@@ -207,7 +206,8 @@ describeWithEnv("uploading a listing's attachment", { db: true }, () => {
 
 describeWithEnv("removing a listing's attachment", { db: true }, () => {
   test("clears the record and logs it once the file is gone", async () => {
-    await withBunnyDeleteCapture(async (storageCalls) => {
+    await withLocalStorageEnabled(async (dir) => {
+      await Deno.writeTextFile(`${dir}/stored-leaflet.pdf`, "x");
       const listing = await createTestListing({ name: "Had A Leaflet" });
       await listingsTable.update(listing.id, {
         attachmentName: "leaflet.pdf",
@@ -223,9 +223,7 @@ describeWithEnv("removing a listing's attachment", { db: true }, () => {
         `/admin/listing/${listing.id}`,
         "Attachment removed",
       )(response);
-      expect(
-        storageCalls.some((url) => url.endsWith("/stored-leaflet.pdf")),
-      ).toBe(true);
+      await expect(Deno.stat(`${dir}/stored-leaflet.pdf`)).rejects.toThrow();
       expect(await storedAttachment(listing.id)).toEqual({ name: "", url: "" });
       assertArrayIncludes(await activityMessages(), [
         "Attachment removed for 'Had A Leaflet'",

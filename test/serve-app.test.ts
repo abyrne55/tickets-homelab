@@ -22,7 +22,7 @@ import { setSuppressDebugLogs } from "#shared/log-settings.ts";
 import { devServerPort } from "#src/serve-app.ts";
 import { describeWithEnv } from "#test-utils/db.ts";
 import { serveFromDeno } from "#test-utils/entry.ts";
-import { withEnv } from "#test-utils/env.ts";
+import { clearTestEncryptionKey, withEnv } from "#test-utils/env.ts";
 import { stubFetch } from "#test-utils/fetch-stub.ts";
 import { mockAdminLoginRequest, withExpectedError } from "#test-utils/mocks.ts";
 import { withRequestContext } from "#test-utils/request-context.ts";
@@ -42,10 +42,10 @@ describeWithEnv("serve-app", { db: true }, () => {
   describe("denoServeHandler", () => {
     test("rejects an unset scheduled endpoint before broken boot and Sentry", async () => {
       using _env = withEnv({
-        MAIN_INSTANCE_KEY: "too-short",
         SCHEDULED_TASK_KEY: undefined,
         SENTRY_URL: "https://abc123@bugs.example.test/2",
       });
+      clearTestEncryptionKey();
       using fetchStub = stubFetch(new Error("Sentry must not start"));
 
       const response = await serveFromDeno(
@@ -58,9 +58,9 @@ describeWithEnv("serve-app", { db: true }, () => {
 
     test("rejects a wrong scheduled key without reading the body", async () => {
       using _env = withEnv({
-        MAIN_INSTANCE_KEY: "too-short",
         SCHEDULED_TASK_KEY: TEST_SCHEDULED_KEY,
       });
+      clearTestEncryptionKey();
       const request = new Request("http://localhost/scheduled", {
         body: "caller-selected work",
         headers: {
@@ -79,9 +79,9 @@ describeWithEnv("serve-app", { db: true }, () => {
 
     test("hides every non-POST scheduled method before boot", async () => {
       using _env = withEnv({
-        MAIN_INSTANCE_KEY: "too-short",
         SCHEDULED_TASK_KEY: TEST_SCHEDULED_KEY,
       });
+      clearTestEncryptionKey();
       const response = await serveFromDeno(
         new Request("http://localhost/scheduled", {
           headers: scheduledAuthorization(),
@@ -94,9 +94,9 @@ describeWithEnv("serve-app", { db: true }, () => {
 
     test("returns an empty scheduled 503 when authorized boot fails", async () => {
       using _env = withEnv({
-        MAIN_INSTANCE_KEY: "too-short",
         SCHEDULED_TASK_KEY: TEST_SCHEDULED_KEY,
       });
+      clearTestEncryptionKey();
       await withExpectedError(async () => {
         const response = await serveFromDeno(
           new Request("https://scheduled-site.example/scheduled", {
@@ -111,7 +111,8 @@ describeWithEnv("serve-app", { db: true }, () => {
 
     for (const method of ["GET", "HEAD"]) {
       test(`refreshes ${method} after a failed boot`, async () => {
-        using _env = withEnv({ MAIN_INSTANCE_KEY: "too-short" });
+        using _env = withEnv({});
+        clearTestEncryptionKey();
         await withExpectedError(async () => {
           const response = await serveFromDeno(
             new Request("http://localhost/health", { method }),
@@ -122,7 +123,8 @@ describeWithEnv("serve-app", { db: true }, () => {
     }
 
     test("does not refresh a POST when the outer handler catches an error", async () => {
-      using _env = withEnv({ MAIN_INSTANCE_KEY: "too-short" });
+      using _env = withEnv({});
+      clearTestEncryptionKey();
       await withExpectedError(async () => {
         const response = await serveFromDeno(
           new Request("http://localhost/admin/listing", { method: "POST" }),

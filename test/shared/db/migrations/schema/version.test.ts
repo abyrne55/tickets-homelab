@@ -22,7 +22,7 @@ describe("db > migrations > schema version", () => {
     // The sentence is what an upgrading site reads as its last applied
     // update, so the label is the migration's identity, not a comment.
     expect(LATEST_UPDATE).toBe(
-      "Remove the address lookup and logistics: drop their tables, columns and triggers, delete agent users and retire their settings.",
+      "Remove the hosting platform: drop built_sites and the site-plan listing columns, and retire the settings of the superuser, self-update, Bunny and custom domain features.",
     );
   });
 });

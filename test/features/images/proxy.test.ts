@@ -14,13 +14,14 @@ import { setupErrorSpy } from "#test-utils/error-spy.ts";
 import { JPEG_HEADER } from "#test-utils/factories.ts";
 import {
   mockRequest,
-  withCdnProxy,
   withExpectedError,
+  withLocalStorageEnabled,
   withStorageDisabled,
 } from "#test-utils/mocks.ts";
 
 /** Reusable proxy route test path */
 const PROXY_PATH = "/image/abc123-def4-5678-9abc-def012345678";
+const STORED_NAME = "abc123-def4-5678-9abc-def012345678.jpg";
 
 /** Request the image proxy route */
 const proxyRequest = (ext = "jpg"): Promise<Response> =>
@@ -30,10 +31,7 @@ describeWithEnv(
   "server images > proxy",
   {
     db: true,
-    env: {
-      STORAGE_ZONE_KEY: "testkey",
-      STORAGE_ZONE_NAME: "testzone",
-    },
+    storage: "local",
   },
   () => {
     describe("GET /image/:filename (proxy route)", () => {
@@ -43,46 +41,42 @@ describeWithEnv(
         const imageData = JPEG_HEADER;
         const encrypted = await encryptBytes(imageData);
 
-        await withCdnProxy(
-          () => new Response(encrypted as any, { status: 200 }),
-          async () => {
-            const response = await proxyRequest();
-            expect(response.status).toBe(200);
-            expect(response.headers.get("content-type")).toBe("image/jpeg");
-            const cacheControl = response.headers.get("cache-control") ?? "";
-            assertStringIncludes(cacheControl, "immutable");
-            const body = new Uint8Array(await response.arrayBuffer());
-            expect(body).toEqual(imageData);
-          },
-        );
+        await withLocalStorageEnabled(async (dir) => {
+          await Deno.writeFile(`${dir}/${STORED_NAME}`, encrypted);
+          const response = await proxyRequest();
+          expect(response.status).toBe(200);
+          expect(response.headers.get("content-type")).toBe("image/jpeg");
+          const cacheControl = response.headers.get("cache-control") ?? "";
+          assertStringIncludes(cacheControl, "immutable");
+          const body = new Uint8Array(await response.arrayBuffer());
+          expect(body).toEqual(imageData);
+        });
       });
 
       test("serves the red pixel and reports when the file is missing from storage", async () => {
-        await withCdnProxy(
-          () => new Response("Not Found", { status: 404 }),
-          async () => {
-            await expectBrokenImageResponse(await proxyRequest());
-            assertStringIncludes(errors.lastMessage() ?? "", "E_IMAGE_BROKEN");
-            assertStringIncludes(
-              errors.lastMessage() ?? "",
-              "abc123-def4-5678-9abc-def012345678.jpg is missing from storage",
-            );
-          },
-        );
+        await withLocalStorageEnabled(async () => {
+          await expectBrokenImageResponse(await proxyRequest());
+          assertStringIncludes(errors.lastMessage() ?? "", "E_IMAGE_BROKEN");
+          assertStringIncludes(
+            errors.lastMessage() ?? "",
+            "abc123-def4-5678-9abc-def012345678.jpg is missing from storage",
+          );
+        });
       });
 
       test("serves the red pixel and reports when the stored file will not decrypt", async () => {
-        await withCdnProxy(
-          () => new Response("not encrypted bytes", { status: 200 }),
-          async () => {
-            await expectBrokenImageResponse(await proxyRequest());
-            assertStringIncludes(errors.lastMessage() ?? "", "E_IMAGE_BROKEN");
-            assertStringIncludes(
-              errors.lastMessage() ?? "",
-              "abc123-def4-5678-9abc-def012345678.jpg could not be decrypted",
-            );
-          },
-        );
+        await withLocalStorageEnabled(async (dir) => {
+          await Deno.writeTextFile(
+            `${dir}/${STORED_NAME}`,
+            "not encrypted bytes",
+          );
+          await expectBrokenImageResponse(await proxyRequest());
+          assertStringIncludes(errors.lastMessage() ?? "", "E_IMAGE_BROKEN");
+          assertStringIncludes(
+            errors.lastMessage() ?? "",
+            "abc123-def4-5678-9abc-def012345678.jpg could not be decrypted",
+          );
+        });
       });
 
       test("serves the red pixel for the broken-image marker path", async () => {
@@ -95,45 +89,40 @@ describeWithEnv(
       });
 
       test("propagates non-404 storage errors as 503", async () => {
-        await withCdnProxy(
-          () => new Response("Unauthorized", { status: 401 }),
-          async () => {
-            await withExpectedError(async () => {
-              await expectHtmlResponse(
-                await proxyRequest(),
-                503,
-                "Temporary error",
-              );
-            });
-          },
-        );
+        await withLocalStorageEnabled(async (dir) => {
+          // A directory where the file belongs reads as an error, not a miss.
+          await Deno.mkdir(`${dir}/${STORED_NAME}`);
+          await withExpectedError(async () => {
+            await expectHtmlResponse(
+              await proxyRequest(),
+              503,
+              "Temporary error",
+            );
+          });
+        });
       });
 
       test("returns 404 for unknown extension", async () => {
         expect((await proxyRequest("bmp")).status).toBe(404);
       });
 
-      describeWithEnv(
-        "when storage is not enabled",
-        { env: { STORAGE_ZONE_KEY: undefined, STORAGE_ZONE_NAME: undefined } },
-        () => {
-          test("returns 404", async () => {
-            await withStorageDisabled(async () => {
-              expect((await proxyRequest()).status).toBe(404);
-            });
+      describeWithEnv("when storage is not enabled", { env: {} }, () => {
+        test("returns 404", async () => {
+          await withStorageDisabled(async () => {
+            expect((await proxyRequest()).status).toBe(404);
           });
+        });
 
-          test("still serves the red pixel for the broken-image marker", async () => {
-            await withStorageDisabled(async () => {
-              await expectBrokenImageResponse(
-                await handleRequest(
-                  mockRequest(`/image/${BROKEN_IMAGE_FILENAME}`),
-                ),
-              );
-            });
+        test("still serves the red pixel for the broken-image marker", async () => {
+          await withStorageDisabled(async () => {
+            await expectBrokenImageResponse(
+              await handleRequest(
+                mockRequest(`/image/${BROKEN_IMAGE_FILENAME}`),
+              ),
+            );
           });
-        },
-      );
+        });
+      });
 
       // The pipeline fast-404s a body-bearing POST to this GET-only prefix
       // before it routes, so HEAD is the method that still reaches the

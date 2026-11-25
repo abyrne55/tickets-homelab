@@ -93,7 +93,6 @@ export const extractIntentFromMetadata = (
     name: metadata.name,
     phone: metadata.phone,
     reservationAmount: metadata.reservation_amount || undefined,
-    siteTokenIndex: metadata.site_token_index || undefined,
     special_instructions: metadata.special_instructions,
     taxPolicy: parseTaxPolicy(metadata.tax_policy),
     thankYouUrl: metadata.thank_you_url || undefined,

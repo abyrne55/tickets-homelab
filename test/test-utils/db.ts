@@ -27,7 +27,6 @@ import {
   resetTestSlugCounter,
   setTestSession,
   setTestStoragePath,
-  TEST_STORAGE_ZONE,
 } from "#test-utils/internal.ts";
 import {
   maybeReclaimLeakedFds,
@@ -221,33 +220,17 @@ export const setupTestDbEnvironment = async (
 /**
  * Establish the requested `storage` backend for a test as a typed suite-level
  * `StorageConfig` (read via `#shared/storage.ts`, layered under any per-test
- * `runWithStorageConfig` scope and over env). Each backend fully specifies both
- * dimensions so it resolves deterministically regardless of ambient env — no
- * `STORAGE_ZONE_*` / `LOCAL_STORAGE_PATH` vars are touched:
- * - `"cdn"`: the Bunny test zone, with `localPath: ""` so an ambient local path
- *   can't route uploads to disk instead of the CDN.
- * - `"local"`: a fresh temp dir (recorded for `getTestStoragePath`) with empty
- *   zone creds, so ambient Bunny creds can't shadow the local backend.
+ * `runWithStorageConfig` scope and over env). The config fully specifies the
+ * path, so it resolves deterministically regardless of ambient env:
+ * - `"local"`: a fresh temp dir, recorded for `getTestStoragePath`.
  */
 export const setupTestStorage = (
   storage: DescribeEnvOptions["storage"],
 ): TempPath | undefined => {
-  if (storage === "cdn") {
-    setStorageConfigForTest({
-      localPath: "",
-      zoneKey: TEST_STORAGE_ZONE.zoneKey,
-      zoneName: TEST_STORAGE_ZONE.zoneName,
-    });
-    return;
-  }
   if (storage === "local") {
     const dir = tempDir();
     setTestStoragePath(dir.path);
-    setStorageConfigForTest({
-      localPath: dir.path,
-      zoneKey: "",
-      zoneName: "",
-    });
+    setStorageConfigForTest({ localPath: dir.path });
     return dir;
   }
   return;

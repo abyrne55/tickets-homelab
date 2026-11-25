@@ -7,20 +7,14 @@ import { rawListingsTable } from "./table.ts";
 
 export type ListingOfferFlags = Pick<
   Listing,
-  | "active"
-  | "assign_built_site"
-  | "hidden"
-  | "months_per_unit"
-  | "purchase_only"
+  "active" | "hidden" | "purchase_only"
 >;
 
 type ListingPickerRow = ListingOfferFlags & { name: string };
 
 const listingOfferFlagsColumns = rawListingsTable.read.pick([
   "active",
-  "assign_built_site",
   "hidden",
-  "months_per_unit",
   "purchase_only",
 ]);
 
@@ -60,8 +54,7 @@ export const getListingPickerNames = async (): Promise<
 };
 
 const catalogVisibleSql = (hiddenDefault: boolean | undefined): string => {
-  const inheriting =
-    "(listing.use_defaults = 1 AND listing.months_per_unit = 0)";
+  const inheriting = "listing.use_defaults = 1";
   if (hiddenDefault === undefined) return "listing.hidden = 0";
   return hiddenDefault
     ? `listing.hidden = 0 AND NOT ${inheriting}`
@@ -76,9 +69,6 @@ export const getCatalogListings = async (): Promise<CatalogSourceListing[]> => {
       alias: "listing",
       where: [
         { args: [], clause: "listing.active = 1" },
-        // A built-site plan is booked on its own checkout page, so the external
-        // order widget — which cannot carry the site-setup flow — never lists it.
-        { args: [], clause: "listing.assign_built_site = 0" },
         {
           args: [],
           clause: catalogVisibleSql(settings.listingDefaults.hidden),

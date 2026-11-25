@@ -5,7 +5,7 @@ import { getAttendeesRaw } from "#db/attendees/queries.ts";
 import { execute } from "#db/client.ts";
 import {
   runWebhook,
-  setupRenewalSite,
+  setupWithListing,
   stubLostCreate,
   webhookRequest,
 } from "#test/integration/webhook-price-signature/helpers.ts";
@@ -25,10 +25,7 @@ describeWithEnv("paid booking lost-result recovery flags", { db: true }, () => {
     // both, a refused replay leaves both up for the admin, and the
     // finalized session's send-free replay changes nothing.
     await configureTestEmail();
-    const { edgeSecretCalls, listing, tokenIndex } = await setupRenewalSite(
-      "Recovery Flags Site",
-      "recovery-flags.b-cdn.net",
-    );
+    const listing = await setupWithListing();
     await execute("UPDATE listings SET webhook_url = ? WHERE id = ?", [
       await encrypt("https://registration.example.com/hook"),
       listing.id,
@@ -39,7 +36,6 @@ describeWithEnv("paid booking lost-result recovery flags", { db: true }, () => {
         items: singleItem(listing.id, 1, 1000),
         name: "Flag Recovery",
         phone: "+447700900999",
-        site_token_index: tokenIndex,
       }),
       1000,
     );
@@ -83,7 +79,6 @@ describeWithEnv("paid booking lost-result recovery flags", { db: true }, () => {
         webhooks: 0,
       });
     } finally {
-      edgeSecretCalls.restore();
       loseResult.restore();
     }
   });

@@ -1,14 +1,11 @@
 import { expect } from "@std/expect";
 import { describe, it as test } from "@std/testing/bdd";
-import { FakeTime } from "@std/testing/time";
 import {
-  BACKUP_REQUIRED_WITHIN_MS,
   backupDir,
   backupKey,
   backupLeaf,
   backupTimestamp,
   dbName,
-  hasRecentBackup,
   isBackupLeaf,
   isBackupPath,
   isRemoteDatabase,
@@ -28,14 +25,6 @@ describeWithEnv("backup storage", { db: true }, () => {
       expect(dbName()).toBe("local");
     });
 
-    test("extracts name from libsql:// URL", () => {
-      using _env = withEnv({
-        DB_URL:
-          "libsql://01KFXBFGMADR58XZ2PBX7HCB5Y-tickets-spencer.lite.bunnydb.net/",
-      });
-      expect(dbName()).toBe("tickets-spencer");
-    });
-
     test("uses full first segment for Turso URLs (db-name and org are both unique identity)", () => {
       using _env = withEnv({
         DB_URL: "https://my-site-myorg.turso.io",
@@ -43,9 +32,8 @@ describeWithEnv("backup storage", { db: true }, () => {
       expect(dbName()).toBe("my-site-myorg");
     });
 
-    test("drops only the part before the first dash", () => {
-      using _env = withEnv({ DB_URL: "libsql://a-tickets.lite.bunnydb.net" });
-      expect(dbName()).toBe("tickets");
+    test("names a database from an explicitly passed URL", () => {
+      expect(dbName("libsql://client-acme.example.com/")).toBe("client-acme");
     });
 
     test("returns full hostname segment when no dash", () => {
@@ -58,34 +46,9 @@ describeWithEnv("backup storage", { db: true }, () => {
       expect(dbName()).toBe("local");
     });
 
-    test("names a database from an explicitly passed URL (another instance)", () => {
-      // The per-site upgrade gate passes a built site's own DB URL, not env.
-      expect(dbName("libsql://01ABC-client-acme.lite.bunnydb.net/")).toBe(
-        "client-acme",
-      );
-    });
-
     test("files a parseable local file: URL under 'local'", () => {
       // An empty name would put backups under a bare "/" folder.
       expect(dbName("file:database.db")).toBe("local");
-    });
-
-    test("keeps the full first segment for hosts it does not recognise", () => {
-      // Only Bunny's lite hostnames carry a UUID prefix to drop. Stripping
-      // the first dashed part from other hosts would file distinct databases
-      // in one folder — "alpha-db" and "beta-db" must not both become "db".
-      expect(dbName("https://alpha-db.example.com")).toBe("alpha-db");
-      expect(dbName("https://beta-db.example.com")).toBe("beta-db");
-    });
-
-    test("keeps the full first segment for a Bunny hostname outside the lite shape", () => {
-      // Only {uuid}-{name}.lite.bunnydb.net addresses carry a UUID prefix;
-      // any other Bunny-owned hostname must not lose its first dashed part.
-      expect(dbName("libsql://alpha-db.bunnydb.net")).toBe("alpha-db");
-    });
-
-    test("returns the full segment for a Bunny hostname with no dash", () => {
-      expect(dbName("libsql://tickets.lite.bunnydb.net")).toBe("tickets");
     });
   });
 
@@ -186,113 +149,6 @@ describeWithEnv("backup storage", { db: true }, () => {
       expect(
         parseBackupTime("local/backup-2024-13-45T99-99-99-999Z.zip"),
       ).toBeNull();
-    });
-  });
-
-  describe("hasRecentBackup", () => {
-    const seedBackup = (when: Date) =>
-      uploadRaw(new Uint8Array([1]), backupKey(backupTimestamp(when)));
-
-    const MAX = BACKUP_REQUIRED_WITHIN_MS;
-    const NOW = new Date("2024-06-01T12:00:00.000Z").getTime();
-    // Deliberately restates the documented five-minute skew allowance rather
-    // than importing it, so changing the allowance is a conscious test edit.
-    const SKEW = 5 * 60 * 1000;
-
-    // Pins the clock at NOW so the freshness boundaries are exact.
-    const gateWithBackupAt = async (takenAtMs: number): Promise<boolean> => {
-      using _time = new FakeTime(NOW);
-      using tmpDir = tempDir();
-      using _env = withEnv({ LOCAL_STORAGE_PATH: tmpDir.path });
-      await seedBackup(new Date(takenAtMs));
-      return await hasRecentBackup();
-    };
-
-    test("fresh from the moment it is taken until the window closes", async () => {
-      expect(await gateWithBackupAt(NOW)).toBe(true);
-      expect(await gateWithBackupAt(NOW - MAX + 1)).toBe(true);
-    });
-
-    test("no longer fresh exactly at the window edge", async () => {
-      expect(await gateWithBackupAt(NOW - MAX)).toBe(false);
-    });
-
-    test("tolerates a backup dated ahead of the clock up to the skew allowance", async () => {
-      // Out-of-band backups come from machines whose clocks can run a
-      // little ahead; a just-taken backup must still open the gate.
-      expect(await gateWithBackupAt(NOW + SKEW)).toBe(true);
-    });
-
-    test("rejects a backup dated further ahead than the skew allowance", async () => {
-      // A wrongly future-dated file must not satisfy the gate — a negative
-      // age is not a young age.
-      expect(await gateWithBackupAt(NOW + SKEW + 1)).toBe(false);
-    });
-
-    test("true when a backup is within the freshness window", async () => {
-      using tmpDir = tempDir();
-      using _env = withEnv({ LOCAL_STORAGE_PATH: tmpDir.path });
-      await seedBackup(new Date(Date.now() - 60_000));
-      expect(await hasRecentBackup()).toBe(true);
-    });
-
-    test("false when the newest backup is older than the window", async () => {
-      using tmpDir = tempDir();
-      using _env = withEnv({ LOCAL_STORAGE_PATH: tmpDir.path });
-      await seedBackup(
-        new Date(Date.now() - BACKUP_REQUIRED_WITHIN_MS - 60_000),
-      );
-      expect(await hasRecentBackup()).toBe(false);
-    });
-
-    test("checks a passed maxAge and name (another instance's backup)", async () => {
-      using tmpDir = tempDir();
-      using _env = withEnv({ LOCAL_STORAGE_PATH: tmpDir.path });
-      const site = dbName("libsql://01-client-acme.lite.bunnydb.net");
-      await uploadRaw(
-        new Uint8Array([1]),
-        backupKey(backupTimestamp(new Date(Date.now() - 60_000)), site),
-      );
-      // Found under the site's folder, but not under the current DB's.
-      expect(await hasRecentBackup(60 * 60 * 1000, site)).toBe(true);
-      expect(await hasRecentBackup(60 * 60 * 1000)).toBe(false);
-    });
-
-    test("a site's backup never satisfies a site whose name it extends", async () => {
-      // The reported bug: "tickets" must not pick up "tickets-spencer"'s
-      // backups just because one name is a string prefix of the other.
-      using tmpDir = tempDir();
-      using _env = withEnv({ LOCAL_STORAGE_PATH: tmpDir.path });
-      await uploadRaw(
-        new Uint8Array([1]),
-        backupKey(
-          backupTimestamp(new Date(Date.now() - 60_000)),
-          "tickets-spencer",
-        ),
-      );
-      expect(await hasRecentBackup(60 * 60 * 1000, "tickets-spencer")).toBe(
-        true,
-      );
-      expect(await hasRecentBackup(60 * 60 * 1000, "tickets")).toBe(false);
-    });
-
-    test("false when no backups exist", async () => {
-      using tmpDir = tempDir();
-      using _env = withEnv({ LOCAL_STORAGE_PATH: tmpDir.path });
-      expect(await hasRecentBackup()).toBe(false);
-    });
-
-    test("ignores files in the folder that are not valid backups", async () => {
-      using tmpDir = tempDir();
-      using _env = withEnv({ LOCAL_STORAGE_PATH: tmpDir.path });
-      // A fresh file with a valid timestamp tail but not a "backup-…" name
-      // must NOT satisfy the gate — parseBackupTime alone would accept it, so
-      // the recency check filters to real backups first.
-      await uploadRaw(
-        new Uint8Array([1]),
-        `${backupDir()}manual-${backupTimestamp()}.zip`,
-      );
-      expect(await hasRecentBackup()).toBe(false);
     });
   });
 

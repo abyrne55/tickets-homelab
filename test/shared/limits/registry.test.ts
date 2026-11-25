@@ -146,7 +146,6 @@ describe("limit registry contract", () => {
         "rows",
       ],
       ["MAX_EMAIL_TEMPLATES", 1000, "Max saved email templates", "templates"],
-      ["SUPPORT_FORM_NAG_DAYS", 7, "Support form repeat-submit notice", "days"],
       ["FORM_STASH_TTL_MS", 15_000, "Form re-fill stash TTL", "ms"],
       ["FORM_STASH_MAX_BYTES", 32_768, "Form re-fill stash max size", "bytes"],
       [

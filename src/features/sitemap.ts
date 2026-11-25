@@ -17,10 +17,7 @@ import { getNewsPostSummaries } from "#db/news-posts.ts";
 import { settings } from "#db/settings.ts";
 import { sitePages } from "#db/site-pages.ts";
 import { loadDecidedGroups } from "#routes/public/group-liveness.ts";
-import {
-  loadPublicDomain,
-  publicCacheResponse,
-} from "#routes/public-origin.ts";
+import { publicCacheResponse } from "#routes/public-origin.ts";
 import { isPublicListing } from "#shared/listing-visibility.ts";
 import { routeServesSlug } from "#shared/route-pattern.ts";
 import { CONFIG_KEYS } from "#shared/settings/keys.ts";
@@ -128,7 +125,7 @@ export const handleSitemapXml = async (request: Request): Promise<Response> => {
   }
   if (!settings.features.site) return sitemapNotFound();
 
-  const domain = await loadPublicDomain(new URL(request.url).hostname);
+  const domain = new URL(request.url).hostname;
   const paths = await publicPaths();
   const body = [
     '<?xml version="1.0" encoding="UTF-8"?>',

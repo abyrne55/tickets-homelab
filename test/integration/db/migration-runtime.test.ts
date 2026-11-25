@@ -207,8 +207,6 @@ describeWithEnv("db > migration runtime", { db: true }, () => {
       try {
         using _env = withEnv({
           LOCAL_STORAGE_PATH: undefined,
-          STORAGE_ZONE_KEY: undefined,
-          STORAGE_ZONE_NAME: undefined,
         });
         await setStaleSchemaAndLock(new Date(LONG_EXPIRED_LOCK_STAMP));
         await markCurrentSchemaMigrationPending();

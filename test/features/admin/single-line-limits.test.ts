@@ -8,7 +8,6 @@ import {
 } from "#routes/admin/content-form-fields.ts";
 import { FormParams } from "#shared/form-data.ts";
 import { MAX_INPUT_LENGTH } from "#shared/limits.ts";
-import { builderForm } from "#templates/fields/builder.ts";
 import { inputNamed } from "#test-utils/assertions.ts";
 
 const content = defineContentForms({
@@ -26,7 +25,6 @@ const contentCaps = {
 
 describe("single-line form limits", () => {
   for (const [label, form, caps] of [
-    ["Builder", builderForm, { site_name: MAX_INPUT_LENGTH }],
     ["Create content", content.createForm, contentCaps],
     ["Edit content", content.editForm, contentCaps],
   ] as const) {

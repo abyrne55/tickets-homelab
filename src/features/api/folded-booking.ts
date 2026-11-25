@@ -181,15 +181,12 @@ export const foldAndBuildOrderLines = async (
   if (!fold.ok) return apiError(fold.error);
   const singleTicketError = await singleTicketOrderRefusal(fold.quantities);
   if (singleTicketError) return apiError(singleTicketError);
-  // The JSON API sells ordinary purchases: the web renewal page is the only
-  // surface that carries a renewal context.
   const items = buildOrderLines(
     tree,
     nodeQuantities,
     fold.quantities,
     fold.customPrices,
     fold.dayCount,
-    { renewal: false },
   );
   return { fold, items };
 };

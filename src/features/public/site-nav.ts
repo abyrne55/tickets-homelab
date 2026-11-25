@@ -1,7 +1,7 @@
 /**
  * Liveness uses the same gates the rest of the public site does, so the nav
  * never renders a link that 404s or dead-ends. A listing is live iff it is
- * active, not a renewal tier, and not a parent projected sold out. It must also
+ * active and not a parent projected sold out. It must also
  * have its OWN standalone booking page. A group is live iff `/ticket/<group>`
  * serves.
  *
@@ -16,7 +16,6 @@ import { hasNewsPosts, newsExistenceRead } from "#db/news-posts.ts";
 import { allPageItemsRead } from "#db/site-page-items.ts";
 import { sitePagesNavRead } from "#db/site-pages.ts";
 import { compact, filter, map, pipe, unique } from "#fp";
-import { isQualifyingTierListing } from "#shared/renewal-tier.ts";
 import {
   buildForest,
   buildNavModel,
@@ -75,7 +74,7 @@ const resolveTargets = async (
     });
   };
   // A referenced listing is live iff its own booking page would serve: it is
-  // active and not a renewal tier, has a standalone public page, and is not a
+  // active, has a standalone public page, and is not a
   // parent the classifier projects sold out. One
   // classification over the referenced listings serves the whole set; it loads
   // each parent's children itself, so the sold-out projection is complete.
@@ -89,13 +88,7 @@ const resolveTargets = async (
   const bookableLeaf = (listing: { id: number }): boolean =>
     !nonStandaloneChildIds.has(listing.id) && !soldOutParentIds.has(listing.id);
   for (const listing of referenced) {
-    setLeaf(
-      "listing",
-      listing,
-      listing.active &&
-        !isQualifyingTierListing(listing) &&
-        bookableLeaf(listing),
-    );
+    setLeaf("listing", listing, listing.active && bookableLeaf(listing));
   }
   // A group is live iff its /ticket/<group> page would serve — the shared
   // groupBookable gate: a regular group needs one standalone-bookable visible

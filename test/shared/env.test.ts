@@ -5,12 +5,10 @@ import { spy } from "@std/testing/mock";
 import {
   getEnv,
   getReadOnlyCutoffIso,
-  getRenewalUrl,
   isInWarningWindow,
   isReadOnly,
   isReadOnlyFromCutoff,
   isReadOnlyWarning,
-  isUpdateInProgress,
   parseWarnDays,
   requireEnv,
 } from "#shared/env.ts";
@@ -30,7 +28,6 @@ describeWithEnv(
       [KEY]: undefined,
       READ_ONLY_FROM: undefined,
       READ_ONLY_WARN_DAYS: undefined,
-      RENEWAL_URL: undefined,
       UPDATE_IN_PROGRESS: undefined,
     },
   },
@@ -90,33 +87,8 @@ describeWithEnv(
       });
     });
 
-    describe("isUpdateInProgress", () => {
-      test("is false when UPDATE_IN_PROGRESS is unset", () => {
-        expect(isUpdateInProgress()).toBe(false);
-      });
-
-      test("is false when UPDATE_IN_PROGRESS is empty (a lifted flag)", () => {
-        process.env.UPDATE_IN_PROGRESS = "";
-        expect(isUpdateInProgress()).toBe(false);
-      });
-
-      test("is true when UPDATE_IN_PROGRESS is set", () => {
-        process.env.UPDATE_IN_PROGRESS = "1";
-        expect(isUpdateInProgress()).toBe(true);
-      });
-
-      test("puts the site into read-only mode", () => {
-        process.env.UPDATE_IN_PROGRESS = "1";
-        expect(isReadOnly()).toBe(true);
-      });
-
-      test("overrides a future READ_ONLY_FROM cutoff", () => {
-        process.env.UPDATE_IN_PROGRESS = "1";
-        process.env.READ_ONLY_FROM = isoFromNow(DAY_MS * 30);
-        expect(isReadOnly()).toBe(true);
-      });
-
-      test("does not touch the READ_ONLY_FROM behaviour when unset", () => {
+    describe("isReadOnly", () => {
+      test("follows READ_ONLY_FROM when set and unset", () => {
         process.env.READ_ONLY_FROM = isoFromNow(-DAY_MS);
         expect(isReadOnly()).toBe(true);
         delete process.env.READ_ONLY_FROM;
@@ -168,18 +140,6 @@ describeWithEnv(
       test("returns null when READ_ONLY_FROM is malformed", () => {
         process.env.READ_ONLY_FROM = "garbage";
         expect(getReadOnlyCutoffIso()).toBeNull();
-      });
-    });
-
-    describe("getRenewalUrl", () => {
-      test("returns the URL when RENEWAL_URL is set", () => {
-        process.env.RENEWAL_URL = "https://example.com/renew/?t=abc";
-        expect(getRenewalUrl()).toBe("https://example.com/renew/?t=abc");
-      });
-
-      test("returns null when RENEWAL_URL is unset", () => {
-        delete process.env.RENEWAL_URL;
-        expect(getRenewalUrl()).toBeNull();
       });
     });
   },

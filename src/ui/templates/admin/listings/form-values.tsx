@@ -62,10 +62,7 @@ const listingFieldFormatters: Partial<
   bookable_days: (e) => formatBookableDays(e.bookable_days),
   closes_at: (e) => formatDatetimeLocal(e.closes_at),
   date: (e) => (e.date ? formatDatetimeLocal(e.date) : null),
-  initial_site_months: (e) =>
-    e.initial_site_months ? String(e.initial_site_months) : "",
   max_price: (e) => toMajorUnits(e.max_price),
-  months_per_unit: (e) => (e.months_per_unit ? String(e.months_per_unit) : ""),
   unit_price: (e) => (e.unit_price > 0 ? toMajorUnits(e.unit_price) : ""),
 };
 

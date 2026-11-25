@@ -308,12 +308,7 @@ describeWithEnv("server (setup)", { db: true }, () => {
         try {
           await withExpectedError(async () => {
             const response = await handleRequest(mockRequest("/"));
-            await expectHtmlResponse(
-              response,
-              503,
-              "Temporary error",
-              "status.bunny.net",
-            );
+            await expectHtmlResponse(response, 503, "Temporary error");
           });
         } finally {
           executeStub.restore();

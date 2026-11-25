@@ -5,7 +5,6 @@
 
 import * as v from "valibot";
 import { signedEdgeFor } from "#booking/signed-metadata.ts";
-import { hmacHash } from "#crypto/hashing.ts";
 import { settings } from "#db/settings.ts";
 import { lazyRef, map } from "#fp";
 import type {
@@ -212,10 +211,8 @@ export const singleListingAnswerIds = (
   answerIds?.length ? { [String(listingId)]: answerIds } : undefined;
 
 /**
- * The plain `siteToken` is hashed FIRST, so the provider never sees a value
- * usable at /renew. `total` is the price the caller already agreed, so the
- * signed proof and the charged amount cannot disagree if pricing changes
- * mid-checkout.
+ * `total` is the price the caller already agreed, so the signed proof and the
+ * charged amount cannot disagree if pricing changes mid-checkout.
  *
  * `thank_you_url` can break session creation two ways: a long URL exceeds the
  * per-value cap, or even a short one tips a full payload over the entry cap. It
@@ -255,13 +252,9 @@ export const buildItemsMetadata = async (
   // Build the metadata without the optional thank-you URL once; this is also the
   // baseline whose entry count decides whether the URL can be added back below.
   const modifiers = toModifierRefs(intent.modifiers);
-  const siteTokenIndex = intent.siteToken
-    ? await hmacHash(intent.siteToken)
-    : undefined;
   const {
     thankYouUrl: _thankYouUrl,
     modifiers: _modifiers,
-    siteToken: _siteToken,
     ...intentRest
   } = intent;
   const withoutUrl = buildMetadata({
@@ -269,7 +262,6 @@ export const buildItemsMetadata = async (
     items: toBookingItems(intent),
     taxPolicy: intent.taxPolicy ?? settings.tax,
     ...(modifiers !== undefined ? { modifiers } : {}),
-    ...(siteTokenIndex !== undefined ? { siteTokenIndex } : {}),
   });
   const base = thankYouUrlFits(intent.thankYouUrl, withoutUrl, {
     maxEntries,
@@ -345,7 +337,6 @@ type MetadataInput = Pick<BookingIntent, "name" | "email" | "items" | "date"> &
       | "dayCount"
       | "listingAnswerIds"
       | "listingTextAnswerIds"
-      | "siteTokenIndex"
       | "balanceAttendeeId"
       | "reservationAmount"
       | "modifiers"
@@ -368,7 +359,6 @@ export const buildMetadata = (
   ...optionalFields(intent),
   ...listingAnswerIdsField(intent.listingAnswerIds),
   ...listingTextAnswerIdsField(intent.listingTextAnswerIds),
-  ...(intent.siteTokenIndex ? { site_token_index: intent.siteTokenIndex } : {}),
   ...(intent.balanceAttendeeId
     ? { balance_attendee_id: String(intent.balanceAttendeeId) }
     : {}),
@@ -416,7 +406,6 @@ const PACKED_KEYS = [
   "reservation_amount",
   "tax_policy",
   "balance_attendee_id",
-  "site_token_index",
 ] as const;
 
 /** The single metadata key the packed small fields are stored under. */
@@ -579,7 +568,6 @@ export const extractSessionMetadata = (
     phone: get("phone"),
     price_proof: get("price_proof"),
     reservation_amount: get("reservation_amount"),
-    site_token_index: get("site_token_index"),
     special_instructions: get("special_instructions"),
     tax_policy: get("tax_policy"),
     text_answer_ids: get("text_answer_ids"),

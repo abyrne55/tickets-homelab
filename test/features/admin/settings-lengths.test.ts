@@ -67,8 +67,6 @@ describeWithEnv("settings length refusals", { db: true }, () => {
     ["square-webhook", "square_webhook_signature_key"],
     ["sumup", "sumup_api_key"],
     ["sumup", "sumup_merchant_code"],
-    ["custom-domain", "custom_domain"],
-    ["host-subdomain", "subdomain"],
     ["listing-column-order", "column_order"],
     ["attendee-column-order", "column_order"],
   ] as const) {

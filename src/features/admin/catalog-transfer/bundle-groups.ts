@@ -6,7 +6,6 @@
 
 import { packageMembersError } from "#db/groups.ts";
 import { dayPriceFieldsFromInput } from "#shared/listing-edge.ts";
-import { sitePlanMemberError } from "#shared/package-membership.ts";
 import { requireValue } from "#shared/required-value.ts";
 import type { ListingWithCount } from "#types";
 import { bundleListingOf } from "./bundle-listings.ts";
@@ -150,15 +149,6 @@ export const validateGroups = async (
     plans.push({ body });
     if (fail.hasFailed(item)) continue;
     const memberFacts = memberFactsOf(body, context, listingPlans);
-    // A stored built-site plan books its own site and joins no group — the
-    // same refusal a direct membership write raises.
-    const planMember = memberFacts.find(
-      (fact) => fact.site && fact.row.assign_built_site,
-    );
-    fail.failIf(
-      item,
-      planMember === undefined ? null : sitePlanMemberError(planMember.name),
-    );
     fail.failIf(item, homogeneityErrorOf(memberFacts));
     if (body.group.isPackage ?? false) {
       await checkPackageMembers(body, memberFacts, pairs, item, fail);

@@ -13,8 +13,7 @@ import { t } from "#i18n";
 import { describeWithEnv } from "#test-utils/db.ts";
 import { createTestGroup } from "#test-utils/db-helpers/groups.ts";
 import { createTestListing } from "#test-utils/db-helpers/listings.ts";
-import { withEnv } from "#test-utils/env.ts";
-import { awaitTestRequest } from "#test-utils/mocks.ts";
+import { awaitTestRequest, withStorageEnabled } from "#test-utils/mocks.ts";
 import { adminGet, createTestManagerSession } from "#test-utils/session.ts";
 import { featureSetting } from "#test-utils/settings.ts";
 
@@ -90,16 +89,14 @@ describeWithEnv("the tabs a listing offers", { db: true }, () => {
   });
 
   test("adds the images tab once somewhere to put them is configured", async () => {
-    using _env = withEnv({
-      STORAGE_ZONE_KEY: "test-key",
-      STORAGE_ZONE_NAME: "test-zone",
-    });
     const listing = await createTestListing({
       maxAttendees: 10,
       name: "With Images",
     });
 
-    expect((await tabsOf(listing.id)).images).toBe("Images");
+    await withStorageEnabled(async () => {
+      expect((await tabsOf(listing.id)).images).toBe("Images");
+    });
   });
 
   test("opens on the overview when the URL names no tab", async () => {

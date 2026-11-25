@@ -7,7 +7,7 @@ import { withStorageDisabled } from "#test-utils/mocks.ts";
 
 describeWithEnv(
   "GET /admin/images/options",
-  { db: true, storage: "cdn" },
+  { db: true, storage: "local" },
   () => {
     test("serves every image's id and name in name order", async () => {
       const zebra = await makeImage("Zebra");

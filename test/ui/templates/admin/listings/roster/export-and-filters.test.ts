@@ -255,20 +255,6 @@ describe("adminListingPage failed payments", () => {
 
 describe("adminListingPage Renewal tag", () => {
   registerListingTemplateHooks();
-
-  test("renders Renewal tag for tier listings with months_per_unit > 0", () => {
-    const html = detailHtml(testListingWithCount({ months_per_unit: 3 }), {
-      allowedDomain: "",
-    });
-    assertStringIncludes(html, "Renewal");
-  });
-
-  test("does not render Renewal tag for listings with months_per_unit = 0", () => {
-    const html = detailHtml(testListingWithCount({ months_per_unit: 0 }), {
-      allowedDomain: "",
-    });
-    assert(!html.includes("Renewal"));
-  });
 });
 
 describe("adminListingPage daily roster detail table", () => {

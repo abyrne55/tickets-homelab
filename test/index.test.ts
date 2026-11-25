@@ -23,8 +23,8 @@ test("the dev entry stops on SIGTERM and SIGINT", async () => {
 });
 
 test("the dev entry refuses to start when a boot check fails", async () => {
-  using _env = withEnv({ MAIN_INSTANCE_KEY: "too-short" });
+  using _env = withEnv({ SCHEDULED_TASK_KEY: "too-short" });
   await expect(importEntry("#src/index.ts", "refuses")).rejects.toThrow(
-    "MAIN_INSTANCE_KEY must be at least 32 bytes",
+    "SCHEDULED_TASK_KEY must be canonical",
   );
 });

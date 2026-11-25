@@ -67,8 +67,7 @@ const loadRecoveryFacts = async (
  *
  * A create batch carries the booking's whole completion, and a
  * proven-committed booking owes its sends exactly once. The recovery reads
- * the committed entries and queues them with the staged free texts and the
- * renewal token. This arm runs in the one request that lost the result. A
+ * the committed entries and queues them with the staged free texts. This arm runs in the one request that lost the result. A
  * later redelivery finds the finalized session and answers send-free. A
  * provable rollback released nothing, so the recovery releases the
  * reservation and answers 503 for the provider's next try. Anything else
@@ -100,7 +99,6 @@ export const recoverOrRefundUnexpectedCreate = async ({
       // clears, a refusal leaves the flag up.
       clearPendingFlagsFor: [decision.attendeeId],
       freeTexts,
-      siteTokenIndex: intent.siteTokenIndex,
       source: "public",
     });
     return sessionSuccess(decision.attendeeId, listingId);

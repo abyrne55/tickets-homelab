@@ -9,7 +9,7 @@ import {
   mockFormRequest,
   withExpectedError,
   withFetchMock,
-  withStorageMock,
+  withLocalStorageEnabled,
 } from "#test-utils/mocks.ts";
 import {
   setupListingAndLogin,
@@ -35,10 +35,7 @@ describeWithEnv(
   "server images > attachment delete",
   {
     db: true,
-    env: {
-      STORAGE_ZONE_KEY: "testkey",
-      STORAGE_ZONE_NAME: "testzone",
-    },
+    storage: "local",
   },
   () => {
     describe("POST /admin/listing/:id/attachment/delete", () => {
@@ -49,7 +46,8 @@ describeWithEnv(
           attachmentUrl: "to-delete.pdf",
         });
 
-        await withStorageMock(async () => {
+        await withLocalStorageEnabled(async (dir) => {
+          await Deno.writeTextFile(`${dir}/to-delete.pdf`, "x");
           const response = await submitAttachmentDelete(
             listing.id,
             cookie,

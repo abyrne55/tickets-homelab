@@ -1,7 +1,6 @@
 import { settings } from "#db/settings.ts";
 import { t } from "#i18n";
 import { Raw } from "#jsx/jsx-runtime.ts";
-import { isBuilderEnabled } from "#shared/config.ts";
 import { VALID_DAY_NAMES } from "#shared/day-names.ts";
 import type { FormRenderValuesFor } from "#shared/forms/definition.ts";
 import type { FieldValues } from "#shared/forms/values.ts";
@@ -62,18 +61,8 @@ type ListingSectionRenderer = (
 const ChildNote = ({ note }: { note: string }): JSX.Element | null =>
   note ? <p class="muted small">{note}</p> : null;
 
-export const advancedSectionHasValues = (
-  listing: ListingWithCount,
-  builderEnabled: boolean,
-): boolean => {
-  if (listing.thank_you_url || listing.webhook_url) return true;
-  return (
-    builderEnabled &&
-    (listing.months_per_unit > 0 ||
-      listing.initial_site_months > 0 ||
-      listing.assign_built_site)
-  );
-};
+export const advancedSectionHasValues = (listing: ListingWithCount): boolean =>
+  !!(listing.thank_you_url || listing.webhook_url);
 
 export const DurationWarning = ({
   listing,
@@ -248,7 +237,6 @@ export const listingFormPageState = (
   const defaults = settings.listingDefaults;
   const showUseDefaults = showUseDefaultsToggle(session, defaults);
   const view: ListingFormView = {
-    builder: isBuilderEnabled(),
     ...(fields.nameAutofocus ? { nameAutofocus: true } : {}),
     storage: isStorageEnabled(),
     webhook: session.adminLevel !== "editor",

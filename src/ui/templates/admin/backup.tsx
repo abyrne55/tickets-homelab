@@ -36,8 +36,6 @@ export type BackupPageState = {
   /** Maximum backups retained before the oldest is purged */
   maxBackups: number;
   storageEnabled: boolean;
-  /** Bunny storage zone the backups are read from; null on local storage. */
-  storageZone: string | null;
 };
 
 const backupsTable = defineTable<BackupEntry>([
@@ -146,12 +144,7 @@ const renderBody = (state: BackupPageState): JSX.Element => (
           <div class="prose">
             <h2>{t("backup.existing_backups_heading")}</h2>
             <p>
-              {state.storageZone
-                ? t("backup.stored_in_zone", {
-                    folder: state.backupFolder,
-                    zone: state.storageZone,
-                  })
-                : t("backup.stored_in_folder", { folder: state.backupFolder })}
+              {t("backup.stored_in_folder", { folder: state.backupFolder })}
             </p>
           </div>
           {state.listingError ? (

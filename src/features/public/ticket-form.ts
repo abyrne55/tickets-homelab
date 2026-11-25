@@ -119,8 +119,6 @@ export const resolvePageDate = (
 export const renderTicketPage = (ctx: TicketCtx, error?: string) =>
   ticketPage({
     ...ctx,
-    // A renewal page prices its tier counts by months per unit, not tickets.
-    ...(ctx.siteToken !== undefined ? { renewal: true } : {}),
     ...(error !== undefined ? { error } : {}),
   });
 

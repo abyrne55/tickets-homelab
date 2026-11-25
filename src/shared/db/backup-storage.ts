@@ -11,24 +11,15 @@ export const isRemoteDatabase = (): boolean =>
 
 /**
  * Extract a short database name from DB_URL for use in backup filenames.
- * e.g. "libsql://01KFXB...-tickets-spencer.lite.bunnydb.net/" → "tickets-spencer"
- * Only Bunny DB hostnames carry a UUID prefix to drop; every other remote host
- * keeps its full first hostname segment (for Turso that is already the unique
- * database identity: "{db-name}-{org}.turso.io"). Local and unparseable URLs
- * are filed under "local", so backups never land in a nameless folder.
+ * A remote host keeps its full first hostname segment
+ * ("libsql://tickets-spencer.example.com/" → "tickets-spencer"). Local and
+ * unparseable URLs are filed under "local", so backups never land in a
+ * nameless folder.
  */
 export const dbName = (url: string = requireEnv("DB_URL")): string => {
   if (databaseHostFor(url) === "local") return "local";
 
-  const { hostname } = new URL(url);
-  const first = hostname.split(".")[0]!;
-
-  // Only Bunny's lite connection addresses carry a UUID prefix to drop
-  // ({uuid}-{name}.lite.bunnydb.net); every other remote host keeps its
-  // full first hostname segment.
-  if (!hostname.endsWith(".lite.bunnydb.net")) return first;
-  const dashIdx = first.indexOf("-");
-  return dashIdx === -1 ? first : first.slice(dashIdx + 1);
+  return new URL(url).hostname.split(".")[0]!;
 };
 
 /**
@@ -53,33 +44,6 @@ export const backupKey = (timestamp: string, name: string = dbName()): string =>
 /** Generate a timestamp string for backup filenames */
 export const backupTimestamp = (date = new Date()): string =>
   date.toISOString().replace(/[:.]/g, "-");
-
-/**
- * How fresh a backup must be to satisfy the pre-upgrade gate on /admin/update
- * and the per-site update button — updates are blocked unless a backup for that
- * database was taken within this window. One hour.
- */
-export const BACKUP_REQUIRED_WITHIN_MS = 60 * 60 * 1000;
-
-/**
- * How far ahead of our clock a backup's timestamp may sit and still count as
- * fresh. Out-of-band backups are taken on other machines whose clocks can run
- * a little ahead of ours; anything further ahead than this is not fresh, so a
- * wrongly future-dated file cannot satisfy the gate forever. Five minutes.
- */
-const BACKUP_CLOCK_SKEW_MS = 5 * 60 * 1000;
-
-/** True when a backup taken at `takenAtMs` satisfies the freshness gate at
- *  `nowMs`: younger than `maxAgeMs`, and no further ahead of the clock than
- *  the skew allowance. */
-const backupIsFresh = (
-  takenAtMs: number,
-  nowMs: number,
-  maxAgeMs: number,
-): boolean => {
-  const age = nowMs - takenAtMs;
-  return age >= -BACKUP_CLOCK_SKEW_MS && age < maxAgeMs;
-};
 
 /** ISO-8601-ish timestamp as it appears in a backup filename (":"/"." → "-"),
  *  with the date/time pieces captured so parseBackupTime can rebuild the real
@@ -112,28 +76,6 @@ export const isBackupLeaf = (leaf: string): boolean => BACKUP_LEAF.test(leaf);
  *  while ignoring anything else stored alongside them. */
 export const isBackupPath = (key: string): boolean =>
   isBackupLeaf(getBasename(key));
-
-/**
- * True if a backup younger than `maxAgeMs` exists for the given database
- * (defaults to the current DB) within the upgrade-gate window. Callers gating
- * another instance pass `dbName(site.dbUrl)`.
- */
-export const hasRecentBackup = async (
-  maxAgeMs: number = BACKUP_REQUIRED_WITHIN_MS,
-  name: string = dbName(),
-): Promise<boolean> => {
-  const now = Date.now();
-  const files = await listFiles(backupDir(name));
-  for (const file of files) {
-    // Only real backups count — ignore anything else left in the folder, so a
-    // stray "{name}/manual-…Z.zip" can't spoof the freshness gate (mirrors
-    // pruneOldBackups).
-    if (!isBackupPath(file)) continue;
-    const ms = parseBackupTime(file);
-    if (ms !== null && backupIsFresh(ms, now, maxAgeMs)) return true;
-  }
-  return false;
-};
 
 /**
  * Purge the oldest backups beyond `keep` for the current DB, keeping the

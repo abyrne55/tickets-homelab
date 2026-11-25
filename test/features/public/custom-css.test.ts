@@ -1,4 +1,4 @@
-import { assert, assertStringIncludes } from "@std/assert";
+import { assertStringIncludes } from "@std/assert";
 import { expect } from "@std/expect";
 import { describe, it as test } from "@std/testing/bdd";
 import { settings } from "#db/settings.ts";
@@ -7,10 +7,8 @@ import {
   emptyCustomCssResponse,
   isCssResponse,
 } from "#routes/public/custom-css.ts";
-import { expectIncludesAll } from "#test-utils/assertions.ts";
 import { describeWithEnv } from "#test-utils/db.ts";
 import { mockRequest } from "#test-utils/mocks.ts";
-import { enablePublicSite } from "#test-utils/settings.ts";
 
 const customCss = (): Promise<Response> =>
   handleRequest(mockRequest("/custom.css"));
@@ -76,28 +74,5 @@ describeWithEnv("custom.css handler", { db: true, triggers: true }, () => {
     );
     expect(res.status).toBe(301);
     expect(res.headers.get("location")).toBe("/custom.css?v=1");
-  });
-
-  test("a page's CSP names the fonts origin only once the CSS uses it", async () => {
-    // Every page the layout renders links /custom.css, so the policy must
-    // follow the stylesheet's contents, not the route.
-    await enablePublicSite();
-    await settings.update.customCss("body { color: red; }");
-    const before = await handleRequest(mockRequest("/"));
-    assert(
-      !(before.headers.get("content-security-policy") ?? "").includes(
-        "fonts.bunny.net",
-      ),
-    );
-
-    await settings.update.customCss(
-      "@import url(https://fonts.bunny.net/css?family=aleo);",
-    );
-    const after = await handleRequest(mockRequest("/"));
-    const csp = after.headers.get("content-security-policy") ?? "";
-    expectIncludesAll(csp, [
-      "style-src 'self' https://fonts.bunny.net",
-      "font-src 'self' https://fonts.bunny.net",
-    ]);
   });
 });

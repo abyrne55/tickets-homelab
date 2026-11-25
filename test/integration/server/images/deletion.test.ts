@@ -5,11 +5,9 @@ import { handleRequest } from "#routes";
 import { linkStoredImage } from "#test/integration/server/images/helpers.ts";
 import { describeWithEnv } from "#test-utils/db.ts";
 import {
-  cdnOkResponse,
-  installUrlHandler,
   mockFormRequest,
-  withFetchMock,
-  withStorageMock,
+  withLocalStorageEnabled,
+  withUnwritableStorage,
 } from "#test-utils/mocks.ts";
 import { setupListingAndLogin } from "#test-utils/session.ts";
 
@@ -32,24 +30,22 @@ describeWithEnv(
   "server images > deletion",
   {
     db: true,
-    env: {
-      STORAGE_ZONE_KEY: "testkey",
-      STORAGE_ZONE_NAME: "testzone",
-    },
+    storage: "local",
   },
   () => {
     describe("listing deletion cleans up storage files", () => {
-      /** Delete the listing and return the storage-delete fetch calls made
-       *  during the request. Collapses the shared `withStorageMock` +
-       *  `submitListingDelete` + `expect(302)` + `fetchCalls.find` scaffold
-       *  every test in this block spells out. */
-      const deleteListingAndCaptureCalls = async (
+      /** Seed `stored` into the storage directory, delete the listing, and
+       *  return which of the seeded files the request removed. */
+      const deleteListingAndCaptureDeleted = async (
         listing: { id: number; name: string },
         cookie: string,
         csrfToken: string,
+        stored: string[],
       ): Promise<string[]> => {
-        const calls: string[] = [];
-        await withStorageMock(async (fetchCalls) => {
+        const deleted: string[] = [];
+        await withLocalStorageEnabled(async (dir) => {
+          for (const name of stored)
+            await Deno.writeTextFile(`${dir}/${name}`, "x");
           const response = await submitListingDelete(
             listing.id,
             listing.name,
@@ -57,26 +53,31 @@ describeWithEnv(
             csrfToken,
           );
           expect(response.status).toBe(302);
-          calls.push(...fetchCalls);
+          for (const name of stored) {
+            const exists = await Deno.stat(`${dir}/${name}`).then(
+              () => true,
+              () => false,
+            );
+            if (!exists) deleted.push(name);
+          }
         });
-        return calls;
+        return deleted;
       };
 
       test("keeps linked reusable image files when listing is deleted", async () => {
         const { listing, cookie, csrfToken } = await setupListingAndLogin();
         await linkStoredImage(listing.id, "listing-image.jpg");
 
-        const fetchCalls = await deleteListingAndCaptureCalls(
+        const deleted = await deleteListingAndCaptureDeleted(
           listing,
           cookie,
           csrfToken,
+          ["listing-image.jpg"],
         );
-        expect(
-          fetchCalls.find((url) => url.includes("listing-image.jpg")),
-        ).toBeUndefined();
+        expect(deleted).toEqual([]);
 
-        const deleted = await getListingWithCount(listing.id);
-        expect(deleted).toBeNull();
+        const gone = await getListingWithCount(listing.id);
+        expect(gone).toBeNull();
       });
 
       test("deletes attachment from storage when listing is deleted", async () => {
@@ -86,14 +87,13 @@ describeWithEnv(
           attachmentUrl: "listing-attachment.pdf",
         });
 
-        const fetchCalls = await deleteListingAndCaptureCalls(
+        const deleted = await deleteListingAndCaptureDeleted(
           listing,
           cookie,
           csrfToken,
+          ["listing-attachment.pdf"],
         );
-        expect(
-          fetchCalls.find((url) => url.includes("listing-attachment.pdf")),
-        ).not.toBeUndefined();
+        expect(deleted).toEqual(["listing-attachment.pdf"]);
       });
 
       test("deletes attachment but keeps image when listing is deleted", async () => {
@@ -104,34 +104,20 @@ describeWithEnv(
           attachmentUrl: "both-attachment.pdf",
         });
 
-        const fetchCalls = await deleteListingAndCaptureCalls(
+        const deleted = await deleteListingAndCaptureDeleted(
           listing,
           cookie,
           csrfToken,
+          ["both-image.jpg", "both-attachment.pdf"],
         );
-        expect(
-          fetchCalls.find((url) => url.includes("both-image.jpg")),
-        ).toBeUndefined();
-        expect(
-          fetchCalls.find((url) => url.includes("both-attachment.pdf")),
-        ).not.toBeUndefined();
+        expect(deleted).toEqual(["both-attachment.pdf"]);
       });
 
       test("succeeds when linked image storage deletion would fail during listing deletion", async () => {
         const { listing, cookie, csrfToken } = await setupListingAndLogin();
         await linkStoredImage(listing.id, "failing-image.jpg");
 
-        await withFetchMock(async (originalFetch) => {
-          installUrlHandler(originalFetch, (url) => {
-            if (url.includes("failing-image.jpg")) {
-              return Promise.reject(new Error("CDN delete failed"));
-            }
-            if (url.includes("storage.bunnycdn.com")) {
-              return Promise.resolve(cdnOkResponse());
-            }
-            return null;
-          });
-
+        await withUnwritableStorage(async () => {
           const response = await submitListingDelete(
             listing.id,
             listing.name,
@@ -148,20 +134,13 @@ describeWithEnv(
       test("skips storage cleanup when listing has no image or attachment", async () => {
         const { listing, cookie, csrfToken } = await setupListingAndLogin();
 
-        await withStorageMock(async (fetchCalls) => {
-          const response = await submitListingDelete(
-            listing.id,
-            listing.name,
-            cookie,
-            csrfToken,
-          );
-          expect(response.status).toBe(302);
-
-          const storageCalls = fetchCalls.filter((url) =>
-            url.includes("storage.bunnycdn.com"),
-          );
-          expect(storageCalls).toHaveLength(0);
-        });
+        const deleted = await deleteListingAndCaptureDeleted(
+          listing,
+          cookie,
+          csrfToken,
+          ["unrelated.jpg"],
+        );
+        expect(deleted).toEqual([]);
       });
     });
   },

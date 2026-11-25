@@ -89,12 +89,6 @@ describe("dates", () => {
       );
     });
 
-    test("12-month renewal", () => {
-      expect(addMonthsIso("2026-05-17T00:00:00.000Z", 12)).toBe(
-        "2027-05-17T00:00:00.000Z",
-      );
-    });
-
     test("zero months returns canonical ISO string", () => {
       expect(addMonthsIso("2026-05-17T09:30:00.000Z", 0)).toBe(
         "2026-05-17T09:30:00.000Z",

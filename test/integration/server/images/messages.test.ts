@@ -14,10 +14,7 @@ describeWithEnv(
   "server images > error messages",
   {
     db: true,
-    env: {
-      STORAGE_ZONE_KEY: "testkey",
-      STORAGE_ZONE_NAME: "testzone",
-    },
+    storage: "local",
   },
   () => {
     describe("image error messages in rendered pages", () => {

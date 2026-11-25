@@ -114,9 +114,6 @@ const handleBalancePost = (
               // order summary always has at least one (real) line here.
               listingId: summary.lines[0]!.listingId,
               name: "Remaining balance",
-              // A balance payment settles money already owed; it buys no plan
-              // months, whatever the referenced listing sells.
-              purchaseUnit: { kind: "tickets" },
               quantity: 1,
               slug: "balance",
               unitPrice: amount,

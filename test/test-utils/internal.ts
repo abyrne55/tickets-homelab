@@ -17,14 +17,6 @@ export const TEST_ENCRYPTION_KEY =
 export const OTHER_TEST_ENCRYPTION_KEY =
   "BwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwc=";
 
-// The standard Bunny CDN test zone. Single source of truth shared by the
-// storage-mock helpers (as a runWithStorageConfig object) and describeWithEnv's
-// `storage: "cdn"` option (as STORAGE_ZONE_KEY/NAME env vars).
-export const TEST_STORAGE_ZONE = {
-  zoneKey: "testkey",
-  zoneName: "testzone",
-} as const;
-
 type TestSession = { cookie: string; csrfToken: string };
 
 // Resettable test cache as a lazyRef cell (set(null) clears) — no module-level
@@ -53,13 +45,12 @@ export interface DescribeEnvOptions {
   /**
    * Establish an image-storage backend for every test in the suite, instead of
    * wrapping each body in `withStorageEnabled` / `withLocalStorageEnabled`:
-   * - `"cdn"`: the standard Bunny test zone (`isStorageEnabled()` ⇒ true).
    * - `"local"`: a fresh temp dir per test (path via `getTestStoragePath()`),
-   *   created before the test and removed after.
+   *   created before the test and removed after (`isStorageEnabled()` ⇒ true).
    * An individual test can still override with a per-body `runWithStorageConfig`
    * scope (e.g. `withStorageDisabled`), which wins over the suite's env default.
    */
-  storage?: "cdn" | "local";
+  storage?: "local";
   triggers?: boolean;
 }
 

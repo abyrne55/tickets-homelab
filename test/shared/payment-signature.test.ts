@@ -26,19 +26,17 @@ const baseMeta = (
   name: "Buyer",
   phone: "",
   reservation_amount: "",
-  site_token_index: "",
   special_instructions: "",
   ...overrides,
 });
 
 /** Each signed field paired with a changed value, so tampering any one of them
  * can be checked against an untouched signature. Includes the contact and
- * fulfilment fields (email/phone/site_token_index) that feed pricing or renewal
+ * fulfilment fields (email/phone) that feed pricing
  * indirectly and so must be bound, not just the obvious price fields. */
 const fieldMutations: [string, Record<string, string>][] = [
   ["email", { email: "attacker@example.com" }],
   ["phone", { phone: "07700900000" }],
-  ["site_token_index", { site_token_index: "deadbeefcafe" }],
   ["name", { name: "Someone Else" }],
   ["address", { address: "99 Other Rd" }],
   ["special_instructions", { special_instructions: "leave at door" }],
@@ -208,7 +206,6 @@ describeWithEnv("payment price signature", { encryptionKey: true }, () => {
         modifiers: pick(["", '[{"i":1,"q":1}]', '[{"i":2,"q":3}]']),
         phone: pick(["", "07700900000"]),
         reservation_amount: pick(["", "10%", "£5"]),
-        site_token_index: pick(["", "abc123"]),
       });
       const sig = await signPrice(meta, total);
       expect(await verifyPrice(meta, total, sig)).toBe(true);

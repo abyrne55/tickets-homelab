@@ -63,14 +63,12 @@ export const GOOGLE_WALLET_SETTINGS: readonly string[] = [
 
 /**
  * Extra keys read when an *owner* session authenticates. The settings-nag
- * banner (`getSettingsNagItemsForOwner`) checks the payment provider, business
- * email, superuser choice, and domain config (custom_domain + bunny_subdomain
- * are already infra).
+ * banner (`getSettingsNagItems`) checks the payment provider and
+ * business email.
  */
 export const OWNER_AUTH_SETTINGS: readonly string[] = [
   CONFIG_KEYS.PAYMENT_PROVIDER,
   CONFIG_KEYS.BUSINESS_EMAIL,
-  CONFIG_KEYS.SUPERUSER_CHOICE,
 ];
 
 /** The whole booking flow (form + checkout + confirmation emails). */

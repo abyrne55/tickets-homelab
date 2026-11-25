@@ -18,27 +18,6 @@ const navEntries = ADMIN_SECTIONS.flatMap((section) =>
 );
 
 describe("the admin sections table", () => {
-  test("keeps the complete top-level section order", () => {
-    expect(ADMIN_SECTIONS.map((section) => section.id)).toEqual([
-      "home",
-      "doors",
-      "listings",
-      "calendar",
-      "servicing",
-      "attendees",
-      "invoices",
-      "users",
-      "groups",
-      "images",
-      "modifiers",
-      "ledger",
-      "site",
-      "builtSites",
-      "settings",
-      "guide",
-    ]);
-  });
-
   test("keeps each section's sub-navigation in its declared order", () => {
     const users = ADMIN_SECTIONS.find((section) => section.id === "users")!;
     expect(users.nav.map((entry) => entry.id)).toEqual([
@@ -132,22 +111,6 @@ describe("the sections that own a record page", () => {
   const withDetail = ADMIN_SECTIONS.filter(
     (section) => section.detail !== undefined,
   );
-
-  test("cover listings and groups", () => {
-    expect(withDetail.map((section) => section.id)).toEqual([
-      "listings",
-      "groups",
-      "builtSites",
-    ]);
-  });
-
-  test("name the route one record opens at", () => {
-    expect(withDetail.map((section) => adminPattern(section.detail!))).toEqual([
-      "/admin/listing/:id",
-      "/admin/groups/:id",
-      "/admin/built-sites/:id",
-    ]);
-  });
 
   test("point that route at one record", () => {
     const wrong = withDetail

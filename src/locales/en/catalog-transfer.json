@@ -15,6 +15,5 @@
   "catalog_transfer.bundle_failed": "No records were created. Please fix these problems and upload the file again:",
   "catalog_transfer.group_missing": "A group used by this import no longer exists. Please import again.",
   "catalog_transfer.member_missing": "A listing used by this import no longer exists. Please import again.",
-  "catalog_transfer.parent_missing": "A parent listing used by this import no longer exists. Please import again.",
-  "catalog_transfer.site_plan_listing_refused": "Listings that assign a site on booking can't be imported. Create ''{name}'' on this site instead."
+  "catalog_transfer.parent_missing": "A parent listing used by this import no longer exists. Please import again."
 }

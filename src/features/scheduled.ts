@@ -18,12 +18,7 @@ export const handleScheduledRequest = requestScopedHandler(async (request) => {
   seedEffectiveDomainHost(url);
   try {
     await initDb();
-    await settings.loadKeys([
-      CONFIG_KEYS.BUNNY_SUBDOMAIN,
-      CONFIG_KEYS.CUSTOM_DOMAIN,
-      CONFIG_KEYS.CUSTOM_DOMAIN_LAST_VALIDATED,
-      CONFIG_KEYS.SETUP_COMPLETE,
-    ]);
+    await settings.loadKeys([CONFIG_KEYS.SETUP_COMPLETE]);
     loadEffectiveDomain(url);
     if (!(await settings.setup.isComplete())) {
       throw new Error("Scheduled maintenance requires completed setup");

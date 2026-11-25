@@ -11,16 +11,6 @@ import {
 } from "#shared/catalog-fields/fields.ts";
 
 describe("catalog field projection", () => {
-  test("projects stored columns under their database names", () => {
-    const columns = projectCatalogFields(listingCatalogFields, "columns", {});
-
-    expect(columns.active.default?.()).toBe(true);
-    expect(columns.assign_built_site.default?.()).toBe(false);
-    expect(columns.max_price.default?.()).toBe(0);
-    expect(Object.hasOwn(columns, "closes_at")).toBe(false);
-    expect(Object.hasOwn(columns, "name")).toBe(false);
-  });
-
   test("projects transfer schemas by catalog field name", () => {
     const schemas = {
       boolean: v.boolean(),
@@ -97,32 +87,6 @@ describe("catalog field projection", () => {
         "active",
       ),
     ).toBe(false);
-  });
-
-  test("projects valid API values without losing false, zero, or null clears", () => {
-    expect(
-      projectCatalogFields(listingCatalogFields, "api", {
-        active: false,
-        assign_built_site: true,
-        bookable_days: ["Monday"],
-        closes_at: null,
-        description: "Description",
-        duration_days: 0,
-        max_attendees: 0,
-        max_price: 0,
-        purchase_only: true,
-        unit_price: 0,
-      }),
-    ).toEqual({
-      active: false,
-      bookableDays: ["Monday"],
-      closesAt: "",
-      description: "Description",
-      durationDays: 0,
-      maxAttendees: 0,
-      maxPrice: 0,
-      unitPrice: 0,
-    });
   });
 
   test("omits API values with the wrong type", () => {

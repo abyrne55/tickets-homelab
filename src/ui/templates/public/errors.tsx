@@ -1,10 +1,6 @@
 import { t } from "#i18n";
 import { escapeHtml } from "#jsx/escape-html.ts";
-import { type Child, Raw } from "#jsx/jsx-runtime.ts";
-import { isoToTag } from "#shared/build-tag.ts";
-import { getRenewalUrl, isUpdateInProgress } from "#shared/env.ts";
-import { getEffectiveBuildTimestamp } from "#shared/update.ts";
-import { updateBuildTagMeta, updatePageMeta } from "#shared/update-guard.ts";
+import type { Child } from "#jsx/jsx-runtime.ts";
 import {
   ProseHeading,
   RawParagraph,
@@ -133,21 +129,11 @@ export const temporaryErrorPage = (autoRefresh: boolean): string =>
     "public.temporary_error.heading",
     autoRefresh ? TEMPORARY_ERROR_HEAD : ERROR_DIALOG_STYLE,
   )(
-    <>
-      <p>
-        {autoRefresh
-          ? t("public.temporary_error.message")
-          : t("public.temporary_error.message_manual")}
-      </p>
-      <p>
-        <small>
-          Check{" "}
-          <strong>
-            <a href="https://status.bunny.net/">status.bunny.net</a>
-          </strong>
-        </small>
-      </p>
-    </>,
+    <p>
+      {autoRefresh
+        ? t("public.temporary_error.message")
+        : t("public.temporary_error.message_manual")}
+    </p>,
   );
 
 /**
@@ -204,40 +190,11 @@ export const siteNotActivatedPage = (): string =>
     ERROR_DIALOG_STYLE,
   )(<p>{t("public.not_activated.message")}</p>);
 
-/**
- * Read-only mode page. While an update runs (UPDATE_IN_PROGRESS set), the
- * page shows the update message. The renewal link then stays off, because a
- * renewal is a blocked write in that window.
- */
-export const readOnlyPage = (): string => {
-  const updating = isUpdateInProgress();
-  const renewalUrl = updating ? null : getRenewalUrl();
-  // The tag names this build for a deploy's post-update wait. A build with
-  // no timestamp (development) reports no tag.
-  const buildTimestamp = getEffectiveBuildTimestamp();
-  const buildTag = buildTimestamp === "" ? null : isoToTag(buildTimestamp);
-  return String(
-    <Layout
-      family="public"
-      headExtra={`${updatePageMeta(updating ? "active" : "supported")}${buildTag === null ? "" : updateBuildTagMeta(buildTag)}`}
-      title={t(
-        updating ? "public.update_in_progress.title" : "public.read_only.title",
-      )}
-    >
-      <p>
-        {t(
-          updating
-            ? "public.update_in_progress.message"
-            : "public.read_only.message",
-        )}
-        {renewalUrl && (
-          <Raw
-            html={` <a href="${escapeHtml(renewalUrl)}">${t(
-              "public.read_only.renew_now",
-            )}</a>`}
-          />
-        )}
-      </p>
+/** Read-only mode page, shown for every blocked write while the operator's
+ * READ_ONLY_FROM date has passed. */
+export const readOnlyPage = (): string =>
+  String(
+    <Layout family="public" title={t("public.read_only.title")}>
+      <p>{t("public.read_only.message")}</p>
     </Layout>,
   );
-};

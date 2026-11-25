@@ -42,7 +42,6 @@ const ListingColumnKeySchema = v.picklist([
   "date",
   "location",
   "price",
-  "renewal",
 ]);
 
 export type ListingColumnKey = v.InferOutput<typeof ListingColumnKeySchema>;

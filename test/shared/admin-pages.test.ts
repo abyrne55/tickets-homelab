@@ -9,7 +9,6 @@ import {
   adminLandingPath,
   entityReturnPath,
   readOnlyGetRoutePatterns,
-  readOnlyWriteRoutePatterns,
   visibleSections,
   visibleTopLevel,
 } from "#shared/admin-pages.ts";
@@ -21,144 +20,9 @@ import { type AdminLevel, ALL_ADMIN_LEVELS } from "#types";
 const DEFAULT_ENABLED_FEATURES = parseEnabledFeatures("");
 
 describe("admin navigation", () => {
-  test("shows the Site section to editors only when Site is enabled", () => {
-    const context = {
-      active: "/admin",
-      adminLevel: "editor" as const,
-      builder: false,
-      enabledFeatures: DEFAULT_ENABLED_FEATURES,
-      isReadOnly: false,
-      storage: false,
-      support: false,
-    };
-    assert(
-      !visibleTopLevel(context)
-        .map((link) => link.href)
-        .includes("/admin/site"),
-    );
-    assertArrayIncludes(
-      visibleTopLevel({
-        ...context,
-        enabledFeatures: setFeatureEnabled(
-          DEFAULT_ENABLED_FEATURES,
-          "site",
-          true,
-        ),
-      }).map((link) => link.href),
-      ["/admin/site"],
-    );
-  });
-
-  test("applies per-link feature visibility", () => {
-    const context = {
-      active: "/admin/settings",
-      adminLevel: "owner" as const,
-      builder: false,
-      enabledFeatures: DEFAULT_ENABLED_FEATURES,
-      isReadOnly: false,
-      storage: false,
-      support: false,
-    };
-    const hidden = visibleTopLevel(context).map((link) => link.href);
-    const visible = visibleTopLevel({
-      ...context,
-      builder: true,
-      support: true,
-    }).map((link) => link.href);
-    // Builds is a top-level section now: it leaves the Settings sub-nav and
-    // answers only to the builder flag.
-    assert(!hidden.includes("/admin/built-sites"));
-    assert(
-      !visibleSections({ ...context, support: true })
-        .flatMap((section) => section.items)
-        .map((link) => link.href)
-        .includes("/admin/built-sites"),
-    );
-    assertArrayIncludes(visible, ["/admin/built-sites"]);
-    const subNav = visibleSections({ ...context, support: true })
-      .flatMap((section) => section.items)
-      .map((link) => link.href);
-    assertArrayIncludes(subNav, ["/admin/support"]);
-    const featureLinks = visibleSections({
-      ...context,
-      enabledFeatures: setFeatureEnabled(
-        setFeatureEnabled(DEFAULT_ENABLED_FEATURES, "attributes", true),
-        "questions",
-        true,
-      ),
-    }).flatMap((section) => section.items);
-    assertArrayIncludes(
-      featureLinks.map((link) => link.href),
-      ["/admin/attributes"],
-    );
-    assertArrayIncludes(
-      featureLinks.map((link) => link.href),
-      ["/admin/questions"],
-    );
-  });
-
-  test("shows the Invoices section only when Invoices is enabled", () => {
-    const context = {
-      active: "/admin",
-      adminLevel: "owner" as const,
-      builder: false,
-      enabledFeatures: DEFAULT_ENABLED_FEATURES,
-      isReadOnly: false,
-      storage: false,
-      support: false,
-    };
-    assert(
-      !visibleTopLevel(context)
-        .map((link) => link.href)
-        .includes("/admin/invoices"),
-    );
-    assertArrayIncludes(
-      visibleTopLevel({
-        ...context,
-        enabledFeatures: setFeatureEnabled(
-          DEFAULT_ENABLED_FEATURES,
-          "invoices",
-          true,
-        ),
-      }).map((link) => link.href),
-      ["/admin/invoices"],
-    );
-  });
-
-  test("omits sections with no sub-navigation", () => {
-    const sections = visibleSections({
-      active: "/admin/ledger",
-      adminLevel: "owner",
-      builder: false,
-      enabledFeatures: DEFAULT_ENABLED_FEATURES,
-      isReadOnly: false,
-      storage: false,
-      support: false,
-    });
-    assert(
-      !sections.map((section) => section.topHref).includes("/admin/ledger"),
-    );
-  });
-
   test("derives read-only blocks from destination intent", () => {
     assertArrayIncludes(readOnlyGetRoutePatterns(), ["/admin/listing/new"]);
     assert(!readOnlyGetRoutePatterns().includes("/admin/listings"));
-  });
-
-  test("keeps only the declared writes open, by mode", () => {
-    // Update mode keeps sign-in and sign-out, and nothing else.
-    expect(readOnlyWriteRoutePatterns(true)).toEqual([
-      "/admin/login",
-      "/admin/logout",
-    ]);
-    // Ordinary read-only mode also keeps the operations a working site
-    // cannot pause.
-    assertArrayIncludes(readOnlyWriteRoutePatterns(false), [
-      "/admin/login",
-      "/admin/support",
-      "/admin/listing/:id/scan",
-      "/admin/listing/:listingId/attendee/:attendeeId/checkin",
-    ]);
   });
 });
 

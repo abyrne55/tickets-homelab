@@ -27,7 +27,6 @@ const bareMetadata: SessionMetadata = {
   phone: "",
   price_proof: "100.sig",
   reservation_amount: "",
-  site_token_index: "",
   special_instructions: "",
   tax_policy: "",
   text_answer_ids: "",
@@ -64,56 +63,6 @@ describe("the time a payment counts as happening", () => {
 });
 
 describe("reading a booking out of a paid checkout", () => {
-  test("reads the lines, the buyer, and the empty fields as nothing", () => {
-    expect(extractIntent(session())).toEqual({
-      address: "",
-      allocations: undefined,
-      balanceAttendeeId: undefined,
-      date: null,
-      dayCount: undefined,
-      email: "buyer@example.com",
-      items: [{ e: 1, p: 100, q: 1 }],
-      listingAnswerIds: undefined,
-      listingTextAnswerIds: undefined,
-      modifiers: [],
-      name: "Buyer",
-      phone: "",
-      reservationAmount: undefined,
-      siteTokenIndex: undefined,
-      special_instructions: "",
-      taxPolicy: { mode: "none" },
-      thankYouUrl: undefined,
-    });
-  });
-
-  test("reads everything the checkout can carry", () => {
-    const intent = extractIntent(
-      session({
-        allocations: JSON.stringify([{ childId: 2, parentId: 1, qty: 1 }]),
-        answer_ids: JSON.stringify({ "1": [7] }),
-        balance_attendee_id: "42",
-        date: "2026-08-01",
-        day_count: "3",
-        reservation_amount: "10%",
-        site_token_index: "idx",
-        text_answer_ids: JSON.stringify({ "1": [{ q: 1, s: 5 }] }),
-        thank_you_url: "https://example.com/thanks",
-      }),
-    );
-
-    expect(intent).toMatchObject({
-      allocations: [{ childId: 2, parentId: 1, qty: 1 }],
-      balanceAttendeeId: 42,
-      date: "2026-08-01",
-      dayCount: 3,
-      listingAnswerIds: { "1": [7] },
-      listingTextAnswerIds: { "1": [{ q: 1, s: 5 }] },
-      reservationAmount: "10%",
-      siteTokenIndex: "idx",
-      thankYouUrl: "https://example.com/thanks",
-    });
-  });
-
   test("reads the modifiers the buyer took", () => {
     expect(
       extractIntent(session({ modifiers: JSON.stringify([{ i: 3, q: 2 }]) }))

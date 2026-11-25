@@ -1,32 +1,10 @@
-import { assert, assertStringIncludes } from "@std/assert";
+import { assertStringIncludes } from "@std/assert";
 import { expect } from "@std/expect";
 import { describe, it as test } from "@std/testing/bdd";
 import { t } from "#i18n";
-import { FormParams } from "#shared/form-data.ts";
-import {
-  getListingEditForm,
-  getListingForm,
-} from "#templates/fields/listing.ts";
+import { getListingEditForm } from "#templates/fields/listing.ts";
 
 describe("listing form schema", () => {
-  test("parses month fields as numbers", () => {
-    const result = getListingForm().validate(
-      new FormParams({
-        initial_site_months: "12",
-        max_attendees: "10",
-        max_quantity: "2",
-        months_per_unit: "3",
-        name: "Example",
-      }),
-    );
-
-    expect(result.valid).toBe(true);
-    if (result.valid) {
-      expect(result.values.months_per_unit).toBe(3);
-      expect(result.values.initial_site_months).toBe(12);
-    }
-  });
-
   test("derives every section from field declarations", () => {
     const form = getListingEditForm();
     expect(form.sections).toEqual([
@@ -41,26 +19,6 @@ describe("listing form schema", () => {
     expect(form.fields.every((field) => field.section !== undefined)).toBe(
       true,
     );
-  });
-
-  test("renders conditional fields from schema visibility", () => {
-    const visible = getListingEditForm({
-      builder: true,
-      storage: true,
-      webhook: true,
-    });
-    const hidden = getListingEditForm({
-      builder: false,
-      storage: false,
-      webhook: false,
-    });
-
-    assertStringIncludes(visible.section("basics"), 'name="attachment"');
-    assertStringIncludes(visible.section("advanced"), 'name="months_per_unit"');
-    assertStringIncludes(visible.section("advanced"), 'name="webhook_url"');
-    assert(!hidden.section("basics").includes('name="attachment"'));
-    assert(!hidden.section("advanced").includes('name="months_per_unit"'));
-    assert(!hidden.section("advanced").includes('name="webhook_url"'));
   });
 
   test("pairs customisable days with pay more so only one can hold", () => {

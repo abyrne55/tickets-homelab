@@ -17,7 +17,6 @@ import {
   packageMemberMessage,
   packageMemberQuantityBroken,
   packageMemberQuantityError,
-  sitePlanMemberError,
 } from "#shared/package-membership.ts";
 import type { ListingType } from "#types";
 
@@ -95,7 +94,6 @@ export const packageGroupIdsTx = txIdSetInTable(
 
 type ListingStateRow = Omit<GroupListingSettings, "customisable_days"> & {
   name: EnvKeyEncrypted;
-  assign_built_site: number;
   customisable_days: number;
   can_pay_more: number;
   has_children: number;
@@ -106,7 +104,6 @@ type ListingStateRow = Omit<GroupListingSettings, "customisable_days"> & {
 
 export type ListingState = GroupListingSettings & {
   name: EnvKeyEncrypted;
-  assignsBuiltSite: boolean;
   canPayMore: boolean;
   hasChildren: boolean;
   hasParents: boolean;
@@ -127,7 +124,6 @@ export const listingStatesTx = async (
       sql: `SELECT listing.id, listing.name, listing.listing_type,
                     listing.customisable_days, listing.can_pay_more,
                     listing.max_quantity, listing.min_quantity,
-                    listing.assign_built_site,
                     EXISTS(SELECT 1 FROM listing_parents AS listingParent
                              WHERE listingParent.parent_listing_id = listing.id) AS has_children,
                     EXISTS(SELECT 1 FROM listing_parents AS listingParent
@@ -137,7 +133,6 @@ export const listingStatesTx = async (
     }),
   );
   const states: ListingState[] = rows.map((row) => ({
-    assignsBuiltSite: row.assign_built_site === 1,
     canPayMore: row.can_pay_more === 1,
     customisable_days: row.customisable_days === 1,
     hasChildren: row.has_children === 1,
@@ -174,30 +169,6 @@ export const packageMembersErrorTx = async (
     }
   }
   return null;
-};
-
-/** The all-group built-site plan refusal for listings a write wants inside a
- *  group — ordinary or package: the first plan's message, or null. Decrypts
- *  only the name of the listing that fails. */
-export const sitePlanMemberErrorTx = async (
-  listings: readonly ListingState[],
-): Promise<string | null> => {
-  const sitePlan = listings.find((listing) => listing.assignsBuiltSite);
-  return sitePlan ? sitePlanMemberError(await decrypt(sitePlan.name)) : null;
-};
-
-/** The refusal for any join into a group that already holds a stored
- *  built-site plan member: such a group can only lose members, never gain
- *  them, so no join can mix the plan with normal listings. */
-export const storedPlanMemberErrorTx = async (
-  tx: TxScope,
-  groups: readonly GroupState[],
-): Promise<string | null> => {
-  const memberIds = groups.flatMap((group) =>
-    group.members.map((member) => member.id),
-  );
-  if (memberIds.length === 0) return null;
-  return sitePlanMemberErrorTx(await listingStatesTx(tx, memberIds));
 };
 
 /** The pick-count refusals for one listing against one membership quantity:
@@ -256,18 +227,13 @@ type MembershipsChecker<Result> = (
 ) => Promise<Result>;
 
 /** One (listing, group) membership pair judged inside the write transaction:
- *  the group must exist, the listing must not be a built-site plan (it is
- *  booked on its own, so this holds for ordinary groups too, not just
- *  packages), its members must stay homogeneous, the listing must obey the
- *  package rules, and the member's pick count must fit its cap. */
+ *  the group must exist, its members must stay homogeneous, the listing must
+ *  obey the package rules, and the member's pick count must fit its cap. */
 const oneMembershipErrorTx = async (
   listing: ListingState,
   states: Map<number, GroupState>,
   groupId: number,
 ): Promise<string | null> => {
-  if (listing.assignsBuiltSite) {
-    return sitePlanMemberError(await decrypt(listing.name));
-  }
   const checked = checkGroupListingSettings(
     states.get(groupId),
     (group) => group.members,
@@ -291,8 +257,7 @@ export type MembershipPairRef = { groupId: number; listingId: number };
 
 /** The transaction's member and group states behind a membership check, or
  *  the refusal that stops it before any per-pair judgment: a vanished listing
- *  row, or a stored built-site plan member in one of the groups (such a group
- *  can only lose members, never gain them). */
+ *  row. */
 const membershipCheckStatesTx = async (
   tx: TxScope,
   listingIds: readonly number[],
@@ -301,7 +266,6 @@ const membershipCheckStatesTx = async (
   | { listingMissing: true }
   | {
       listings: ListingState[];
-      refusal: string | null;
       states: Map<number, GroupState>;
     }
 > => {
@@ -310,16 +274,13 @@ const membershipCheckStatesTx = async (
   const states = await groupStatesTx(tx, groupIds);
   return {
     listings,
-    refusal: await storedPlanMemberErrorTx(tx, [...states.values()]),
     states,
   };
 };
 
 /** Rechecks membership pairs inside the write transaction: the group must
- *  exist, the listing must not be a built-site plan (it is booked on its
- *  own, so this holds for ordinary groups too, not just packages), its
- *  members must stay homogeneous, the listing must obey the package rules,
- *  and the member's pick count must fit its cap. `hasChildrenByListingId`
+ *  exist, its members must stay homogeneous, the listing must obey the
+ *  package rules, and the member's pick count must fit its cap. `hasChildrenByListingId`
  *  overrides a listing's intended child state (an edge written earlier in
  *  the same transaction). */
 const validateMembershipPairsWithChildStateTx = async (
@@ -333,7 +294,6 @@ const validateMembershipPairsWithChildStateTx = async (
     [...new Set(pairs.map((pair) => pair.groupId))],
   );
   if ("listingMissing" in loaded) return { listingMissing: true };
-  if (loaded.refusal) return { error: loaded.refusal, listingMissing: false };
   const listingById = byId(loaded.listings);
   for (const pair of pairs) {
     const listing = requiredMapValue(

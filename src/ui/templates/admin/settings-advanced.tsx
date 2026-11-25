@@ -5,7 +5,6 @@
 import { t } from "#i18n";
 import { SETTINGS_FORMS } from "#shared/settings/forms.ts";
 import { AppleWalletForm } from "#templates/admin/settings/apple-wallet.tsx";
-import { CustomDomainForm } from "#templates/admin/settings/custom-domain.tsx";
 import { EmailNotificationsForm } from "#templates/admin/settings/email.tsx";
 import { AdminEmailTemplateForm } from "#templates/admin/settings/email-tpl-admin.tsx";
 import { ConfirmationEmailTemplateForm } from "#templates/admin/settings/email-tpl-confirmation.tsx";
@@ -13,7 +12,6 @@ import { GoogleWalletForm } from "#templates/admin/settings/google-wallet.tsx";
 import { settingsPage } from "#templates/admin/settings/page-shell.tsx";
 import { settingsForm } from "#templates/admin/settings/schema-form.tsx";
 import { SmsGatewayForm } from "#templates/admin/settings/sms-gateway.tsx";
-import { HostSubdomainForm } from "#templates/admin/settings/subdomain.tsx";
 import type { EmailContent } from "#templates/email/shared.ts";
 import type { AdminSession, PaymentProviderType, Theme } from "#types";
 
@@ -27,16 +25,7 @@ export type AdvancedSettingsPageState = {
   businessEmail: string;
   confirmationTemplates: EmailContent;
   adminTemplates: EmailContent;
-  bunnyCdnEnabled: boolean;
-  bunnyDnsEnabled: boolean;
-  bunnySubdomain: string;
-  bunnyDnsSubdomainSuffix: string;
-  subdomainPreview: string;
-  subdomainPreviewFullDomain: string;
   customCss: string;
-  customDomain: string;
-  customDomainLastValidated: string;
-  cdnHostname: string;
   appleWalletConfigured: boolean;
   appleWalletPassTypeId: string;
   appleWalletTeamId: string;
@@ -74,8 +63,6 @@ export const adminAdvancedSettingsPage = (
       </article>
 
       {EmailNotificationsForm(s)}
-      {HostSubdomainForm(s)}
-      {CustomDomainForm(s)}
       {ConfirmationEmailTemplateForm(s)}
       {AdminEmailTemplateForm(s)}
       {settingsForm(SETTINGS_FORMS.listingColumnOrder, s)}

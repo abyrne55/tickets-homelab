@@ -6,7 +6,6 @@ import { adminListingNewPage } from "#templates/admin/listings/form-pages.tsx";
 import {
   editPanelHtml,
   registerListingTemplateHooks,
-  withBuilder,
 } from "#test/ui/templates/admin/listings/helpers.ts";
 import { OWNER_SESSION } from "#test-utils/admin-page-test.ts";
 import { expectIncludesAll } from "#test-utils/assertions.ts";
@@ -290,47 +289,4 @@ describe("adminListingEditPage Advanced section auto-open", () => {
 
 describe("adminListingEditPage Advanced section auto-open (builder fields)", () => {
   registerListingTemplateHooks();
-
-  test("opens when a renewal tier (months per unit) is set", () => {
-    withBuilder(() => {
-      assertStringIncludes(
-        advancedPanelHtml({ months_per_unit: 3 }),
-        ADVANCED_OPEN,
-      );
-    });
-  });
-
-  test("opens when initial site months is set", () => {
-    withBuilder(() => {
-      assertStringIncludes(
-        advancedPanelHtml({ initial_site_months: 6, months_per_unit: 0 }),
-        ADVANCED_OPEN,
-      );
-    });
-  });
-
-  test("opens when a built site is assigned on booking", () => {
-    withBuilder(() => {
-      assertStringIncludes(
-        advancedPanelHtml({
-          assign_built_site: true,
-          initial_site_months: 0,
-          months_per_unit: 0,
-        }),
-        ADVANCED_OPEN,
-      );
-    });
-  });
-
-  test("stays collapsed when no advanced field is set even with the builder enabled", () => {
-    withBuilder(() => {
-      const html = advancedPanelHtml({
-        assign_built_site: false,
-        initial_site_months: 0,
-        months_per_unit: 0,
-      });
-      assertStringIncludes(html, '<details class="listing-advanced">');
-      assert(!html.includes(ADVANCED_OPEN));
-    });
-  });
 });

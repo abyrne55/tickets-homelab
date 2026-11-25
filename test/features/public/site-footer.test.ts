@@ -4,7 +4,6 @@ import { expect } from "@std/expect";
 import { it as test } from "@std/testing/bdd";
 import { stub } from "@std/testing/mock";
 import { settleAttendeeBalance } from "#db/attendees/balance.ts";
-import { insertBuiltSite } from "#db/built-sites.ts";
 import { getDb } from "#db/client.ts";
 import { settings } from "#db/settings.ts";
 import { handleRequest } from "#routes";
@@ -29,7 +28,6 @@ import {
 import { createReservedAttendee } from "#test-utils/balance.ts";
 import { describeWithEnv } from "#test-utils/db.ts";
 import { createTestAttendeeWithToken } from "#test-utils/db-helpers/attendees.ts";
-import { provisionTestBuiltSite } from "#test-utils/db-helpers/built-sites.ts";
 import { withMigrationLock } from "#test-utils/db-helpers/migration-lock.ts";
 import { createTestInvite } from "#test-utils/db-helpers/misc.ts";
 import { mockFormRequest, mockRequest } from "#test-utils/mocks.ts";
@@ -338,32 +336,5 @@ describeWithEnv("site footer", { db: true, triggers: true }, () => {
       );
       assert(!html.includes("img#"));
     });
-  });
-
-  test("the footer's img#N reference resolves on the renewal error page", async () => {
-    const image = await makeImage("FooterRenewal");
-    await settings.update.siteFooter(
-      `Renew here.![FooterRenewal](img#${image.id})`,
-    );
-    const site = await insertBuiltSite(
-      "Footer Renewal Site",
-      "renewal-footer.b-cdn.net",
-      "",
-      "",
-      false,
-      "7201",
-    );
-    const { token } = await provisionTestBuiltSite(site.id);
-    // No listing qualifies as a renewal tier, so the link shows the error
-    // page, and its footer resolves like every other public page's.
-    const html = await expectHtmlResponse(
-      await handleRequest(
-        mockRequest(`/renew/?t=${encodeURIComponent(token)}`),
-      ),
-      200,
-      "Renewal Unavailable",
-      `<img src="/image/${image.filename}" alt="FooterRenewal">`,
-    );
-    assert(!html.includes("img#"));
   });
 });

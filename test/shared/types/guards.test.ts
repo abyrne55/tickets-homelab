@@ -16,7 +16,6 @@ import {
   isPaymentProviderSetting,
   isRecord,
   isSitePageItemType,
-  isSuperuserChoice,
 } from "#types";
 
 describe("isRecord", () => {
@@ -41,14 +40,6 @@ describe("isRecord", () => {
       expect(isRecord(value)).toBe(is);
     });
   }
-});
-
-describe("SuperuserChoice picklist", () => {
-  checkBothArms(
-    isSuperuserChoice,
-    ["", "self-managed", "enabled"],
-    ["disabled", "Enabled", "self managed", "self_managed", "superuser"],
-  );
 });
 
 describe("ImageUseItemType picklist", () => {

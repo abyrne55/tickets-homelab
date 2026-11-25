@@ -5,11 +5,7 @@ import { ADMIN_SURFACE, oneServedPath } from "#shared/admin-surface.ts";
 
 /** The ordinary expired-deadline mode: READ_ONLY_FROM in the past. */
 const ordinary = (path: string, method: string): "api" | "page" | null =>
-  readOnlyBlock(path, method, false);
-
-/** Update mode: UPDATE_IN_PROGRESS is set. */
-const updating = (path: string, method: string): "api" | "page" | null =>
-  readOnlyBlock(path, method, true);
+  readOnlyBlock(path, method);
 
 describe("read-only request guard", () => {
   for (const method of ["POST", "PUT", "PATCH", "DELETE"]) {
@@ -69,7 +65,6 @@ describe("read-only request guard", () => {
       "/admin/groups/42/scan",
       "/admin/login",
       "/admin/logout",
-      "/admin/support",
     ]) {
       expect(ordinary(path, "POST"), path).toBeNull();
     }
@@ -85,7 +80,6 @@ describe("read-only request guard", () => {
 
   test("allows public operations that must continue in read-only mode", () => {
     const cases: [string, string][] = [
-      ["/renew", "POST"],
       ["/pay/token", "POST"],
       ["/payment/webhook", "POST"],
       ["/v1/devices/device/registrations/pass/token", "POST"],
@@ -95,7 +89,6 @@ describe("read-only request guard", () => {
       ["/join/code", "POST"],
       ["/unsubscribe", "POST"],
       ["/contact", "POST"],
-      ["/instance/site-credentials", "POST"],
       ["/checkin/one+two", "POST"],
     ];
     for (const [path, method] of cases) {
@@ -114,73 +107,5 @@ describe("read-only request guard", () => {
     expect(ordinary("/", "GET")).toBeNull();
     expect(ordinary("/read-only", "HEAD")).toBeNull();
     expect(ordinary("/caldav", "PROPFIND")).toBeNull();
-  });
-});
-
-describe("read-only request guard in update mode", () => {
-  test("blocks the API paths as API errors", () => {
-    for (const method of ["POST", "PUT", "PATCH", "DELETE"]) {
-      expect(updating("/api/admin/listings/1", method)).toBe("api");
-    }
-  });
-
-  test("gives the payment and SMS webhooks the retryable API answer", () => {
-    // The providers redeliver a webhook that gets a non-2xx answer, so the
-    // update block answers them like an API call, not with the human
-    // redirect.
-    expect(updating("/payment/webhook", "POST")).toBe("api");
-    expect(updating("/sms/webhook", "POST")).toBe("api");
-  });
-
-  test("update mode refuses the public writes read-only mode allows", () => {
-    // The update's data migration must see a still database, so no safe
-    // path stays open.
-    const cases: [string, string][] = [
-      ["/renew", "POST"],
-      ["/pay/token", "POST"],
-      ["/v1/devices/device/registrations/pass/token", "DELETE"],
-      ["/v1/devices/device/registrations/pass/token", "POST"],
-      ["/v1/log", "POST"],
-      ["/join/code", "POST"],
-      ["/unsubscribe", "POST"],
-      ["/contact", "POST"],
-      ["/instance/site-credentials", "POST"],
-      ["/checkin/one+two", "POST"],
-      ["/ticket/listing", "POST"],
-    ];
-    for (const [path, method] of cases) {
-      expect(updating(path, method), path).toBe("page");
-    }
-  });
-
-  test("keeps the admin signed in and reading pages", () => {
-    expect(updating("/admin/listings", "GET")).toBeNull();
-    expect(updating("/admin/login", "POST")).toBeNull();
-    expect(updating("/admin/logout", "POST")).toBeNull();
-  });
-
-  test("update mode refuses the listed admin writes", () => {
-    // The migration must see a still database, so even the operations
-    // ordinary read-only mode allows stop while an update runs.
-    for (const path of [
-      "/admin/attendees/99/refresh-payment",
-      "/admin/debug/sentry",
-      "/admin/groups/42/scan",
-      "/admin/support",
-      "/admin/listing/42/attendee/99/checkin",
-      "/admin/listing/42/scan",
-      "/admin/backup/create",
-    ]) {
-      expect(updating(path, "POST"), path).toBe("page");
-    }
-  });
-  test("blocks admin mutations like ordinary read-only mode", () => {
-    expect(updating("/admin/listing/42/edit", "GET")).toBe("page");
-    expect(updating("/admin/groups/42/edit", "POST")).toBe("page");
-  });
-
-  test("allows reads", () => {
-    expect(updating("/", "GET")).toBeNull();
-    expect(updating("/api/admin/listings", "GET")).toBeNull();
   });
 });

@@ -134,11 +134,6 @@ export const PASSWORD_MIN_LENGTH = 8;
 /** Fixed text limit that fits payment metadata. Environment variables cannot change it. */
 export const MAX_INPUT_LENGTH = 250;
 
-/** SMTP refuses an email local part past 64 octets (RFC 5321). The superuser
- * address is derived from one, so its username stops there too; the username
- * charset is ASCII, so characters and octets match. */
-export const MAX_ADMIN_EMAIL_LOCAL_PART = 64;
-
 /**
  * Maximum number of line items one attendee-form submission may declare
  * (default: 1000).
@@ -550,22 +545,6 @@ export const MAX_EMAIL_TEMPLATES = limit(
   1000,
   "Max saved email templates",
   "templates",
-);
-
-// ---------------------------------------------------------------------------
-// Support form
-// ---------------------------------------------------------------------------
-
-/**
- * Days within which a repeat admin support-form submission is discouraged
- * (default: 7). After a submission the Support page shows a "you last submitted
- * this form …" notice for this long, to deter duplicate messages to the host.
- */
-export const SUPPORT_FORM_NAG_DAYS = limit(
-  "SUPPORT_FORM_NAG_DAYS",
-  7,
-  "Support form repeat-submit notice",
-  "days",
 );
 
 /** Computed: prune interval in ms. */

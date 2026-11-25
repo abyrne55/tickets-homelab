@@ -44,7 +44,6 @@ import {
 } from "#types";
 
 export interface ListingFormView {
-  builder?: boolean;
   nameAutofocus?: boolean;
   storage?: boolean;
   webhook?: boolean;
@@ -59,13 +58,11 @@ type ListingNumberFieldOptions = Partial<
 
 const LISTING_NUMBER_COPY = {
   duration_days: "duration_days",
-  initial_site_months: "initial_site_months",
   max_attendees: "max_attendees",
   max_quantity: "max_quantity",
   maximum_days_after: "max_days_ahead",
   min_quantity: "min_quantity",
   minimum_days_before: "min_days_notice",
-  months_per_unit: "months_per_unit",
 } as const;
 
 type ListingNumberFieldName = keyof typeof LISTING_NUMBER_COPY;
@@ -320,27 +317,6 @@ const listingFields = (view: ListingFormView = {}) =>
         optionLabel: t("fields.listing.show_remaining_label"),
       }),
       section: "options",
-    },
-    listingNumberField("months_per_unit", "advanced", {
-      max: 24,
-      min: 0,
-      visible: view.builder === true,
-    }),
-    listingNumberField("initial_site_months", "advanced", {
-      max: 120,
-      min: 0,
-      visible: view.builder === true,
-    }),
-    {
-      hint: t("fields.listing.assign_built_site_hint"),
-      label: t("fields.listing.assign_built_site"),
-      name: "assign_built_site",
-      options: [
-        { label: t("fields.listing.assign_built_site_label"), value: "1" },
-      ],
-      section: "advanced",
-      type: "checkbox-group",
-      visible: view.builder === true,
     },
     {
       label: t("fields.listing.attachment", {

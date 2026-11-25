@@ -116,22 +116,6 @@ describe("listing details table copy rows", () => {
     assertStringIncludes(rows, "0 to unlimited days from today");
   });
 
-  test("renewal, non-transferable, and hidden rows render their facts", () => {
-    const rows = detailRows({
-      hidden: true,
-      months_per_unit: 1,
-      non_transferable: true,
-    });
-    expectIncludesAll(rows, [
-      "<th>Renewal</th>",
-      "<td>1 month(s) per ticket</td>",
-      "<th>Non-Transferable</th>",
-      "<td>Yes — ID verification required at entry</td>",
-      "<th>Hidden</th>",
-      "<td>Yes — not shown in public listings list</td>",
-    ]);
-  });
-
   test("a child shows no public link or embed rows", () => {
     const child = detailRows({});
     assertStringIncludes(child, 'id="embed-toggle-1"');

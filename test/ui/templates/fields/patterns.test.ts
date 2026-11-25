@@ -3,7 +3,6 @@ import { expect } from "@std/expect";
 import { describe, it as test } from "@std/testing/bdd";
 import type { Field } from "#shared/forms/field.ts";
 import {
-  getBuiltSiteForm,
   getChangePasswordForm,
   getHolidayForm,
   getInviteUserForm,
@@ -52,7 +51,6 @@ const fieldGroups: { label: string; fields: readonly Field[] }[] = [
   { fields: getInviteUserForm().fields, label: "inviteUser" },
   { fields: getListingForm().fields, label: "listing" },
   { fields: getHolidayForm().fields, label: "holiday" },
-  { fields: getBuiltSiteForm().fields, label: "builtSite" },
   { fields: getGroupCreateForm().fields, label: "groupCreate" },
   { fields: getGroupForm().fields, label: "group" },
   { fields: [getSlugField()], label: "slug" },

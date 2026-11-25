@@ -135,7 +135,6 @@ export const BookingIntentSchema = v.pipe(
       (raw) => parseReservationAmount(raw) !== null,
       "Reservation amount must be a readable amount",
     ),
-    siteTokenIndex: v.optional(v.string()),
     special_instructions: v.string(),
     taxPolicy: v.optional(TaxPolicySchema),
     thankYouUrl: v.optional(v.string()),

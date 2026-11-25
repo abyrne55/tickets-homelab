@@ -141,7 +141,7 @@ describeWithEnv("the attendee page's invoices", { db: true }, () => {
     const { attendeeId } = await createReservedAttendee(1500);
     const link = createLink(attendeeId);
 
-    const env = withEnv({ UPDATE_IN_PROGRESS: "1" });
+    const env = withEnv({ READ_ONLY_FROM: "2000-01-01T00:00:00.000Z" });
     try {
       assert(isReadOnly(), "the site is not read-only");
       expect((await tabHtml(attendeeId, "actions")).includes(link)).toBe(false);

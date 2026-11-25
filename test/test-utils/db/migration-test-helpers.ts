@@ -64,7 +64,6 @@ export const LISTING_TO_LEGACY_EVENT_RENAME_STEPS: readonly SchemaRenameStep[] =
     renameColumnStep("listing_questions", "listing_id", "event_id"),
     renameTableStep("listing_questions", "event_questions"),
     renameColumnStep("activity_log", "listing_id", "event_id"),
-    renameColumnStep("built_sites", "assigned_listing_id", "assigned_event_id"),
   ];
 
 export const downgradeListingDomainToLegacyNames = () =>
@@ -108,12 +107,6 @@ export const seedListingDomainRows = async (): Promise<number> => {
       sql:
         "INSERT INTO activity_log (created, listing_id, message) " +
         "VALUES ('2024-01-01T00:00:00Z', ?, 'legacy listing activity')",
-    },
-    {
-      args: [listing.id],
-      sql:
-        "INSERT INTO built_sites (site_data, assigned_listing_id, created) " +
-        "VALUES ('{}', ?, '2024-01-01T00:00:00Z')",
     },
   ]);
   return listing.id;
@@ -348,8 +341,7 @@ export const seedLegacyAggregateColumnDropSchema = async (
 /**
  * Assert the post-`renameEventsToListings` schema state: the three legacy
  * `event_*` tables are gone, the three `listing_*` tables exist with one row
- * each, and the activity-log and built-sites rows still link back to the seeded
- * listing. Used by the `2026-06-14_rename_events_to_listings` migration tests
+ * each, and the activity-log rows still link back to the seeded listing. Used by the `2026-06-14_rename_events_to_listings` migration tests
  * to verify both a clean pre-rename database and a damaged intermediate state
  * self-heal to this final shape — the per-test `schemaHashMarker` check that
  * follows stays inline since the two tests bracket it differently.
@@ -408,11 +400,6 @@ export const expectListingDomainRestored = async (
       label: "activity_log_listing_id",
       sql: "SELECT listing_id AS v FROM activity_log WHERE message = 'legacy listing activity'",
     },
-    {
-      args: [],
-      label: "built_sites_listing_id",
-      sql: "SELECT assigned_listing_id AS v FROM built_sites WHERE site_data = '{}'",
-    },
   ]);
   const exists = (label: string) => results.get(label)!.rows.length > 0;
   const scalar = (label: string) => results.get(label)!.rows[0]?.v;
@@ -426,7 +413,6 @@ export const expectListingDomainRestored = async (
   expect(Number(scalar("listing_attendees_count"))).toBe(1);
   expect(Number(scalar("listing_questions_count"))).toBe(1);
   expect(scalar("activity_log_listing_id")).toBe(listingId);
-  expect(scalar("built_sites_listing_id")).toBe(listingId);
 };
 
 /**

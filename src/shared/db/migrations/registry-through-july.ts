@@ -185,6 +185,8 @@ export const ENTRIES_THROUGH_JULY: MigrationRegistryEntry[] = [
     "2026-06-23_ticket_count_no_quantity",
     () => import("./2026-06-23_ticket_count_no_quantity.ts"),
   ),
+  // Historical: added the built-site release channel (now a no-op; dropped by
+  // 2026-11-24_remove_hosting_platform).
   entry(
     "2026-06-24_built_sites_updates",
     () => import("./2026-06-24_built_sites_updates.ts"),

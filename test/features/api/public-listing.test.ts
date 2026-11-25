@@ -19,7 +19,6 @@ import type { ListingWithCount } from "#types";
 const listing = (overrides: Partial<ListingWithCount> = {}): ListingWithCount =>
   ({
     active: true,
-    assign_built_site: false,
     attendee_count: 0,
     bookable_alone: false,
     bookable_days: [],
@@ -34,13 +33,11 @@ const listing = (overrides: Partial<ListingWithCount> = {}): ListingWithCount =>
     id: 1,
     image_alt_text: "",
     image_url: "",
-    initial_site_months: 0,
     listing_type: "standard",
     location: "",
     max_attendees: 100,
     max_price: 10000,
     max_quantity: 5,
-    months_per_unit: 0,
     name: "Gala",
     non_transferable: false,
     purchase_only: false,
@@ -54,17 +51,6 @@ const listing = (overrides: Partial<ListingWithCount> = {}): ListingWithCount =>
 
 const resolved = (overrides: Partial<ListingWithCount> = {}) =>
   buildTicketListing(listing(overrides), false, undefined);
-
-describe("resolvedToPublicListing built-site fields", () => {
-  test("a built-site plan's response names no built-site fields", () => {
-    const result = resolvedToPublicListing(
-      resolved({ assign_built_site: true, initial_site_months: 3 }),
-      undefined,
-    );
-    expect(Object.hasOwn(result, "assignBuiltSite")).toBe(false);
-    expect(Object.hasOwn(result, "initialSiteMonths")).toBe(false);
-  });
-});
 
 describe("resolvedToPublicListing boundary values", () => {
   test("renders an empty date, location, and image as null", () => {

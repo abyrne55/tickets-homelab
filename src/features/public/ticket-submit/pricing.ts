@@ -62,7 +62,6 @@ export const checkoutIntentForSubmission = (
     // the webhook re-prices and dates the booking by day count, not the
     // listing's fixed duration.
     ...(hasCustomisable ? { dayCount } : {}),
-    ...(ctx.siteToken ? { siteToken: ctx.siteToken } : {}),
     ...(reservationAmount ? { reservationAmount } : {}),
     ...(modifiers && modifiers.length > 0 ? { modifiers } : {}),
   };

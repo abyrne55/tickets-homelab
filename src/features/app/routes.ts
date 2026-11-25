@@ -3,12 +3,12 @@
  * for a body-bearing request. The prefixes are declared in `prefixes.ts`.
  */
 
-import { t, withMessageGroups } from "#i18n";
+import { withMessageGroups } from "#i18n";
 import { apiErrorResponse } from "#routes/api/cors.ts";
 import { notFoundResponse, redirectResponse } from "#routes/response.ts";
 import { getPrefix } from "#routes/settings-bundles.ts";
 import type { PathMethodRoute } from "#routes/types.ts";
-import { isReadOnly, isUpdateInProgress } from "#shared/env.ts";
+import { isReadOnly } from "#shared/env.ts";
 import type { PrefixRoute } from "./prefix-fold.ts";
 import { prefixRoutes } from "./prefixes.ts";
 import { readOnlyBlock } from "./read-only.ts";
@@ -36,12 +36,7 @@ export const defineAppRoute =
 const READ_ONLY_MESSAGE = "This site is in read-only mode";
 
 const readOnlyResponses = {
-  // Update mode answers 503: payment providers and the SMS gateway redeliver
-  // a webhook that gets a non-2xx answer.
-  api: (updating: boolean): Response =>
-    updating
-      ? apiErrorResponse(t("public.update_in_progress.message"), 503)
-      : apiErrorResponse(READ_ONLY_MESSAGE, 403),
+  api: (): Response => apiErrorResponse(READ_ONLY_MESSAGE, 403),
   page: (): Response => redirectResponse("/read-only"),
 } as const;
 
@@ -66,9 +61,8 @@ export const routeMainApp = async ({
   method,
 }: AppRouteRequest): Promise<Response> => {
   if (isReadOnly()) {
-    const updating = isUpdateInProgress();
-    const blocked = readOnlyBlock(path, method, updating);
-    if (blocked === "api") return readOnlyResponses.api(updating);
+    const blocked = readOnlyBlock(path, method);
+    if (blocked === "api") return readOnlyResponses.api();
     if (blocked === "page") return readOnlyResponses.page();
   }
 

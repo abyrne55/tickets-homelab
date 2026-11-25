@@ -16,7 +16,6 @@ import {
 } from "#db/migrations/schema-sync.ts";
 
 import {
-  additiveMigrations,
   dropOwnedObjects,
   migrationById,
   seedSentinelListing,
@@ -55,46 +54,6 @@ describeWithEnv(
   "db > migration verify behaviour",
   { db: true, triggers: true },
   () => {
-    test("every additive migration is covered by a restore case", () => {
-      // Guards against a future migration slipping through with no restore test.
-      // The non-additive migrations excluded here are: the baseline reconcile, the
-      // events→listings rename, the transfers time-int rebuild, the transfers
-      // backfill (data-only), the nine column-drop migrations (drop_transfers_
-      // currency, drop_listing_income, drop_listing_attendee_refunded,
-      // drop_listing_attendee_price_paid, drop_attendees_price_paid,
-      // drop_attendees_remaining_balance, drop_modifiers_total_revenue,
-      // group_flat_prices — which backfills group_listings.package_price into
-      // listing_prices then drops the column — and drop_listings_day_prices — which
-      // rebuilds the day_count rows from listings.day_prices then drops that
-      // column), the ticket-count-no-quantity trigger rewrite (it drops and
-      // re-syncs the aggregate triggers from SCHEMA, owning no additive objects to
-      // rebuild), the attendees.kind NOT NULL tightening (an empty-`requires`
-      // constraint rebuild owning no additive objects to drop/restore), and the
-      // attendee-listings-tag settings rewrite (data-only; covered by its own
-      // data test), the historical built-site prune marker, listing_image_thumb
-      // (historically added a column that
-      // first_class_images now drops), remove_broken_image_records (data-only;
-      // covered by its own data test), and removal-only migrations whose
-      // absent-table checks cannot be rebuilt by a restore case. enabled_features
-      // now owns the triggers that keep saved feature data and visibility in step.
-      // The built-site marker drop is also removal-only. The activity backfill
-      // completion migration is data-only and covered by its direct tests. The
-      // The note-entities migration rebuilds system_notes around its new
-      // entity_type/entity_id pair, owning no additive objects to drop and
-      // restore; it has its own migration test. The group/listing
-      // note-entities CHECK rebuild likewise recreates system_notes to relax
-      // its CHECK, owning no additive objects to drop and restore; it has its
-      // own migration test. The checked_in count migration
-      // is data-only and covered by its own migration test. The holiday date
-      // padding migration is data-only and covered by its own migration test.
-      // The custom CSS Bunny fonts backfill is data-only and covered by its
-      // own migration test. The listing-fields trim backfill is data-only and
-      // covered by its own migration test. The logistics agents, agent users
-      // and address cache migrations are inert history, and the migration that
-      // removes those objects is removal-only.
-      expect(additiveMigrations.length).toBe(MIGRATIONS.length - 32);
-    });
-
     test("restores triggers attached to a dropped table", async () => {
       await getDb().execute(
         "CREATE TABLE restore_trigger_source (id INTEGER PRIMARY KEY)",

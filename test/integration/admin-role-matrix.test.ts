@@ -62,7 +62,7 @@ const recordPages = pages.filter((destination) =>
 
 /** Building sites needs `CAN_BUILD_SITES`, which is off here, so these two
  * areas are absent for every role and refuse nobody in particular. */
-const FEATURE_OFF_AREAS = new Set(["builder", "builtSites"]);
+const FEATURE_OFF_AREAS = new Set<string>();
 
 /** What a route answers a role it excludes: forbidden, or absent when the
  * page is switched off here. */
@@ -241,8 +241,8 @@ describeWithEnv("admin role matrix", { db: true }, () => {
     // would otherwise make this suite pass by testing nothing.
     // The scanner's ticket-cache reads are record routes like their scanner
     // pages: the gate runs before the record lookup, so the matrix walks them.
-    expect(roleOnly.length).toBe(48);
-    expect(recordPages.length).toBe(29);
+    expect(roleOnly.length).toBe(44);
+    expect(recordPages.length).toBe(28);
   });
 
   test("never serves a page to a role it does not declare", async () => {
@@ -312,16 +312,16 @@ describeWithEnv("admin role matrix", { db: true }, () => {
   });
 
   test("covers the write routes the surface declares", () => {
-    expect(writableRoutes().length).toBe(193);
-    expect(insiderWritableRoutes().length).toBe(190);
+    expect(writableRoutes().length).toBe(173);
+    expect(insiderWritableRoutes().length).toBe(170);
     // The DELETE beside the confirmed POST deletes: each method's gate is
     // its own, so the walks above must ask both.
-    expect(writeMethodPairs()).toBe(195);
+    expect(writeMethodPairs()).toBe(175);
     // The writable routes whose GET serves a page at the same path — a
     // write's own form page, or a view page whose POST the walks ask too.
     // The refusal walk asks those GETs like the writes, so this pins their
     // number too.
-    expect(formPageRoutes().length).toBe(76);
+    expect(formPageRoutes().length).toBe(71);
   });
 });
 

@@ -7,15 +7,13 @@ import { getDb } from "#db/client.ts";
 import { listingsTable } from "#db/listings/records.ts";
 import { handleRequest } from "#routes";
 import { signAttachmentUrl } from "#shared/attachment-url.ts";
-import { runWithStorageConfig } from "#shared/storage.ts";
 import { describeWithEnv } from "#test-utils/db.ts";
 import { createTestAttendeeWithToken } from "#test-utils/db-helpers/attendees.ts";
-import { TEST_STORAGE_ZONE } from "#test-utils/internal.ts";
 import {
-  installUrlHandler,
   mockRequest,
-  withFetchMock,
+  withLocalStorageEnabled,
   withStorageDisabled,
+  withStorageEnabled,
 } from "#test-utils/mocks.ts";
 
 describeWithEnv(
@@ -23,10 +21,7 @@ describeWithEnv(
   {
     db: true,
     encryptionKey: true,
-    env: {
-      STORAGE_ZONE_KEY: undefined,
-      STORAGE_ZONE_NAME: undefined,
-    },
+    env: {},
   },
   () => {
     /** Create an listing+attendee with an attachment configured */
@@ -61,23 +56,15 @@ describeWithEnv(
       attendeeId: number,
     ): Promise<string> => await signAttachmentUrl(listingId, attendeeId);
 
-    /** Mock CDN fetch to return encrypted data with isolated storage config */
+    /** Store encrypted data as the attachment file in isolated storage. */
     const withCdnMock = (
       data: Uint8Array,
       fn: () => Promise<void>,
     ): Promise<void> =>
-      runWithStorageConfig(TEST_STORAGE_ZONE, () =>
-        withFetchMock(async (originalFetch) => {
-          const encrypted = await encryptBytes(data);
-          installUrlHandler(originalFetch, (url) => {
-            if (url.includes("storage.bunnycdn.com")) {
-              return Promise.resolve(new Response(encrypted as any));
-            }
-            return null;
-          });
-          await fn();
-        }),
-      );
+      withLocalStorageEnabled(async (dir) => {
+        await Deno.writeFile(`${dir}/file.pdf`, await encryptBytes(data));
+        await fn();
+      });
 
     /** GET a path while the mocked CDN serves "data". */
     const fetchPath = async (path: string): Promise<Response> => {
@@ -105,8 +92,7 @@ describeWithEnv(
     });
 
     /** Shorthand for running a test body with storage enabled */
-    const withStorage = <T>(fn: () => T): T =>
-      runWithStorageConfig(TEST_STORAGE_ZONE, fn);
+    const withStorage = <T>(fn: () => T): T => withStorageEnabled(fn);
 
     test("returns 403 when query params are missing", async () => {
       await withStorage(async () => {
@@ -311,24 +297,14 @@ describeWithEnv(
       expect(after!.attachment_downloads).toBe(1);
     });
 
-    test("returns 404 when CDN download fails", async () => {
+    test("returns 404 when the file is missing from storage", async () => {
       const { listingId, attendeeId } = await setupAttachment();
       const path = await signUrl(listingId, attendeeId);
 
-      await withStorage(() =>
-        withFetchMock(async (originalFetch) => {
-          installUrlHandler(originalFetch, (url) => {
-            if (url.includes("storage.bunnycdn.com")) {
-              return Promise.resolve(
-                new Response("Not Found", { status: 404 }),
-              );
-            }
-            return null;
-          });
-          const response = await handleRequest(mockRequest(path));
-          expect(response.status).toBe(404);
-        }),
-      );
+      await withStorage(async () => {
+        const response = await handleRequest(mockRequest(path));
+        expect(response.status).toBe(404);
+      });
     });
 
     test("keeps a signed download out of every shared cache", async () => {

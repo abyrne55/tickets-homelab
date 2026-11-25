@@ -3,8 +3,6 @@
  */
 
 import { settings } from "#db/settings.ts";
-import { compact } from "#fp";
-import { BUNNY_FONTS_ORIGIN } from "#routes/public/bunny-fonts.ts";
 import { encodeBody } from "#routes/response.ts";
 import { ASSET_CDN_ORIGIN } from "#shared/asset-paths.ts";
 import {
@@ -44,7 +42,6 @@ export const buildCspHeader = (
   payment?: PaymentCspConfig,
   botpoisonEnabled = false,
   assetCdnOrigin: string | null = ASSET_CDN_ORIGIN,
-  bunnyFonts = false,
 ): string => {
   const directives = [
     "default-src 'self'",
@@ -57,17 +54,8 @@ export const buildCspHeader = (
     directives.push(`script-src 'self' ${assetCdnOrigin}`);
   }
 
-  if (assetCdnOrigin || bunnyFonts) {
-    const styleSources = compact([
-      "'self'",
-      assetCdnOrigin,
-      ...(bunnyFonts ? [BUNNY_FONTS_ORIGIN] : []),
-    ]);
-    directives.push(`style-src ${styleSources.join(" ")}`);
-  }
-
-  if (bunnyFonts) {
-    directives.push(`font-src 'self' ${BUNNY_FONTS_ORIGIN}`);
+  if (assetCdnOrigin) {
+    directives.push(`style-src 'self' ${assetCdnOrigin}`);
   }
 
   if (botpoisonEnabled) {
@@ -272,16 +260,11 @@ export const applySecurityHeaders = async (
   const embeddable = isEmbeddablePath(path);
   const provider = settings.paymentProvider;
   const sandbox = provider !== null && paymentProviderUsesSandbox(provider);
-  // Every page the layout renders links /custom.css, so the policy must
-  // follow the stylesheet's saved flag on every routed response. The flag is
-  // computed when the CSS was saved. The read is the cached snapshot, never a
-  // query of its own.
   const baseCsp = buildCspHeader(
     embeddable,
     { provider, sandbox },
     isBotpoisonEnabled(),
     ASSET_CDN_ORIGIN,
-    settings.customCssBunnyFonts,
   );
   const frameAncestors = embeddable
     ? buildFrameAncestors(await getEmbedHosts())

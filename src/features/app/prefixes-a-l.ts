@@ -135,14 +135,6 @@ export const PREFIXES_A_L = {
     handler: routeFromModule(() => import("#routes/images.ts"), "routeImage"),
     settings: [],
   },
-  // Inter-instance machine endpoint: reads built_sites + an env key only.
-  instance: {
-    handler: routerFromModule(
-      () => import("#routes/instance.ts"),
-      ({ instanceRoutes }) => instanceRoutes,
-    ),
-    settings: [],
-  },
   // The non-expiring invoice share link. It renders the frozen body and the
   // shared pay button, and reads the site currency for the amount it charges.
   invoice: {

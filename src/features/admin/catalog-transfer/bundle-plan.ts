@@ -105,14 +105,12 @@ export const siteGroupIdsOfPairs = (pairs: Iterable<PlannedPair>): number[] =>
 
 /** The stored listing row projected onto the edge-compatibility shape. */
 export const edgeListingOfRow = (row: ListingWithCount): EdgeListing => ({
-  assign_built_site: row.assign_built_site,
   customisable_days: row.customisable_days,
   day_prices: row.day_prices,
   duration_days: row.duration_days,
   id: row.id,
   listing_type: row.listing_type,
   min_quantity: row.min_quantity,
-  months_per_unit: row.months_per_unit,
   name: row.name,
 });
 

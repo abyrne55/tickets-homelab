@@ -39,16 +39,16 @@ const dualPathTree = () =>
   });
 
 /** The (listing id, quantity) lines a plain one-day purchase books, with no
- *  custom prices and no renewal — the tail every ordinary-order assertion
+ *  custom prices — the tail every ordinary-order assertion
  *  reduces to. */
 const plainOrderLinePairs = (
   tree: ReturnType<typeof buildBookingTree>,
   nodeQuantities: ReadonlyMap<string, number>,
   foldedQuantities: ReadonlyMap<number, number>,
 ): [number, number][] =>
-  buildOrderLines(tree, nodeQuantities, foldedQuantities, new Map(), 1, {
-    renewal: false,
-  }).map((line) => [line.listingId, line.quantity]);
+  buildOrderLines(tree, nodeQuantities, foldedQuantities, new Map(), 1).map(
+    (line) => [line.listingId, line.quantity],
+  );
 
 describe("nodeQuantitiesFor", () => {
   test("a member node books its fixed quantity times the package count", () => {
@@ -146,7 +146,6 @@ describe("buildOrderLines", () => {
       aggregateNodeQuantities(tree, nodeQuantities),
       new Map(),
       1,
-      { renewal: false },
     );
     expect(lines).toEqual([
       {
@@ -236,7 +235,6 @@ describe("buildOrderLines", () => {
       new Map([[2, 1]]),
       new Map([[2, 12345]]),
       1,
-      { renewal: false },
     );
     expect(lines[0]!.unitPrice).toBe(12345);
   });
@@ -264,7 +262,6 @@ describe("buildOrderLines", () => {
       new Map([[1, 1]]),
       new Map(),
       2,
-      { renewal: false },
     );
     expect(lines[0]!.unitPrice).toBe(777);
   });
@@ -280,7 +277,6 @@ describe("buildOrderLines", () => {
       ]),
       new Map([[10, 888]]),
       1,
-      { renewal: false },
     );
     expect(lines).toEqual([
       {
@@ -329,7 +325,6 @@ describe("buildOrderLines", () => {
       ]),
       new Map(),
       1,
-      { renewal: false },
     );
     expect(lines).toEqual([
       {
@@ -364,7 +359,6 @@ describe("buildOrderLines", () => {
       new Map([[1, 5]]),
       new Map(),
       1,
-      { renewal: false },
     );
     expect(lines.map((line) => line.quantity)).toEqual([4, 1]);
   });

@@ -20,11 +20,11 @@ import {
   mockFormRequest,
   mockMultipartRequest,
   mockRequest,
-  withCdnProxy,
-  withCdnRejecting,
+  withLocalStorageEnabled,
   withStorageDisabled,
   withStorageEnabled,
   withStorageMock,
+  withUnwritableStorage,
 } from "#test-utils/mocks.ts";
 import {
   adminGet,
@@ -40,7 +40,8 @@ const HEADER_IMAGE_FORM_REDIRECT =
   "/admin/settings?form=settings-header-image#settings-header-image";
 const HEADER_IMAGE_DELETE_FORM_REDIRECT =
   "/admin/settings?form=settings-header-image-delete#settings-header-image-delete";
-const PROXY_URL = "/image/abc123-def4-5678-9abc-def012345678.jpg";
+const PROXY_FILE = "abc123-def4-5678-9abc-def012345678.jpg";
+const PROXY_URL = `/image/${PROXY_FILE}`;
 
 /** Submit a file to the header-image upload endpoint */
 const submitHeaderImage = async (
@@ -253,20 +254,18 @@ describeWithEnv("server (header image settings)", { db: true }, () => {
     test("deletes old header image when uploading a new one", async () => {
       await settings.update.headerImageUrl("old-header.jpg");
 
-      await withStorageMock(async (fetchCalls) => {
+      await withLocalStorageEnabled(async (dir) => {
+        await Deno.writeTextFile(`${dir}/old-header.jpg`, "old");
         const response = await submitHeaderJpeg("new-logo.jpg");
         expectSettingsRedirect(response);
 
-        const deleteCall = fetchCalls.find((url) =>
-          url.includes("old-header.jpg"),
-        );
-        expect(deleteCall).not.toBeUndefined();
+        await expect(Deno.stat(`${dir}/old-header.jpg`)).rejects.toThrow();
         expect(settings.headerImageUrl).not.toBe("old-header.jpg");
       });
     });
 
-    test("reports error when CDN upload fails", async () => {
-      await withCdnRejecting(new Error("CDN unreachable"), async () => {
+    test("reports error when the storage upload fails", async () => {
+      await withUnwritableStorage(async () => {
         const response = await submitHeaderJpeg("logo.jpg");
         await expectFlashRedirect(
           HEADER_IMAGE_FORM_REDIRECT,
@@ -296,7 +295,8 @@ describeWithEnv("server (header image settings)", { db: true }, () => {
     test("clears the stored header image URL", async () => {
       await settings.update.headerImageUrl("to-delete.jpg");
 
-      await withStorageMock(async () => {
+      await withLocalStorageEnabled(async (dir) => {
+        await Deno.writeTextFile(`${dir}/to-delete.jpg`, "x");
         const response = await submitHeaderImageDelete();
         expectSettingsRedirect(response);
         expect(settings.headerImageUrl).toBe("");
@@ -314,10 +314,10 @@ describeWithEnv("server (header image settings)", { db: true }, () => {
       });
     });
 
-    test("keeps DB record when CDN delete fails", async () => {
+    test("keeps DB record when the storage delete fails", async () => {
       await settings.update.headerImageUrl("failing.jpg");
 
-      await withCdnRejecting(new Error("CDN unreachable"), async () => {
+      await withUnwritableStorage(async () => {
         const response = await submitHeaderImageDelete();
         await expectFlashRedirect(
           HEADER_IMAGE_DELETE_FORM_REDIRECT,
@@ -333,21 +333,19 @@ describeWithEnv("server (header image settings)", { db: true }, () => {
     test("streams decrypted bytes with immutable cache headers", async () => {
       const encrypted = await encryptBytes(JPEG_HEADER);
 
-      await withCdnProxy(
-        () => new Response(encrypted.buffer as BodyInit),
-        async () => {
-          const response = await handleRequest(mockRequest(PROXY_URL));
-          expect(response.status).toBe(200);
-          expect(response.headers.get("content-type")).toBe("image/jpeg");
-          assertStringIncludes(
-            response.headers.get("cache-control") ?? "",
-            "immutable",
-          );
-          expect(new Uint8Array(await response.arrayBuffer())).toEqual(
-            JPEG_HEADER,
-          );
-        },
-      );
+      await withLocalStorageEnabled(async (dir) => {
+        await Deno.writeFile(`${dir}/${PROXY_FILE}`, encrypted);
+        const response = await handleRequest(mockRequest(PROXY_URL));
+        expect(response.status).toBe(200);
+        expect(response.headers.get("content-type")).toBe("image/jpeg");
+        assertStringIncludes(
+          response.headers.get("cache-control") ?? "",
+          "immutable",
+        );
+        expect(new Uint8Array(await response.arrayBuffer())).toEqual(
+          JPEG_HEADER,
+        );
+      });
     });
 
     test("returns 404 when storage is disabled", async () => {
@@ -357,15 +355,12 @@ describeWithEnv("server (header image settings)", { db: true }, () => {
       });
     });
 
-    test("serves the uncached red pixel when CDN reports the object missing", async () => {
-      await withCdnProxy(
-        () => new Response(null, { status: 404 }),
-        async () => {
-          await expectBrokenImageResponse(
-            await handleRequest(mockRequest(PROXY_URL)),
-          );
-        },
-      );
+    test("serves the uncached red pixel when storage lacks the object", async () => {
+      await withLocalStorageEnabled(async () => {
+        await expectBrokenImageResponse(
+          await handleRequest(mockRequest(PROXY_URL)),
+        );
+      });
     });
   });
 });

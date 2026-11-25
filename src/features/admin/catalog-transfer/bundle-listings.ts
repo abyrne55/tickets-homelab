@@ -13,11 +13,7 @@ import {
   edgeFieldError,
 } from "#shared/listing-parents-rules.ts";
 import { validateListingInput } from "#shared/listings-actions.ts";
-import {
-  packageChildEdgeError,
-  sitePlanMemberError,
-} from "#shared/package-membership.ts";
-import type { ListingWithCount } from "#types";
+import { packageChildEdgeError } from "#shared/package-membership.ts";
 import type { FailureCollector } from "./bundle-names.ts";
 import {
   type BundleRef,
@@ -62,32 +58,9 @@ export const validateListings = async (
       item,
       await validateListingInput(input, undefined, { siblingsByGroup }),
     );
-    // A group that holds a stored built-site plan can only lose members.
-    // The single import refuses this join inside its write transaction.
-    fail.failIf(
-      item,
-      storedPlanJoinError(siteIdsOf(refs.groups), siblingsByGroup),
-    );
     checkSitePackageJoins(context, pairs, input, item, fail);
   }
   return plans;
-};
-
-/** The refusal for a join into a site group that holds a stored built-site
- * plan. The plan books its own site, so the group can only lose members. */
-const storedPlanJoinError = (
-  groupIds: readonly number[],
-  siblingsByGroup: ReadonlyMap<number, ListingWithCount[]>,
-): string | null => {
-  for (const groupId of groupIds) {
-    const plan = requiredMapValue(
-      siblingsByGroup,
-      groupId,
-      "Missing group listing membership",
-    ).find((listing) => listing.assign_built_site);
-    if (plan !== undefined) return sitePlanMemberError(plan.name);
-  }
-  return null;
 };
 
 /** The listing-side package checks for SITE package groups: the pick count

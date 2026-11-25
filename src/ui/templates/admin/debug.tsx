@@ -137,10 +137,9 @@ const AVAILABILITY_BADGES: Record<
 const availabilityStateBadge = badgeFromTable(AVAILABILITY_BADGES);
 
 const STORAGE_BACKEND_BADGES: Record<
-  DebugPageState["bunny"]["storageBackend"],
+  DebugPageState["storage"]["storageBackend"],
   BadgeSpec
 > = {
-  bunny: { label: "Bunny CDN", variant: "ok" },
   local: { label: "Local filesystem", variant: "ok" },
   none: { label: "Not configured", variant: "missing" },
 };
@@ -222,7 +221,6 @@ const DEBUG_SECTIONS: readonly DebugSectionSpec[] = [
         label: t("debug.field.read_only_from"),
         value: availability.cutoff || "—",
       },
-      statusRow(t("debug.field.renewal_url"), availability.renewalConfigured),
       {
         label: t("debug.field.server_time_utc"),
         value: availability.serverTime,
@@ -304,28 +302,13 @@ const DEBUG_SECTIONS: readonly DebugSectionSpec[] = [
     titleKey: "debug.section.notifications",
   },
   {
-    rows: ({ bunny }) => [
+    rows: ({ storage }) => [
       {
         label: t("debug.field.file_storage_images"),
-        value: storageBackendBadge(bunny.storageBackend),
-      },
-      statusRow(t("debug.field.cdn_management"), bunny.cdnEnabled),
-      { label: t("debug.field.cdn_hostname"), value: bunny.cdnHostname || "—" },
-      {
-        label: t("debug.field.custom_domain"),
-        value: bunny.customDomain || "—",
-      },
-      statusRow(t("debug.field.dns_subdomain"), bunny.dnsEnabled),
-      {
-        label: t("debug.field.subdomain_suffix"),
-        value: bunny.subdomainSuffix || "—",
-      },
-      {
-        label: t("debug.field.registered_subdomain"),
-        value: bunny.registeredSubdomain || "—",
+        value: storageBackendBadge(storage.storageBackend),
       },
     ],
-    titleKey: "debug.section.bunny",
+    titleKey: "debug.section.storage",
   },
   {
     rows: ({ database, domain }) => [
