@@ -52,7 +52,7 @@
     "npm:@sentry/deno@^10.78.0": "10.78.0",
     "npm:cross-fetch@4.1.0": "4.1.0",
     "npm:esbuild@~0.28.2": "0.28.2",
-    "npm:fast-check@^4.10.3": "4.10.3",
+    "npm:fast-check@^4.11.0": "4.11.0",
     "npm:fflate@~0.8.3": "0.8.3",
     "npm:happy-dom@20.0.11": "20.0.11",
     "npm:happy-dom@^21.0.4": "21.0.4",
@@ -1017,8 +1017,8 @@
       "scripts": true,
       "bin": true
     },
-    "fast-check@4.10.3": {
-      "integrity": "sha512-SBaU6nhh+sXxb05r2IHAKfxnR/1Pu6MqtHYaewM1BY6V5xzOxOk+4yoWO7WfeeyZG1iArFE6/DO/7iLYMUuOJg==",
+    "fast-check@4.11.0": {
+      "integrity": "sha512-V4Uc238rhQOdQlc+Gz7JG6SGBtrWnWL8d/6RyiBeCMcNKMhF6DZ0KkAVHJSyNV5r4lA0PmIpZ6iRpTVoz4qjoA==",
       "dependencies": [
         "pure-rand"
       ]
@@ -1532,7 +1532,7 @@
       "npm:@sentry/core@^10.78.0",
       "npm:@sentry/deno@^10.78.0",
       "npm:esbuild@~0.28.2",
-      "npm:fast-check@^4.10.3",
+      "npm:fast-check@^4.11.0",
       "npm:fflate@~0.8.3",
       "npm:happy-dom@^21.0.4",
       "npm:intl-messageformat@^12.2.0",
