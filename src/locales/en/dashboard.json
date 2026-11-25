@@ -20,7 +20,6 @@
   "admin.dashboard.welcome.intro": "Here are the first things to do on your new site.",
   "admin.dashboard.welcome.step_add_listing": "Add a listing",
   "admin.dashboard.welcome.step_test_booking": "Make a test booking and check the money and emails arrive",
-  "admin.dashboard.welcome.step_address": "Give the site a nicer address",
   "admin.dashboard.welcome.dismiss": "Got it",
   "admin.dashboard.welcome.dismissed": "Welcome message hidden.",
   "admin.listings.add_attendee": "Add Attendee"
