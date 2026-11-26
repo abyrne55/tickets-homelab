@@ -56,7 +56,7 @@
     "npm:fflate@~0.8.3": "0.8.3",
     "npm:happy-dom@20.0.11": "20.0.11",
     "npm:happy-dom@^21.0.4": "21.0.4",
-    "npm:intl-messageformat@^12.2.0": "12.2.0",
+    "npm:intl-messageformat@^12.2.1": "12.2.1",
     "npm:jsqr@^1.4.0": "1.4.0",
     "npm:liquidjs@^10.30.1": "10.30.1",
     "npm:mailgun.js@*": "13.2.0",
@@ -474,8 +474,8 @@
       "os": ["win32"],
       "cpu": ["x64"]
     },
-    "@formatjs/fast-memoize@3.1.7": {
-      "integrity": "sha512-zXfhLpvA6T7+efdt9JLbBwZ00tT7NsBMDVnDu8rpHeNNv8KfRZAMo2gkG0k9lK/Nzc//3kJ9pImsfuJxk3KhUA=="
+    "@formatjs/fast-memoize@3.1.8": {
+      "integrity": "sha512-Y9YFFfeBDkAWmLWD3LVNHbHlyELsP2lYRNoY6+QhtPh1/ujCiX5QYBzAqe0cWdkCxKVezHLt0qjWz1veEUV7UA=="
     },
     "@formatjs/icu-messageformat-parser@3.5.23": {
       "integrity": "sha512-iB1fYfhtSGd8uH9A8b1m01Ujcv6QtQnJasefP3jPApmz72L/zNipzf3BdoinTMd1xuviVChjUJWL60iTwjUQ+w==",
@@ -1128,8 +1128,8 @@
     "immutable@5.1.10": {
       "integrity": "sha512-Uu72qZXUtm+n98uML3Xr6pVFHl4xnmeCuAsrm0VqFlQim/Ib6NrPSJLpx6CrZ/G6DnoGaCUgtx8gY+o+ovxnCw=="
     },
-    "intl-messageformat@12.2.0": {
-      "integrity": "sha512-zFzW80iYSSJm4V185g3ItJQ96lBZ2RDO8O8qmRiPAAVKYXJeHfDQN2ITdtLlV+CjSi9Lo7zVW9xGt9CPCx7J6A==",
+    "intl-messageformat@12.2.1": {
+      "integrity": "sha512-GvlBHj5Blu0ro39QT/QEbX3I23GAYvDh9/B+l33NnXjmYe/UoqFgZjNZoqPa6QdWwAliP/i27y5JeKjFkqlbRA==",
       "dependencies": [
         "@formatjs/fast-memoize",
         "@formatjs/icu-messageformat-parser"
@@ -1535,7 +1535,7 @@
       "npm:fast-check@^4.11.0",
       "npm:fflate@~0.8.3",
       "npm:happy-dom@^21.0.4",
-      "npm:intl-messageformat@^12.2.0",
+      "npm:intl-messageformat@^12.2.1",
       "npm:jsqr@^1.4.0",
       "npm:liquidjs@^10.30.1",
       "npm:marked@^18.2.1",
