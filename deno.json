@@ -76,7 +76,7 @@
     "prosemirror-model": "npm:prosemirror-model@^1.25.13",
     "prosemirror-schema-list": "npm:prosemirror-schema-list@^1.6.1",
     "prosemirror-state": "npm:prosemirror-state@^1.4.4",
-    "prosemirror-view": "npm:prosemirror-view@^1.42.9",
+    "prosemirror-view": "npm:prosemirror-view@^1.44.0",
     "sass": "npm:sass@^1.108.2",
     "stripe": "npm:stripe@~22.1.1",
     "temporal-polyfill": "npm:temporal-polyfill@^1.0.8",
