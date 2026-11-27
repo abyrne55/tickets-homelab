@@ -74,7 +74,7 @@
     "npm:prosemirror-schema-list@^1.6.1": "1.6.1",
     "npm:prosemirror-state@^1.4.3": "1.4.4",
     "npm:prosemirror-state@^1.4.4": "1.4.4",
-    "npm:prosemirror-view@^1.42.9": "1.42.9",
+    "npm:prosemirror-view@^1.44.0": "1.44.0",
     "npm:resend@*": "6.12.4",
     "npm:sass@^1.108.2": "1.108.2",
     "npm:stripe@~22.1.1": "22.1.1",
@@ -1358,8 +1358,8 @@
         "prosemirror-model"
       ]
     },
-    "prosemirror-view@1.42.9": {
-      "integrity": "sha512-bKbfzeKZOu2H2JQU2TaJmYu6EBcor3VnGIR4jR31cbEt1ztUnfUB6bKGV1+fJzOJdrVWR+tRU0208zM3oQx4wA==",
+    "prosemirror-view@1.44.0": {
+      "integrity": "sha512-Ga7889C0DYI1AI0zzgXBNVElPRLh6B2+K87XLjza90Bm/02XyEGXUr0gnla+Oefv7krvo3VIUDwM+YHKU9xGxg==",
       "dependencies": [
         "prosemirror-model",
         "prosemirror-state",
@@ -1548,7 +1548,7 @@
       "npm:prosemirror-model@^1.25.13",
       "npm:prosemirror-schema-list@^1.6.1",
       "npm:prosemirror-state@^1.4.4",
-      "npm:prosemirror-view@^1.42.9",
+      "npm:prosemirror-view@^1.44.0",
       "npm:sass@^1.108.2",
       "npm:stripe@~22.1.1",
       "npm:temporal-polyfill@^1.0.8",
